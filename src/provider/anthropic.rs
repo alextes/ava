@@ -118,3 +118,86 @@ impl Provider for AnthropicProvider {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_text_response() {
+        let json = r#"{"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"}"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.content.len(), 1);
+        match &response.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected text block"),
+        }
+        assert_eq!(response.stop_reason, StopReason::EndTurn);
+    }
+
+    #[test]
+    fn test_parse_multiple_text_blocks() {
+        let json = r#"{"content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}],"stop_reason":"end_turn"}"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.content.len(), 2);
+
+        // verify the joining logic works as expected
+        let mut content = String::new();
+        for block in &response.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(text);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(content, "hello\nworld");
+    }
+
+    #[test]
+    fn test_parse_tool_use_response() {
+        let json = r#"{"content":[{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"location":"sf"}}],"stop_reason":"tool_use"}"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.content.len(), 1);
+        match &response.content[0] {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "toolu_123");
+                assert_eq!(name, "get_weather");
+                assert_eq!(input["location"], "sf");
+            }
+            _ => panic!("expected tool_use block"),
+        }
+        assert_eq!(response.stop_reason, StopReason::ToolUse);
+    }
+
+    #[test]
+    fn test_parse_api_error() {
+        let json = r#"{"error":{"message":"invalid api key"}}"#;
+        let error: ApiError = serde_json::from_str(json).unwrap();
+
+        assert_eq!(error.error.message, "invalid api key");
+    }
+
+    #[test]
+    fn test_request_serialization() {
+        let messages = vec![Message::user("hello")];
+        let request = ApiRequest {
+            model: "claude-sonnet-4-5",
+            max_tokens: 1024,
+            messages: &messages,
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(json["model"], "claude-sonnet-4-5");
+        assert_eq!(json["max_tokens"], 1024);
+        assert_eq!(json["messages"][0]["role"], "user");
+        assert_eq!(json["messages"][0]["content"], "hello");
+    }
+}
