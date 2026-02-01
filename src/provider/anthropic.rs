@@ -6,7 +6,7 @@ use crate::message::Message;
 use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
-const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250514";
+const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct AnthropicProvider {
