@@ -1,3 +1,7 @@
+mod config;
+mod db;
+mod error;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -24,6 +28,11 @@ fn main() {
         }
         Commands::Status => {
             println!("ava {}", env!("CARGO_PKG_VERSION"));
+
+            match config::default_db_path() {
+                Ok(path) => println!("db: {}", path.display()),
+                Err(e) => println!("db: error: {e}"),
+            }
         }
     }
 }
