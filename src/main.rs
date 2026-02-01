@@ -11,6 +11,8 @@ struct Cli {
 enum Commands {
     /// show version info
     Version,
+    /// show current status
+    Status,
 }
 
 fn main() {
@@ -18,6 +20,9 @@ fn main() {
 
     match cli.command {
         Commands::Version => {
+            println!("ava {}", env!("CARGO_PKG_VERSION"));
+        }
+        Commands::Status => {
             println!("ava {}", env!("CARGO_PKG_VERSION"));
         }
     }
