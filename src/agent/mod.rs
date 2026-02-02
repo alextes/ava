@@ -88,4 +88,58 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].content, "hi");
     }
+
+    struct FailingProvider;
+
+    impl Provider for FailingProvider {
+        async fn complete(&self, _messages: &[Message]) -> Result<ProviderResponse, Error> {
+            Err(Error::Provider("provider failed".into()))
+        }
+    }
+
+    struct FailingChannel;
+
+    impl Channel for FailingChannel {
+        fn send(&self, _message: OutboundMessage) -> Result<(), Error> {
+            Err(Error::Provider("channel send failed".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_provider_error_propagates() {
+        let provider = FailingProvider;
+        let channel = MockChannel::new();
+        let agent = Agent::new(provider);
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "hello".into(),
+        };
+
+        let result = agent.process(inbound, &channel).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::Provider(msg) if msg == "provider failed"));
+    }
+
+    #[tokio::test]
+    async fn test_channel_error_propagates() {
+        let provider = MockProvider {
+            response: "hi".into(),
+        };
+        let channel = FailingChannel;
+        let agent = Agent::new(provider);
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "hello".into(),
+        };
+
+        let result = agent.process(inbound, &channel).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::Provider(msg) if msg == "channel send failed"));
+    }
 }
