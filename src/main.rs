@@ -84,8 +84,23 @@ async fn run_message(content: String) -> Result<(), error::Error> {
     Ok(())
 }
 
+fn allowed_telegram_ids() -> Vec<i64> {
+    std::env::var("TELEGRAM_ALLOWED_IDS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect()
+}
+
 async fn run_telegram() -> Result<(), error::Error> {
     let bot = TelegramBot::from_env()?;
+    let allowed_ids = allowed_telegram_ids();
+
+    if allowed_ids.is_empty() {
+        eprintln!("warning: TELEGRAM_ALLOWED_IDS not set, bot will ignore all messages");
+    } else {
+        eprintln!("allowed user IDs: {:?}", allowed_ids);
+    }
 
     println!("starting telegram bot...");
 
@@ -113,6 +128,14 @@ async fn run_telegram() -> Result<(), error::Error> {
             };
 
             let chat_id = msg.chat.id;
+            let user_id = msg.from.map(|u| u.id);
+
+            // check whitelist
+            let is_allowed = user_id.map(|id| allowed_ids.contains(&id)).unwrap_or(false);
+            if !is_allowed {
+                eprintln!("ignoring message from unauthorized user_id={user_id:?}");
+                continue;
+            }
 
             // create provider and agent for each message
             // (in the future, we'll have sessions to maintain state)

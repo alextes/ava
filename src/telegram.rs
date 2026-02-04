@@ -100,8 +100,14 @@ pub struct Update {
 #[derive(Debug, Deserialize)]
 pub struct Message {
     pub message_id: i64,
+    pub from: Option<User>,
     pub chat: Chat,
     pub text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct User {
+    pub id: i64,
 }
 
 #[derive(Debug, Deserialize)]
