@@ -14,8 +14,7 @@ pub struct Database {
 impl Database {
     /// open database at the default location, run migrations
     pub fn open() -> Result<Self, Error> {
-        let path = default_db_path()?;
-        Self::open_at(&path)
+        Self::open_at(default_db_path())
     }
 
     /// open database at a specific path

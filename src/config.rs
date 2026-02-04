@@ -1,25 +1,13 @@
 use std::path::PathBuf;
 
-use directories::ProjectDirs;
-
-use crate::error::Error;
-
-pub fn project_dirs() -> Option<ProjectDirs> {
-    ProjectDirs::from("", "", "ava")
-}
-
-pub fn data_dir() -> Result<PathBuf, Error> {
-    let dirs = project_dirs().ok_or(Error::NoHomeDirectory)?;
-    Ok(dirs.data_dir().to_path_buf())
-}
-
-pub fn default_db_path() -> Result<PathBuf, Error> {
+/// returns path to the sqlite database.
+/// defaults to ./ava.db in the current directory.
+/// override with AVA_DB_PATH env var.
+pub fn default_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("AVA_DB_PATH") {
-        return Ok(PathBuf::from(path));
+        return PathBuf::from(path);
     }
-    let dir = data_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("ava.db"))
+    PathBuf::from("ava.db")
 }
 
 #[cfg(test)]
@@ -40,7 +28,7 @@ mod tests {
             std::env::set_var("AVA_DB_PATH", test_path);
         }
 
-        let result = default_db_path().unwrap();
+        let result = default_db_path();
         assert_eq!(result, PathBuf::from(test_path));
 
         // SAFETY: we hold ENV_MUTEX to ensure no concurrent env var access
@@ -58,11 +46,9 @@ mod tests {
             std::env::remove_var("AVA_DB_PATH");
         }
 
-        let result = default_db_path().unwrap();
+        let result = default_db_path();
 
-        // should end with ava.db in the data directory
-        assert!(result.ends_with("ava.db"));
-        // should be an absolute path
-        assert!(result.is_absolute());
+        // should be ava.db in current directory
+        assert_eq!(result, PathBuf::from("ava.db"));
     }
 }

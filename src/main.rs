@@ -49,11 +49,7 @@ async fn main() {
         }
         Commands::Status => {
             println!("ava {}", env!("CARGO_PKG_VERSION"));
-
-            match config::default_db_path() {
-                Ok(path) => println!("db: {}", path.display()),
-                Err(e) => println!("db: error: {e}"),
-            }
+            println!("db: {}", config::default_db_path().display());
         }
         Commands::Message { content } => {
             if let Err(e) = run_message(content).await {

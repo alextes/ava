@@ -17,9 +17,6 @@ pub enum Error {
     #[error("missing env var: {0}")]
     MissingEnvVar(&'static str),
 
-    #[error("no home directory found")]
-    NoHomeDirectory,
-
     #[error("provider error: {0}")]
     Provider(String),
 
