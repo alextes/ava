@@ -5,14 +5,15 @@ mod db;
 mod error;
 mod message;
 mod provider;
+mod telegram;
 
 use clap::{Parser, Subcommand};
-use teloxide::prelude::*;
 
 use crate::agent::Agent;
 use crate::channel::Channel;
 use crate::message::{ChannelKind, InboundMessage};
 use crate::provider::AnthropicProvider;
+use crate::telegram::TelegramBot;
 
 #[derive(Parser)]
 #[command(name = "ava", about = "a personal ai assistant")]
@@ -84,46 +85,64 @@ async fn run_message(content: String) -> Result<(), error::Error> {
 }
 
 async fn run_telegram() -> Result<(), error::Error> {
-    let bot = Bot::from_env();
+    let bot = TelegramBot::from_env()?;
 
     println!("starting telegram bot...");
 
-    teloxide::repl(bot, |bot: Bot, msg: teloxide::types::Message| async move {
-        let Some(text) = msg.text() else {
-            return Ok(());
-        };
+    let mut offset: Option<i64> = None;
 
-        // create provider and agent for each message
-        // (in the future, we'll have sessions to maintain state)
-        let provider = match AnthropicProvider::from_env() {
-            Ok(p) => p,
+    loop {
+        let updates = match bot.get_updates(offset).await {
+            Ok(u) => u,
             Err(e) => {
-                eprintln!("provider error: {e}");
-                bot.send_message(msg.chat.id, format!("error: {e}")).await?;
-                return Ok(());
+                eprintln!("error fetching updates: {e}");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                continue;
             }
         };
 
-        let agent = Agent::new(provider);
+        for update in updates {
+            offset = Some(update.update_id + 1);
 
-        let inbound = InboundMessage {
-            channel: ChannelKind::Telegram,
-            content: text.to_string(),
-        };
+            let Some(msg) = update.message else {
+                continue;
+            };
 
-        match agent.process(inbound).await {
-            Ok(outbound) => {
-                bot.send_message(msg.chat.id, outbound.content).await?;
-            }
-            Err(e) => {
-                eprintln!("agent error: {e}");
-                bot.send_message(msg.chat.id, format!("error: {e}")).await?;
+            let Some(text) = msg.text else {
+                continue;
+            };
+
+            let chat_id = msg.chat.id;
+
+            // create provider and agent for each message
+            // (in the future, we'll have sessions to maintain state)
+            let provider = match AnthropicProvider::from_env() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("provider error: {e}");
+                    let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
+                    continue;
+                }
+            };
+
+            let agent = Agent::new(provider);
+
+            let inbound = InboundMessage {
+                channel: ChannelKind::Telegram,
+                content: text,
+            };
+
+            match agent.process(inbound).await {
+                Ok(outbound) => {
+                    if let Err(e) = bot.send_message(chat_id, &outbound.content).await {
+                        eprintln!("error sending message: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("agent error: {e}");
+                    let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
+                }
             }
         }
-
-        Ok(())
-    })
-    .await;
-
-    Ok(())
+    }
 }
