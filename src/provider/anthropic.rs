@@ -8,6 +8,7 @@ use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall};
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_MAX_TOKENS: u32 = 8192;
+const DEFAULT_SYSTEM_PROMPT: &str = "you are ava, a personal ai assistant. be helpful, concise, and friendly. avoid unnecessary verbosity.";
 
 pub struct AnthropicProvider {
     client: Client,
@@ -37,6 +38,7 @@ impl AnthropicProvider {
 struct ApiRequest<'a> {
     model: &'a str,
     max_tokens: u32,
+    system: &'a str,
     messages: &'a [Message],
 }
 
@@ -74,6 +76,7 @@ impl Provider for AnthropicProvider {
         let request = ApiRequest {
             model: &self.model,
             max_tokens: self.max_tokens,
+            system: DEFAULT_SYSTEM_PROMPT,
             messages,
         };
 
@@ -190,6 +193,7 @@ mod tests {
         let request = ApiRequest {
             model: "claude-sonnet-4-5",
             max_tokens: 1024,
+            system: "test system prompt",
             messages: &messages,
         };
 
@@ -197,6 +201,7 @@ mod tests {
 
         assert_eq!(json["model"], "claude-sonnet-4-5");
         assert_eq!(json["max_tokens"], 1024);
+        assert_eq!(json["system"], "test system prompt");
         assert_eq!(json["messages"][0]["role"], "user");
         assert_eq!(json["messages"][0]["content"], "hello");
     }
