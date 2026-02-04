@@ -7,9 +7,10 @@ mod message;
 mod provider;
 
 use clap::{Parser, Subcommand};
+use teloxide::prelude::*;
 
 use crate::agent::Agent;
-use crate::channel::CliChannel;
+use crate::channel::Channel;
 use crate::message::{ChannelKind, InboundMessage};
 use crate::provider::AnthropicProvider;
 
@@ -31,6 +32,8 @@ enum Commands {
         /// the message to send
         content: String,
     },
+    /// start the telegram bot
+    Telegram,
 }
 
 #[tokio::main]
@@ -57,18 +60,70 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Telegram => {
+            if let Err(e) = run_telegram().await {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
 async fn run_message(content: String) -> Result<(), error::Error> {
     let provider = AnthropicProvider::from_env()?;
     let agent = Agent::new(provider);
-    let channel = CliChannel;
 
     let inbound = InboundMessage {
         channel: ChannelKind::Cli,
         content,
     };
 
-    agent.process(inbound, &channel).await
+    let outbound = agent.process(inbound).await?;
+    channel::CliChannel.send(outbound)?;
+    Ok(())
+}
+
+async fn run_telegram() -> Result<(), error::Error> {
+    let bot = Bot::from_env();
+
+    println!("starting telegram bot...");
+
+    teloxide::repl(bot, |bot: Bot, msg: teloxide::types::Message| async move {
+        let Some(text) = msg.text() else {
+            return Ok(());
+        };
+
+        // create provider and agent for each message
+        // (in the future, we'll have sessions to maintain state)
+        let provider = match AnthropicProvider::from_env() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("provider error: {e}");
+                bot.send_message(msg.chat.id, format!("error: {e}")).await?;
+                return Ok(());
+            }
+        };
+
+        let agent = Agent::new(provider);
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Telegram,
+            content: text.to_string(),
+        };
+
+        match agent.process(inbound).await {
+            Ok(outbound) => {
+                bot.send_message(msg.chat.id, outbound.content).await?;
+            }
+            Err(e) => {
+                eprintln!("agent error: {e}");
+                bot.send_message(msg.chat.id, format!("error: {e}")).await?;
+            }
+        }
+
+        Ok(())
+    })
+    .await;
+
+    Ok(())
 }

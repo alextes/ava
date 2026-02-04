@@ -33,6 +33,7 @@ impl Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelKind {
     Cli,
+    Telegram,
 }
 
 /// a message coming into the agent

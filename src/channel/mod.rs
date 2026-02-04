@@ -1,4 +1,5 @@
 mod cli;
+pub mod telegram;
 
 pub use cli::CliChannel;
 

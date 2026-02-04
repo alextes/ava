@@ -14,9 +14,15 @@ pub enum Error {
     #[error("missing api key: {0}")]
     MissingApiKey(&'static str),
 
+    #[error("missing env var: {0}")]
+    MissingEnvVar(&'static str),
+
     #[error("no home directory found")]
     NoHomeDirectory,
 
     #[error("provider error: {0}")]
     Provider(String),
+
+    #[error("telegram error: {0}")]
+    Telegram(String),
 }
