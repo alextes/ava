@@ -47,7 +47,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -55,6 +55,6 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         migrations::migrate(&db.conn).unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 }

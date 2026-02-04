@@ -23,6 +23,22 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
     "#,
+    // v2: facts table
+    r#"
+    CREATE TABLE IF NOT EXISTS facts (
+        id INTEGER PRIMARY KEY,
+        category TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'agent',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(category, key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
+    CREATE INDEX IF NOT EXISTS idx_facts_updated ON facts(updated_at DESC);
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {
