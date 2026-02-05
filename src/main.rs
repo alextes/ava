@@ -6,11 +6,13 @@ mod error;
 mod message;
 mod provider;
 mod telegram;
+mod tool;
 
 use clap::{Parser, Subcommand};
 
 use crate::agent::Agent;
 use crate::channel::Channel;
+use crate::db::Database;
 use crate::message::{ChannelKind, InboundMessage};
 use crate::provider::AnthropicProvider;
 use crate::telegram::TelegramBot;
@@ -68,7 +70,8 @@ async fn main() {
 
 async fn run_message(content: String) -> Result<(), error::Error> {
     let provider = AnthropicProvider::from_env()?;
-    let agent = Agent::new(provider);
+    let db = Database::open()?;
+    let agent = Agent::new(provider, db);
 
     let inbound = InboundMessage {
         channel: ChannelKind::Cli,
@@ -144,7 +147,16 @@ async fn run_telegram() -> Result<(), error::Error> {
                 }
             };
 
-            let agent = Agent::new(provider);
+            let db = match Database::open() {
+                Ok(db) => db,
+                Err(e) => {
+                    eprintln!("database error: {e}");
+                    let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
+                    continue;
+                }
+            };
+
+            let agent = Agent::new(provider, db);
 
             let inbound = InboundMessage {
                 channel: ChannelKind::Telegram,

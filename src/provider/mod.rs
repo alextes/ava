@@ -1,5 +1,6 @@
 mod anthropic;
 
+pub use crate::tool::ToolCall;
 pub use anthropic::AnthropicProvider;
 
 use std::future::Future;
@@ -16,13 +17,6 @@ pub enum StopReason {
     MaxTokens,
     StopSequence,
     ToolUse,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub input: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]

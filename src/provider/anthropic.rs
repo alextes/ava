@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::message::Message;
 use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall};
+use crate::tool::{ToolDefinition, tool_definitions};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
@@ -40,6 +41,7 @@ struct ApiRequest<'a> {
     max_tokens: u32,
     system: &'a str,
     messages: &'a [Message],
+    tools: &'a [ToolDefinition],
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,11 +75,13 @@ struct ApiErrorDetail {
 
 impl Provider for AnthropicProvider {
     async fn complete(&self, messages: &[Message]) -> Result<ProviderResponse, Error> {
+        let tools = tool_definitions();
         let request = ApiRequest {
             model: &self.model,
             max_tokens: self.max_tokens,
             system: DEFAULT_SYSTEM_PROMPT,
             messages,
+            tools: &tools,
         };
 
         let response = self
@@ -190,11 +194,13 @@ mod tests {
     #[test]
     fn test_request_serialization() {
         let messages = vec![Message::user("hello")];
+        let tools = tool_definitions();
         let request = ApiRequest {
             model: "claude-sonnet-4-5",
             max_tokens: 1024,
             system: "test system prompt",
             messages: &messages,
+            tools: &tools,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -203,6 +209,8 @@ mod tests {
         assert_eq!(json["max_tokens"], 1024);
         assert_eq!(json["system"], "test system prompt");
         assert_eq!(json["messages"][0]["role"], "user");
-        assert_eq!(json["messages"][0]["content"], "hello");
+        assert_eq!(json["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(json["messages"][0]["content"][0]["text"], "hello");
+        assert_eq!(json["tools"][0]["name"], "remember_fact");
     }
 }

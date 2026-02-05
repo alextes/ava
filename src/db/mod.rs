@@ -37,6 +37,19 @@ impl Database {
     pub fn schema_version(&self) -> Result<i32, Error> {
         migrations::schema_version(&self.conn)
     }
+
+    pub fn remember_fact(&self, category: &str, key: &str, value: &str) -> Result<(), Error> {
+        self.conn.execute(
+            "INSERT INTO facts (category, key, value, source)
+            VALUES (?1, ?2, ?3, 'agent')
+            ON CONFLICT(category, key) DO UPDATE SET
+                value = excluded.value,
+                source = excluded.source,
+                updated_at = datetime('now')",
+            [category, key, value],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -56,5 +69,23 @@ mod tests {
         migrations::migrate(&db.conn).unwrap();
         let version = db.schema_version().unwrap();
         assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn test_remember_fact_upserts() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember_fact("user", "name", "alex").unwrap();
+        db.remember_fact("user", "name", "alex2").unwrap();
+
+        let value: String = db
+            .conn
+            .query_row(
+                "SELECT value FROM facts WHERE category = ?1 AND key = ?2",
+                ["user", "name"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(value, "alex2");
     }
 }
