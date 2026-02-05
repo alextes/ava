@@ -7,6 +7,13 @@ use rusqlite::Connection;
 use crate::config::default_db_path;
 use crate::error::Error;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fact {
+    pub category: String,
+    pub key: String,
+    pub value: String,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -50,6 +57,27 @@ impl Database {
         )?;
         Ok(())
     }
+
+    pub fn recent_facts(&self) -> Result<Vec<Fact>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT category, key, value
+            FROM facts
+            ORDER BY updated_at DESC
+            LIMIT 50",
+        )?;
+
+        let facts = stmt
+            .query_map([], |row| {
+                Ok(Fact {
+                    category: row.get(0)?,
+                    key: row.get(1)?,
+                    value: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(facts)
+    }
 }
 
 #[cfg(test)]
@@ -87,5 +115,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(value, "alex2");
+    }
+
+    #[test]
+    fn test_recent_facts_limit_and_order() {
+        let db = Database::open_in_memory().unwrap();
+
+        for i in 0..55 {
+            let key = format!("k{i:02}");
+            let value = format!("v{i:02}");
+            let updated_at = format!("2024-01-01 00:00:{i:02}");
+            db.conn
+                .execute(
+                    "INSERT INTO facts (category, key, value, updated_at)
+                    VALUES (?1, ?2, ?3, ?4)",
+                    ["user", &key, &value, &updated_at],
+                )
+                .unwrap();
+        }
+
+        let facts = db.recent_facts().unwrap();
+        assert_eq!(facts.len(), 50);
+        assert_eq!(facts.first().unwrap().key, "k54");
+        assert_eq!(facts.last().unwrap().key, "k05");
     }
 }

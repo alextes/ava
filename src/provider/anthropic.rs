@@ -9,7 +9,6 @@ use crate::tool::{ToolDefinition, tool_definitions};
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_MAX_TOKENS: u32 = 8192;
-const DEFAULT_SYSTEM_PROMPT: &str = "you are ava, a personal ai assistant. be helpful, concise, and friendly. avoid unnecessary verbosity.";
 
 pub struct AnthropicProvider {
     client: Client,
@@ -74,12 +73,16 @@ struct ApiErrorDetail {
 }
 
 impl Provider for AnthropicProvider {
-    async fn complete(&self, messages: &[Message]) -> Result<ProviderResponse, Error> {
+    async fn complete(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+    ) -> Result<ProviderResponse, Error> {
         let tools = tool_definitions();
         let request = ApiRequest {
             model: &self.model,
             max_tokens: self.max_tokens,
-            system: DEFAULT_SYSTEM_PROMPT,
+            system: system_prompt,
             messages,
             tools: &tools,
         };
