@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::error::Error;
 
@@ -57,12 +58,42 @@ impl TelegramBot {
 
     #[tracing::instrument(skip(self, text), fields(chat_id))]
     pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), Error> {
-        let params = SendMessageParams { chat_id, text };
+        // try HTML parse mode first
+        let params = SendMessageParams {
+            chat_id,
+            text,
+            parse_mode: Some("HTML"),
+        };
 
         let response: ApiResponse<serde_json::Value> = self
             .client
             .post(self.api_url("sendMessage"))
             .json(&params)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            return Ok(());
+        }
+
+        // if HTML parsing failed, resend as plain text
+        warn!(
+            error = response.description.as_deref().unwrap_or("unknown error"),
+            "telegram HTML parse failed, falling back to plain text"
+        );
+
+        let fallback = SendMessageParams {
+            chat_id,
+            text,
+            parse_mode: None,
+        };
+
+        let response: ApiResponse<serde_json::Value> = self
+            .client
+            .post(self.api_url("sendMessage"))
+            .json(&fallback)
             .send()
             .await?
             .json()
@@ -91,6 +122,8 @@ struct ApiResponse<T> {
 struct SendMessageParams<'a> {
     chat_id: i64,
     text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_mode: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
