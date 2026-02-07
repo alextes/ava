@@ -380,13 +380,20 @@ async fn web_fetch(url: &str, max_chars: Option<u64>) -> String {
     tracing::info!(url, "fetching web page");
 
     let client = reqwest::Client::new();
+    let mut request = client
+        .get(&jina_url)
+        .header("Accept", "text/plain")
+        .header("User-Agent", "ava/0.1");
+
+    if let Ok(key) = std::env::var("JINA_API_KEY")
+        && !key.is_empty()
+    {
+        request = request.header("Authorization", format!("Bearer {key}"));
+    }
+
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(FETCH_TIMEOUT_SECS),
-        client
-            .get(&jina_url)
-            .header("Accept", "text/plain")
-            .header("User-Agent", "ava/0.1")
-            .send(),
+        request.send(),
     )
     .await;
 
