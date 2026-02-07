@@ -1,24 +1,29 @@
 use crate::db::Database;
+use crate::db::Fact;
 use crate::error::Error;
 use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage};
 use crate::provider::{DEFAULT_SYSTEM_PROMPT, Provider};
-use crate::tool;
-use crate::{db::Fact, tool::ToolCall};
+use crate::tool::{self, ApprovalDecision, Approver, ToolCall};
 
 const MAX_FACT_VALUE_CHARS: usize = 500;
 
-pub struct Agent<P> {
+pub struct Agent<P, A> {
     provider: P,
+    approver: A,
     db: Database,
 }
 
-impl<P: Provider> Agent<P> {
-    pub fn new(provider: P, db: Database) -> Self {
-        Self { provider, db }
+impl<P: Provider, A: Approver> Agent<P, A> {
+    pub fn new(provider: P, approver: A, db: Database) -> Self {
+        Self {
+            provider,
+            approver,
+            db,
+        }
     }
 
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
-    pub async fn process(&self, inbound: InboundMessage) -> Result<OutboundMessage, Error> {
+    pub async fn process(self, inbound: InboundMessage) -> Result<OutboundMessage, Error> {
         let mut messages = vec![Message::user(inbound.content)];
         let system_prompt = self.system_prompt()?;
         let mut tool_rounds = 0;
@@ -55,9 +60,39 @@ impl<P: Provider> Agent<P> {
 
             messages.push(Message::assistant_with_content(assistant_blocks));
 
-            let tool_results = tool::handle_tool_calls(&self.db, &response.tool_calls)?;
+            let mut tool_results = Vec::new();
+            for call in &response.tool_calls {
+                let result = self.handle_tool_call_with_approval(call).await?;
+                tool_results.push(result);
+            }
             messages.push(Message::user_with_content(tool_results));
         }
+    }
+
+    async fn handle_tool_call_with_approval(
+        &self,
+        call: &ToolCall,
+    ) -> Result<MessageContent, Error> {
+        if tool::requires_approval(call) {
+            let decision = self.approver.request_approval(call).await?;
+            match decision {
+                ApprovalDecision::AllowOnce | ApprovalDecision::AutoApproved => {
+                    // proceed with execution
+                }
+                ApprovalDecision::AllowAlways { ref pattern } => {
+                    tracing::info!(pattern, "saving approval rule");
+                    self.db.save_approval_rule(pattern)?;
+                }
+                ApprovalDecision::Deny => {
+                    return Ok(MessageContent::tool_result(
+                        &call.id,
+                        "command denied by user",
+                    ));
+                }
+            }
+        }
+
+        tool::handle_tool_call(&self.db, call).await
     }
 
     fn system_prompt(&self) -> Result<String, Error> {
@@ -121,6 +156,7 @@ mod tests {
     use super::*;
     use crate::message::ChannelKind;
     use crate::provider::{ProviderResponse, StopReason};
+    use crate::tool::CliApprover;
     use std::sync::{Arc, Mutex};
 
     struct MockProvider {
@@ -133,7 +169,7 @@ mod tests {
             &self,
             system_prompt: &str,
             _messages: &[Message],
-        ) -> Result<ProviderResponse, Error> {
+        ) -> Result<crate::provider::ProviderResponse, Error> {
             *self.system_prompt.lock().unwrap() = Some(system_prompt.to_string());
             Ok(ProviderResponse {
                 content: self.response.clone(),
@@ -151,7 +187,7 @@ mod tests {
             system_prompt: seen_prompt.clone(),
         };
         let db = Database::open_in_memory().unwrap();
-        let agent = Agent::new(provider, db);
+        let agent = Agent::new(provider, CliApprover, db);
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -182,7 +218,7 @@ mod tests {
     async fn test_provider_error_propagates() {
         let provider = FailingProvider;
         let db = Database::open_in_memory().unwrap();
-        let agent = Agent::new(provider, db);
+        let agent = Agent::new(provider, CliApprover, db);
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -205,7 +241,7 @@ mod tests {
         };
         let db = Database::open_in_memory().unwrap();
         db.remember_fact("user", "name", "alex").unwrap();
-        let agent = Agent::new(provider, db);
+        let agent = Agent::new(provider, CliApprover, db);
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,

@@ -22,4 +22,15 @@ pub enum Error {
 
     #[error("telegram error: {0}")]
     Telegram(String),
+
+    #[allow(dead_code)]
+    #[error("command timed out after {0}s")]
+    ExecTimeout(u64),
+
+    #[allow(dead_code)]
+    #[error("command denied by user")]
+    ExecDenied,
+
+    #[error("approval timed out")]
+    ApprovalTimeout,
 }

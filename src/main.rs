@@ -1,4 +1,5 @@
 mod agent;
+mod approver;
 mod channel;
 mod config;
 mod db;
@@ -8,14 +9,18 @@ mod provider;
 mod telegram;
 mod tool;
 
+use std::sync::Arc;
+
 use clap::{Parser, Subcommand};
 
 use crate::agent::Agent;
+use crate::approver::{PendingApprovals, TelegramApprover};
 use crate::channel::Channel;
 use crate::db::Database;
 use crate::message::{ChannelKind, InboundMessage};
 use crate::provider::AnthropicProvider;
 use crate::telegram::TelegramBot;
+use crate::tool::CliApprover;
 
 #[derive(Parser)]
 #[command(name = "ava", about = "a personal ai assistant")]
@@ -78,7 +83,7 @@ async fn main() {
 async fn run_message(content: String) -> Result<(), error::Error> {
     let provider = AnthropicProvider::from_env()?;
     let db = Database::open()?;
-    let agent = Agent::new(provider, db);
+    let agent = Agent::new(provider, CliApprover, db);
 
     let inbound = InboundMessage {
         channel: ChannelKind::Cli,
@@ -99,7 +104,7 @@ fn allowed_telegram_ids() -> Vec<i64> {
 }
 
 async fn run_telegram() -> Result<(), error::Error> {
-    let bot = TelegramBot::from_env()?;
+    let bot = Arc::new(TelegramBot::from_env()?);
     let allowed_ids = allowed_telegram_ids();
 
     if allowed_ids.is_empty() {
@@ -111,6 +116,9 @@ async fn run_telegram() -> Result<(), error::Error> {
     tracing::info!("starting telegram bot");
 
     let mut offset: Option<i64> = None;
+
+    // shared pending approvals — keyed by nonce
+    let pending = Arc::new(PendingApprovals::new());
 
     loop {
         let updates = match bot.get_updates(offset).await {
@@ -125,6 +133,22 @@ async fn run_telegram() -> Result<(), error::Error> {
         for update in updates {
             offset = Some(update.update_id + 1);
 
+            // handle callback queries (approval button presses)
+            if let Some(callback) = update.callback_query {
+                if let Some(data) = &callback.data {
+                    let chat_id = callback
+                        .message
+                        .as_ref()
+                        .map(|m| m.chat.id)
+                        .unwrap_or_default();
+
+                    TelegramApprover::handle_callback(&pending, &bot, &callback.id, data, chat_id)
+                        .await;
+                }
+                continue;
+            }
+
+            // handle text messages
             let Some(msg) = update.message else {
                 continue;
             };
@@ -143,44 +167,60 @@ async fn run_telegram() -> Result<(), error::Error> {
                 continue;
             }
 
-            // create provider and agent for each message
-            // (in the future, we'll have sessions to maintain state)
-            let provider = match AnthropicProvider::from_env() {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::error!(%e, "provider init failed");
-                    let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
-                    continue;
-                }
-            };
+            // spawn agent processing so we can continue polling for callback queries
+            let bot_clone = Arc::clone(&bot);
+            let pending_clone = Arc::clone(&pending);
 
-            let db = match Database::open() {
-                Ok(db) => db,
-                Err(e) => {
-                    tracing::error!(%e, "database open failed");
-                    let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
-                    continue;
-                }
-            };
+            tokio::spawn(async move {
+                let provider = match AnthropicProvider::from_env() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!(%e, "provider init failed");
+                        let _ = bot_clone
+                            .send_message(chat_id, &format!("error: {e}"))
+                            .await;
+                        return;
+                    }
+                };
 
-            let agent = Agent::new(provider, db);
+                let db = match Database::open() {
+                    Ok(db) => db,
+                    Err(e) => {
+                        tracing::error!(%e, "database open failed");
+                        let _ = bot_clone
+                            .send_message(chat_id, &format!("error: {e}"))
+                            .await;
+                        return;
+                    }
+                };
 
-            let inbound = InboundMessage {
-                channel: ChannelKind::Telegram,
-                content: text,
-            };
+                let approver = TelegramApprover::new(
+                    Arc::clone(&bot_clone),
+                    chat_id,
+                    Arc::clone(&pending_clone),
+                );
 
-            match agent.process(inbound).await {
-                Ok(outbound) => {
-                    if let Err(e) = bot.send_message(chat_id, &outbound.content).await {
-                        tracing::error!(%e, chat_id, "failed to send telegram message");
+                let agent = Agent::new(provider, approver, db);
+
+                let inbound = InboundMessage {
+                    channel: ChannelKind::Telegram,
+                    content: text,
+                };
+
+                match agent.process(inbound).await {
+                    Ok(outbound) => {
+                        if let Err(e) = bot_clone.send_message(chat_id, &outbound.content).await {
+                            tracing::error!(%e, chat_id, "failed to send telegram message");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(%e, chat_id, "agent processing failed");
+                        let _ = bot_clone
+                            .send_message(chat_id, &format!("error: {e}"))
+                            .await;
                     }
                 }
-                Err(e) => {
-                    tracing::error!(%e, chat_id, "agent processing failed");
-                    let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
-                }
-            }
+            });
         }
     }
 }

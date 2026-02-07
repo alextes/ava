@@ -39,6 +39,14 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
     CREATE INDEX IF NOT EXISTS idx_facts_updated ON facts(updated_at DESC);
     "#,
+    // v3: approval rules table
+    r#"
+    CREATE TABLE IF NOT EXISTS approval_rules (
+        id INTEGER PRIMARY KEY,
+        pattern TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {
@@ -66,6 +74,7 @@ pub fn migrate(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn schema_version(conn: &Connection) -> Result<i32, Error> {
     let version = conn
         .query_row(
