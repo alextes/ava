@@ -10,6 +10,7 @@ use crate::message::MessageContent;
 pub const REMEMBER_FACT_TOOL_NAME: &str = "remember_fact";
 pub const EXEC_TOOL_NAME: &str = "exec";
 pub const WEB_SEARCH_TOOL_NAME: &str = "web_search";
+pub const WEB_FETCH_TOOL_NAME: &str = "web_fetch";
 
 const MAX_OUTPUT_CHARS: usize = 4000;
 const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
@@ -17,6 +18,9 @@ const DEFAULT_MAX_RESULTS: u64 = 5;
 const MAX_MAX_RESULTS: u64 = 20;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 300;
+const JINA_READER_BASE: &str = "https://r.jina.ai/";
+const DEFAULT_FETCH_MAX_CHARS: u64 = 4000;
+const FETCH_TIMEOUT_SECS: u64 = 30;
 
 // --- tool call types ---
 
@@ -101,6 +105,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         remember_fact_definition(),
         exec_definition(),
         web_search_definition(),
+        web_fetch_definition(),
     ]
 }
 
@@ -123,6 +128,12 @@ struct ExecInput {
 struct WebSearchInput {
     query: String,
     max_results: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebFetchInput {
+    url: String,
+    max_chars: Option<u64>,
 }
 
 pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<MessageContent, Error> {
@@ -162,6 +173,16 @@ pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<MessageC
                 )),
             }
         }
+        WEB_FETCH_TOOL_NAME => match serde_json::from_value::<WebFetchInput>(call.input.clone()) {
+            Ok(input) => {
+                let result = web_fetch(&input.url, input.max_chars).await;
+                Ok(MessageContent::tool_result(&call.id, result))
+            }
+            Err(err) => Ok(MessageContent::tool_result(
+                &call.id,
+                format!("invalid input: {err}"),
+            )),
+        },
         _ => {
             tracing::warn!(tool = %call.name, "unknown tool");
             Ok(MessageContent::tool_result(
@@ -311,6 +332,96 @@ async fn web_search(query: &str, max_results: Option<u64>) -> String {
     truncate_output(&output)
 }
 
+// --- web fetch implementation ---
+
+/// checks if a URL is safe to fetch (rejects local/internal targets)
+fn validate_fetch_url(url: &str) -> Result<(), &'static str> {
+    let lower = url.to_lowercase();
+
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err("only http and https URLs are supported");
+    }
+
+    // extract host portion
+    let after_scheme = if let Some(rest) = lower.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = lower.strip_prefix("http://") {
+        rest
+    } else {
+        // unreachable due to the check above, but be safe
+        return Err("only http and https URLs are supported");
+    };
+    let host = after_scheme.split('/').next().unwrap_or("");
+    let host = host.split(':').next().unwrap_or(host);
+
+    if host == "localhost"
+        || host == "127.0.0.1"
+        || host == "[::1]"
+        || host.ends_with(".local")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("172.16.")
+        || host.starts_with("169.254.")
+    {
+        return Err("fetching local/internal URLs is not allowed");
+    }
+
+    Ok(())
+}
+
+async fn web_fetch(url: &str, max_chars: Option<u64>) -> String {
+    if let Err(reason) = validate_fetch_url(url) {
+        return format!("invalid URL: {reason}");
+    }
+
+    let max = max_chars.unwrap_or(DEFAULT_FETCH_MAX_CHARS) as usize;
+    let jina_url = format!("{JINA_READER_BASE}{url}");
+
+    tracing::info!(url, "fetching web page");
+
+    let client = reqwest::Client::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(FETCH_TIMEOUT_SECS),
+        client
+            .get(&jina_url)
+            .header("Accept", "text/plain")
+            .header("User-Agent", "ava/0.1")
+            .send(),
+    )
+    .await;
+
+    let response = match result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return format!("failed to fetch URL: {e}"),
+        Err(_) => return format!("fetch timed out after {FETCH_TIMEOUT_SECS}s"),
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        return format!("failed to fetch URL (HTTP {status})");
+    }
+
+    let body = match response.text().await {
+        Ok(t) => t,
+        Err(e) => return format!("failed to read response: {e}"),
+    };
+
+    if body.trim().is_empty() {
+        return "(no content)".to_string();
+    }
+
+    truncate_to_chars(&body, max)
+}
+
+fn truncate_to_chars(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(max).collect();
+    truncated.push_str("\n... (content truncated)");
+    truncated
+}
+
 // --- tool definition builders ---
 
 fn remember_fact_definition() -> ToolDefinition {
@@ -376,6 +487,27 @@ fn web_search_definition() -> ToolDefinition {
                 }
             },
             "required": ["query"]
+        }),
+    }
+}
+
+fn web_fetch_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: WEB_FETCH_TOOL_NAME,
+        description: "fetch a web page and return its content as plain text. use this to read the full content of a URL found via web_search or provided by the user.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL to fetch (must be http or https)"
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "maximum number of characters to return (default 4000)"
+                }
+            },
+            "required": ["url"]
         }),
     }
 }
@@ -540,5 +672,52 @@ mod tests {
         };
         let decision = approver.request_approval(&call).await.unwrap();
         assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[test]
+    fn test_requires_approval_web_fetch() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: WEB_FETCH_TOOL_NAME.into(),
+            input: json!({"url": "https://example.com"}),
+        };
+        assert!(!requires_approval(&call));
+    }
+
+    #[test]
+    fn test_validate_fetch_url_valid() {
+        assert!(validate_fetch_url("https://example.com").is_ok());
+        assert!(validate_fetch_url("http://example.com/page").is_ok());
+        assert!(validate_fetch_url("https://docs.rs/reqwest/latest").is_ok());
+    }
+
+    #[test]
+    fn test_validate_fetch_url_rejects_non_http() {
+        assert!(validate_fetch_url("ftp://example.com").is_err());
+        assert!(validate_fetch_url("file:///etc/passwd").is_err());
+        assert!(validate_fetch_url("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn test_validate_fetch_url_rejects_internal() {
+        assert!(validate_fetch_url("http://localhost/admin").is_err());
+        assert!(validate_fetch_url("http://127.0.0.1:8080").is_err());
+        assert!(validate_fetch_url("http://192.168.1.1").is_err());
+        assert!(validate_fetch_url("http://10.0.0.1").is_err());
+        assert!(validate_fetch_url("http://172.16.0.1").is_err());
+    }
+
+    #[test]
+    fn test_truncate_to_chars_short() {
+        let short = "hello world";
+        assert_eq!(truncate_to_chars(short, 100), short);
+    }
+
+    #[test]
+    fn test_truncate_to_chars_long() {
+        let long = "x".repeat(5000);
+        let result = truncate_to_chars(&long, 100);
+        assert!(result.starts_with("xxxx"));
+        assert!(result.ends_with("... (content truncated)"));
     }
 }
