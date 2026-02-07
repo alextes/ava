@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-trqt
 title: design exec tool approval rules
 priority: P2
-status: open
+status: done
 type: design
 deps:
 - ava-obhq
@@ -12,6 +12,7 @@ tags:
 - security
 owner: null
 created_at: 2026-02-07T11:50:55.819693Z
+completed_at: 2026-02-07T18:03:16.545316Z
 ---
 
 design a tool approval rules system so users can pre-approve exec tool invocations matching specific patterns, removing the need for per-invocation confirmation.

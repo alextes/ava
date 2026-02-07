@@ -4,18 +4,18 @@ id: ava-uyvi
 title: add filesystem tool
 priority: P2
 status: open
+type: meta
 deps:
 - ava-b13x
+- ava-o6ip
+- ava-jahg
 tags:
 - tool
 owner: null
 created_at: 2026-02-01T21:37:30.164217Z
 ---
 
-file operations tool for the agent loop:
+meta issue tracking filesystem tool implementation. design in ava-xl8b (done).
 
-- read files
-- write files
-- edit files (surgical edits, not full rewrites)
-
-operates within allowed paths. basic building block for coding tasks.
+- ava-o6ip — support built-in tool types in anthropic provider
+- ava-jahg — implement filesystem operations and tool dispatch
