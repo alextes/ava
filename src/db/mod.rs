@@ -46,6 +46,7 @@ impl Database {
     }
 
     pub fn remember_fact(&self, category: &str, key: &str, value: &str) -> Result<(), Error> {
+        tracing::debug!(category, key, "remembering fact");
         self.conn.execute(
             "INSERT INTO facts (category, key, value, source)
             VALUES (?1, ?2, ?3, 'agent')

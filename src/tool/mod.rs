@@ -39,6 +39,7 @@ pub fn handle_tool_calls(
     let mut results = Vec::new();
 
     for call in tool_calls {
+        tracing::info!(tool = %call.name, "handling tool call");
         match call.name.as_str() {
             REMEMBER_FACT_TOOL_NAME => {
                 match serde_json::from_value::<RememberFactInput>(call.input.clone()) {
@@ -55,6 +56,7 @@ pub fn handle_tool_calls(
                 }
             }
             _ => {
+                tracing::warn!(tool = %call.name, "unknown tool");
                 results.push(MessageContent::tool_result(
                     &call.id,
                     format!("unknown tool: {}", call.name),

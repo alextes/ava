@@ -17,6 +17,7 @@ impl<P: Provider> Agent<P> {
         Self { provider, db }
     }
 
+    #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
     pub async fn process(&self, inbound: InboundMessage) -> Result<OutboundMessage, Error> {
         let mut messages = vec![Message::user(inbound.content)];
         let system_prompt = self.system_prompt()?;
@@ -31,6 +32,12 @@ impl<P: Provider> Agent<P> {
                 });
             }
 
+            tracing::debug!(
+                tool_round = tool_rounds,
+                count = response.tool_calls.len(),
+                "executing tool calls"
+            );
+
             tool_rounds += 1;
             if tool_rounds > 5 {
                 return Err(Error::Provider("tool loop exceeded".into()));
@@ -42,6 +49,7 @@ impl<P: Provider> Agent<P> {
             }
 
             for call in &response.tool_calls {
+                tracing::debug!(tool = %call.name, "invoking tool");
                 assistant_blocks.push(tool_use_content(call));
             }
 

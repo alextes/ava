@@ -28,6 +28,7 @@ impl TelegramBot {
         format!("{}{}/{}", API_BASE, self.token, method)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn get_updates(&self, offset: Option<i64>) -> Result<Vec<Update>, Error> {
         let mut params = vec![("timeout", "30".to_string())];
         if let Some(off) = offset {
@@ -54,6 +55,7 @@ impl TelegramBot {
         }
     }
 
+    #[tracing::instrument(skip(self, text), fields(chat_id))]
     pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), Error> {
         let params = SendMessageParams { chat_id, text };
 

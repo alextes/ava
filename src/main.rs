@@ -43,6 +43,13 @@ enum Commands {
 async fn main() {
     dotenvy::dotenv().ok();
 
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -55,13 +62,13 @@ async fn main() {
         }
         Commands::Message { content } => {
             if let Err(e) = run_message(content).await {
-                eprintln!("error: {e}");
+                tracing::error!(%e, "message command failed");
                 std::process::exit(1);
             }
         }
         Commands::Telegram => {
             if let Err(e) = run_telegram().await {
-                eprintln!("error: {e}");
+                tracing::error!(%e, "telegram bot failed");
                 std::process::exit(1);
             }
         }
@@ -96,12 +103,12 @@ async fn run_telegram() -> Result<(), error::Error> {
     let allowed_ids = allowed_telegram_ids();
 
     if allowed_ids.is_empty() {
-        eprintln!("warning: TELEGRAM_ALLOWED_IDS not set, bot will ignore all messages");
+        tracing::warn!("TELEGRAM_ALLOWED_IDS not set, bot will ignore all messages");
     } else {
-        eprintln!("allowed user IDs: {:?}", allowed_ids);
+        tracing::info!(?allowed_ids, "loaded user whitelist");
     }
 
-    println!("starting telegram bot...");
+    tracing::info!("starting telegram bot");
 
     let mut offset: Option<i64> = None;
 
@@ -109,7 +116,7 @@ async fn run_telegram() -> Result<(), error::Error> {
         let updates = match bot.get_updates(offset).await {
             Ok(u) => u,
             Err(e) => {
-                eprintln!("error fetching updates: {e}");
+                tracing::error!(%e, "failed to fetch updates");
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
@@ -132,7 +139,7 @@ async fn run_telegram() -> Result<(), error::Error> {
             // check whitelist
             let is_allowed = user_id.map(|id| allowed_ids.contains(&id)).unwrap_or(false);
             if !is_allowed {
-                eprintln!("ignoring message from unauthorized user_id={user_id:?}");
+                tracing::warn!(?user_id, "ignoring message from unauthorized user");
                 continue;
             }
 
@@ -141,7 +148,7 @@ async fn run_telegram() -> Result<(), error::Error> {
             let provider = match AnthropicProvider::from_env() {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("provider error: {e}");
+                    tracing::error!(%e, "provider init failed");
                     let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
                     continue;
                 }
@@ -150,7 +157,7 @@ async fn run_telegram() -> Result<(), error::Error> {
             let db = match Database::open() {
                 Ok(db) => db,
                 Err(e) => {
-                    eprintln!("database error: {e}");
+                    tracing::error!(%e, "database open failed");
                     let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
                     continue;
                 }
@@ -166,11 +173,11 @@ async fn run_telegram() -> Result<(), error::Error> {
             match agent.process(inbound).await {
                 Ok(outbound) => {
                     if let Err(e) = bot.send_message(chat_id, &outbound.content).await {
-                        eprintln!("error sending message: {e}");
+                        tracing::error!(%e, chat_id, "failed to send telegram message");
                     }
                 }
                 Err(e) => {
-                    eprintln!("agent error: {e}");
+                    tracing::error!(%e, chat_id, "agent processing failed");
                     let _ = bot.send_message(chat_id, &format!("error: {e}")).await;
                 }
             }

@@ -73,6 +73,7 @@ struct ApiErrorDetail {
 }
 
 impl Provider for AnthropicProvider {
+    #[tracing::instrument(skip_all, fields(model = %self.model))]
     async fn complete(
         &self,
         system_prompt: &str,
