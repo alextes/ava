@@ -1,6 +1,6 @@
 ---
 schema_version: 9
-id: avax-3yg5
+id: ava-3yg5
 title: show saved pattern in approval confirmation message
 priority: P2
 status: open

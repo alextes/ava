@@ -1,12 +1,12 @@
 ---
 schema_version: 9
-id: avax-dfiq
+id: ava-dfiq
 title: offer narrow/broad pattern choices in approval keyboard
 priority: P2
 status: open
 deps:
-- avax-pc16
-- avax-3yg5
+- ava-pc16
+- ava-3yg5
 - ava-obhq
 tags:
 - tool
@@ -19,7 +19,7 @@ replace the single "allow always" button with two scope options when a subcomman
 
 ## what to do
 
-after stripping env var prefixes (dep: avax-pc16), check if token[1] looks like a subcommand (alphabetic, doesn't start with \`-\`). if so, offer both narrow and broad patterns:
+after stripping env var prefixes (dep: ava-pc16), check if token[1] looks like a subcommand (alphabetic, doesn't start with \`-\`). if so, offer both narrow and broad patterns:
 
 \`\`\`
 command: cargo test -- --nocapture
@@ -52,4 +52,4 @@ command: ls -la /tmp
 ## files
 
 - \`src/approver.rs\` — build keyboard with pattern options, handle new callback format
-- depends on avax-pc16 (env stripping) and avax-3yg5 (pattern in callback data)
+- depends on ava-pc16 (env stripping) and ava-3yg5 (pattern in callback data)

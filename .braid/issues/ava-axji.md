@@ -76,8 +76,8 @@ adds external API dependency, latency, token cost, and error handling complexity
 
 ## implementation issues
 
-- avax-pc16 — strip env var prefixes in pattern generation and matching
-- avax-3yg5 — show saved pattern in approval confirmation message
-- avax-deyc — add /rules command for listing and deleting approval rules
-- avax-dfiq — offer narrow/broad pattern choices in approval keyboard
+- ava-pc16 — strip env var prefixes in pattern generation and matching
+- ava-3yg5 — show saved pattern in approval confirmation message
+- ava-deyc — add /rules command for listing and deleting approval rules
+- ava-dfiq — offer narrow/broad pattern choices in approval keyboard
 - ava-gmi8 (pre-existing) — wire auto-approval rules into telegram approver

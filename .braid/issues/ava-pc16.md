@@ -1,6 +1,6 @@
 ---
 schema_version: 9
-id: avax-pc16
+id: ava-pc16
 title: strip env var prefixes in pattern generation and matching
 priority: P2
 status: open

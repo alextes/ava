@@ -1,6 +1,6 @@
 ---
 schema_version: 9
-id: avax-deyc
+id: ava-deyc
 title: add /rules command for listing and deleting approval rules
 priority: P2
 status: open
