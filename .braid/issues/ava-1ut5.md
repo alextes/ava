@@ -10,6 +10,7 @@ tags:
 - tool
 owner: null
 created_at: 2026-02-04T21:37:05.077966Z
+started_at: 2026-02-06T22:11:05.03143Z
 ---
 
 shell command execution with safety controls.

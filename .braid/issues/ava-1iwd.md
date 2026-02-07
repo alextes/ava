@@ -3,12 +3,14 @@ schema_version: 9
 id: ava-1iwd
 title: add tracing for structured logging
 priority: P2
-status: open
+status: done
 deps: []
 tags:
 - observability
 owner: null
 created_at: 2026-02-01T23:06:11.089989Z
+started_at: 2026-02-07T13:15:26.662566Z
+completed_at: 2026-02-07T13:25:21.711347Z
 ---
 
 add the tracing ecosystem for structured logging throughout ava.
