@@ -6,7 +6,9 @@ use tokio::sync::{Mutex, oneshot};
 use crate::db::{Database, generate_pattern};
 use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
-use crate::tool::{ApprovalDecision, Approver, ToolCall, references_sensitive_env};
+use crate::tool::{
+    ApprovalDecision, Approver, MANAGE_RULES_TOOL_NAME, ToolCall, references_sensitive_env,
+};
 
 /// auto-approves all tool calls (used for CLI)
 pub struct CliApprover;
@@ -145,14 +147,16 @@ impl TelegramApprover {
 
 impl Approver for TelegramApprover {
     async fn request_approval(&self, tool_call: &ToolCall) -> Result<ApprovalDecision, Error> {
+        let is_rule_add = tool_call.name == MANAGE_RULES_TOOL_NAME;
+
         let command = tool_call
             .input
             .get("command")
             .and_then(|v| v.as_str())
-            .unwrap_or("<unknown command>");
+            .unwrap_or("");
 
-        // check stored approval rules before prompting
-        if let Ok(Some(_rule_id)) = self.db.find_matching_rule(command) {
+        // for exec commands, check stored approval rules before prompting
+        if !is_rule_add && let Ok(Some(_rule_id)) = self.db.find_matching_rule(command) {
             tracing::debug!(command, "auto-approved by stored rule");
             return Ok(ApprovalDecision::AutoApproved);
         }
@@ -160,14 +164,29 @@ impl Approver for TelegramApprover {
         // generate nonce
         let nonce = format!("{:08x}", rand_u32());
 
-        // build keyboard
-        let has_sensitive = references_sensitive_env(command);
+        // build prompt text and keyboard based on tool type
+        let (text, show_allow_always) = if is_rule_add {
+            let pattern = tool_call
+                .input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown pattern>");
+            (format!("proposed rule: {pattern}"), false)
+        } else {
+            let has_sensitive = references_sensitive_env(command);
+            let mut text = format!("command: {command}");
+            if has_sensitive {
+                text.push_str("\n⚠ references sensitive environment variables");
+            }
+            (text, !has_sensitive)
+        };
+
         let mut buttons = vec![InlineKeyboardButton {
-            text: "allow once".into(),
+            text: "approve".into(),
             callback_data: format!("exec:{nonce}:allow_once"),
         }];
 
-        if !has_sensitive {
+        if show_allow_always {
             buttons.push(InlineKeyboardButton {
                 text: "allow always".into(),
                 callback_data: format!("exec:{nonce}:allow_always"),
@@ -182,11 +201,6 @@ impl Approver for TelegramApprover {
         let keyboard = InlineKeyboardMarkup {
             inline_keyboard: vec![buttons],
         };
-
-        let mut text = format!("command: {command}");
-        if has_sensitive {
-            text.push_str("\n⚠ references sensitive environment variables");
-        }
 
         let message_id = self
             .bot

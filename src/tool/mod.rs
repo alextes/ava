@@ -67,7 +67,15 @@ pub trait Approver: Send + Sync {
 
 /// returns true if this tool call requires approval
 pub fn requires_approval(tool_call: &ToolCall) -> bool {
-    tool_call.name == EXEC_TOOL_NAME
+    match tool_call.name.as_str() {
+        EXEC_TOOL_NAME => true,
+        MANAGE_RULES_TOOL_NAME => tool_call
+            .input
+            .get("action")
+            .and_then(|v| v.as_str())
+            .is_some_and(|a| a == "add"),
+        _ => false,
+    }
 }
 
 // --- security filter ---
@@ -166,6 +174,7 @@ struct SwitchModelInput {
 struct ManageRulesInput {
     action: String,
     id: Option<i64>,
+    pattern: Option<String>,
 }
 
 pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<ToolCallResult, Error> {
@@ -386,6 +395,25 @@ pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<ToolCall
                             switch_provider: None,
                         })
                     }
+                    "add" => match input.pattern {
+                        Some(ref pattern) if !pattern.trim().is_empty() => {
+                            db.save_approval_rule(pattern.trim())?;
+                            Ok(ToolCallResult {
+                                content: MessageContent::tool_result(
+                                    &call.id,
+                                    format!("saved rule: {}", pattern.trim()),
+                                ),
+                                switch_provider: None,
+                            })
+                        }
+                        _ => Ok(ToolCallResult {
+                            content: MessageContent::tool_result(
+                                &call.id,
+                                "add requires a non-empty pattern",
+                            ),
+                            switch_provider: None,
+                        }),
+                    },
                     "delete" => match input.id {
                         Some(id) => {
                             let deleted = db.delete_approval_rule(id)?;
@@ -835,14 +863,18 @@ fn switch_model_definition() -> ToolDefinition {
 fn manage_rules_definition() -> ToolDefinition {
     ToolDefinition {
         name: MANAGE_RULES_TOOL_NAME,
-        description: "manage approval rules for command execution. action=list: show all saved rules. action=delete: remove a rule by id.",
+        description: "manage approval rules for command execution. action=list: show all saved rules. action=add: propose a new rule (requires human approval). action=delete: remove a rule by id. patterns use wildcard matching (e.g. 'cargo *' matches any cargo subcommand).",
         input_schema: json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "delete"],
+                    "enum": ["list", "add", "delete"],
                     "description": "action to perform"
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "approval pattern to add (required for action=add). supports wildcards, e.g. 'cargo *', 'git push *'"
                 },
                 "id": {
                     "type": "integer",
@@ -1401,6 +1433,67 @@ mod tests {
             extract_tool_result_text(&result.content),
             "invalid action: update"
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_add() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call(
+            "manage_rules",
+            json!({"action": "add", "pattern": "cargo *"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "saved rule: cargo *"
+        );
+
+        let rules = db.list_approval_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "cargo *");
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_add_missing_pattern() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("manage_rules", json!({"action": "add"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "add requires a non-empty pattern"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_add_empty_pattern() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("manage_rules", json!({"action": "add", "pattern": "  "}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "add requires a non-empty pattern"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_requires_approval_manage_rules_add() {
+        let call = make_call(
+            "manage_rules",
+            json!({"action": "add", "pattern": "cargo *"}),
+        );
+        assert!(requires_approval(&call));
+    }
+
+    #[tokio::test]
+    async fn test_requires_approval_manage_rules_list() {
+        let call = make_call("manage_rules", json!({"action": "list"}));
+        assert!(!requires_approval(&call));
+    }
+
+    #[tokio::test]
+    async fn test_requires_approval_manage_rules_delete() {
+        let call = make_call("manage_rules", json!({"action": "delete", "id": 1}));
+        assert!(!requires_approval(&call));
     }
 
     // unknown tool
