@@ -62,15 +62,6 @@ pub trait Approver: Send + Sync {
     ) -> impl Future<Output = Result<ApprovalDecision, Error>> + Send;
 }
 
-/// auto-approves all tool calls (used for CLI)
-pub struct CliApprover;
-
-impl Approver for CliApprover {
-    async fn request_approval(&self, _tool_call: &ToolCall) -> Result<ApprovalDecision, Error> {
-        Ok(ApprovalDecision::AutoApproved)
-    }
-}
-
 /// returns true if this tool call requires approval
 pub fn requires_approval(tool_call: &ToolCall) -> bool {
     tool_call.name == EXEC_TOOL_NAME
@@ -606,6 +597,7 @@ fn switch_model_definition() -> ToolDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approver::CliApprover;
 
     #[test]
     fn test_safety_filter_blocks_rm_rf_root() {

@@ -1,5 +1,8 @@
 mod compaction;
 
+use std::sync::Arc;
+
+use crate::approver::AnyApprover;
 use crate::db::Database;
 use crate::db::Fact;
 use crate::error::Error;
@@ -9,14 +12,14 @@ use crate::tool::{self, ApprovalDecision, Approver, ToolCall};
 
 const MAX_FACT_VALUE_CHARS: usize = 500;
 
-pub struct Agent<A> {
+pub struct Agent {
     provider: AnyProvider,
-    approver: A,
-    db: Database,
+    approver: AnyApprover,
+    db: Arc<Database>,
 }
 
-impl<A: Approver> Agent<A> {
-    pub fn new(provider: AnyProvider, approver: A, db: Database) -> Self {
+impl Agent {
+    pub fn new(provider: AnyProvider, approver: AnyApprover, db: Arc<Database>) -> Self {
         Self {
             provider,
             approver,
@@ -25,7 +28,7 @@ impl<A: Approver> Agent<A> {
     }
 
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
-    pub async fn process(self, inbound: InboundMessage) -> Result<OutboundMessage, Error> {
+    pub async fn process(&self, inbound: &InboundMessage) -> Result<OutboundMessage, Error> {
         let session_id = self.db.active_session()?;
         let channel_str = inbound.channel.as_str();
 
@@ -36,7 +39,7 @@ impl<A: Approver> Agent<A> {
         let user_content = vec![MessageContent::text(&inbound.content)];
         self.db
             .append_message(session_id, "user", &user_content, Some(channel_str))?;
-        messages.push(Message::user(inbound.content));
+        messages.push(Message::user(&inbound.content));
 
         let system_prompt = self.system_prompt()?;
         let mut tool_rounds = 0;
@@ -243,9 +246,9 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approver::CliApprover;
     use crate::message::ChannelKind;
     use crate::provider::{ProviderResponse, StopReason, TestProvider, Usage};
-    use crate::tool::CliApprover;
 
     fn make_test_provider(response: &str) -> AnyProvider {
         let response = response.to_string();
@@ -270,30 +273,30 @@ mod tests {
     #[tokio::test]
     async fn test_agent_processes_message() {
         let provider = make_test_provider("hi");
-        let db = Database::open_in_memory().unwrap();
-        let agent = Agent::new(provider, CliApprover, db);
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
             content: "hello".into(),
         };
 
-        let outbound = agent.process(inbound).await.unwrap();
+        let outbound = agent.process(&inbound).await.unwrap();
         assert_eq!(outbound.content, "hi");
     }
 
     #[tokio::test]
     async fn test_provider_error_propagates() {
         let provider = make_failing_provider();
-        let db = Database::open_in_memory().unwrap();
-        let agent = Agent::new(provider, CliApprover, db);
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
             content: "hello".into(),
         };
 
-        let result = agent.process(inbound).await;
+        let result = agent.process(&inbound).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -302,9 +305,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_injects_facts_into_system_prompt() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::{Arc as StdArc, Mutex};
 
-        let seen_prompt = Arc::new(Mutex::new(None));
+        let seen_prompt = StdArc::new(Mutex::new(None));
         let seen_prompt_clone = seen_prompt.clone();
 
         let provider = AnyProvider::Test(TestProvider {
@@ -319,16 +322,16 @@ mod tests {
             }),
         });
 
-        let db = Database::open_in_memory().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
         db.remember_fact("user", "name", "alex").unwrap();
-        let agent = Agent::new(provider, CliApprover, db);
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
             content: "hello".into(),
         };
 
-        agent.process(inbound).await.unwrap();
+        agent.process(&inbound).await.unwrap();
 
         let prompt = seen_prompt.lock().unwrap().clone().unwrap();
         assert!(prompt.contains("## known facts"));
@@ -338,9 +341,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_loads_history_from_session() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::{Arc as StdArc, Mutex};
 
-        let db = Database::open_in_memory().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
         let sid = db.active_session().unwrap();
 
         // seed conversation history in the db
@@ -360,7 +363,7 @@ mod tests {
         .unwrap();
 
         // track what messages the provider sees
-        let seen_msgs = Arc::new(Mutex::new(None));
+        let seen_msgs = StdArc::new(Mutex::new(None));
         let seen_clone = seen_msgs.clone();
 
         let provider = AnyProvider::Test(TestProvider {
@@ -375,13 +378,13 @@ mod tests {
             }),
         });
 
-        let agent = Agent::new(provider, CliApprover, db);
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), Arc::clone(&db));
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
             content: "what is my name?".into(),
         };
-        agent.process(inbound).await.unwrap();
+        agent.process(&inbound).await.unwrap();
 
         // provider should have seen 3 messages: 2 history + 1 new
         let msg_count = seen_msgs.lock().unwrap().unwrap();

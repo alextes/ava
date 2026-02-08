@@ -8,6 +8,30 @@ use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
 use crate::tool::{ApprovalDecision, Approver, ToolCall, references_sensitive_env};
 
+/// auto-approves all tool calls (used for CLI)
+pub struct CliApprover;
+
+impl Approver for CliApprover {
+    async fn request_approval(&self, _tool_call: &ToolCall) -> Result<ApprovalDecision, Error> {
+        Ok(ApprovalDecision::AutoApproved)
+    }
+}
+
+/// enum wrapper for all approver variants (non-object-safe trait, same pattern as AnyProvider)
+pub enum AnyApprover {
+    Cli(CliApprover),
+    Telegram(TelegramApprover),
+}
+
+impl Approver for AnyApprover {
+    async fn request_approval(&self, tool_call: &ToolCall) -> Result<ApprovalDecision, Error> {
+        match self {
+            Self::Cli(a) => a.request_approval(tool_call).await,
+            Self::Telegram(a) => a.request_approval(tool_call).await,
+        }
+    }
+}
+
 const APPROVAL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 struct PendingApproval {

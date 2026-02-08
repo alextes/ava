@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod message;
 mod provider;
+mod queue;
 mod telegram;
 mod tool;
 
@@ -14,13 +15,15 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::Agent;
-use crate::approver::{PendingApprovals, TelegramApprover};
+use crate::approver::{AnyApprover, CliApprover, PendingApprovals, TelegramApprover};
 use crate::channel::Channel;
 use crate::db::Database;
 use crate::message::{ChannelKind, InboundMessage};
 use crate::provider::AnyProvider;
+use crate::queue::{
+    MessageReceiver, QueuedMessage, ResponseSink, message_queue, send_error, send_response,
+};
 use crate::telegram::TelegramBot;
-use crate::tool::CliApprover;
 
 #[derive(Parser)]
 #[command(name = "ava", about = "a personal ai assistant")]
@@ -40,8 +43,8 @@ enum Commands {
         /// the message to send
         content: String,
     },
-    /// start the telegram bot
-    Telegram,
+    /// start all configured channels
+    Start,
 }
 
 #[tokio::main]
@@ -79,9 +82,9 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Telegram => {
-            if let Err(e) = run_telegram().await {
-                tracing::error!(%e, "telegram bot failed");
+        Commands::Start => {
+            if let Err(e) = run_start().await {
+                tracing::error!(%e, "start failed");
                 std::process::exit(1);
             }
         }
@@ -110,16 +113,16 @@ fn provider_for_session(db: &Database) -> Result<AnyProvider, error::Error> {
 }
 
 async fn run_message(content: String) -> Result<(), error::Error> {
-    let db = Database::open()?;
+    let db = Arc::new(Database::open()?);
     let provider = provider_for_session(&db)?;
-    let agent = Agent::new(provider, CliApprover, db);
+    let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
 
     let inbound = InboundMessage {
         channel: ChannelKind::Cli,
         content,
     };
 
-    let outbound = agent.process(inbound).await?;
+    let outbound = agent.process(&inbound).await?;
     channel::CliChannel.send(outbound)?;
     Ok(())
 }
@@ -132,22 +135,89 @@ fn allowed_telegram_ids() -> Vec<i64> {
         .collect()
 }
 
-async fn run_telegram() -> Result<(), error::Error> {
-    let bot = Arc::new(TelegramBot::from_env()?);
-    let allowed_ids = allowed_telegram_ids();
+async fn run_start() -> Result<(), error::Error> {
+    let db = Arc::new(Database::open()?);
+    let (tx, rx) = message_queue(64);
+    let pending = Arc::new(PendingApprovals::new());
 
-    if allowed_ids.is_empty() {
-        tracing::warn!("TELEGRAM_ALLOWED_IDS not set, bot will ignore all messages");
+    // start agent loop
+    let db_clone = Arc::clone(&db);
+    let pending_clone = Arc::clone(&pending);
+    let agent_handle = tokio::spawn(async move {
+        agent_loop(rx, db_clone, pending_clone).await;
+    });
+
+    // start telegram if configured
+    if std::env::var("TELOXIDE_TOKEN").is_ok() {
+        let bot = Arc::new(TelegramBot::from_env()?);
+        let allowed_ids = allowed_telegram_ids();
+
+        if allowed_ids.is_empty() {
+            tracing::warn!("TELEGRAM_ALLOWED_IDS not set, bot will ignore all messages");
+        } else {
+            tracing::info!(?allowed_ids, "loaded user whitelist");
+        }
+
+        tracing::info!("starting telegram channel");
+        tokio::spawn(telegram_producer(
+            bot,
+            tx.clone(),
+            Arc::clone(&pending),
+            allowed_ids,
+        ));
     } else {
-        tracing::info!(?allowed_ids, "loaded user whitelist");
+        tracing::info!("TELOXIDE_TOKEN not set, skipping telegram");
     }
 
-    tracing::info!("starting telegram bot");
+    // drop our copy of tx so agent_loop can exit when all producers stop
+    drop(tx);
 
+    agent_handle
+        .await
+        .map_err(|e| error::Error::Provider(format!("agent loop panicked: {e}")))?;
+    Ok(())
+}
+
+async fn agent_loop(mut rx: MessageReceiver, db: Arc<Database>, pending: Arc<PendingApprovals>) {
+    while let Some(queued) = rx.recv().await {
+        let provider = match provider_for_session(&db) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(%e, "provider init failed");
+                send_error(queued.sink, &format!("error: {e}")).await;
+                continue;
+            }
+        };
+
+        let approver = match &queued.sink {
+            ResponseSink::Telegram { chat_id, bot } => AnyApprover::Telegram(
+                TelegramApprover::new(Arc::clone(bot), *chat_id, Arc::clone(&pending)),
+            ),
+        };
+
+        let agent = Agent::new(provider, approver, Arc::clone(&db));
+        let inbound = InboundMessage {
+            channel: queued.channel,
+            content: queued.content,
+        };
+
+        match agent.process(&inbound).await {
+            Ok(outbound) => send_response(queued.sink, outbound).await,
+            Err(e) => {
+                tracing::error!(%e, "agent processing failed");
+                send_error(queued.sink, &format!("error: {e}")).await;
+            }
+        }
+    }
+}
+
+async fn telegram_producer(
+    bot: Arc<TelegramBot>,
+    tx: queue::MessageSender,
+    pending: Arc<PendingApprovals>,
+    allowed_ids: Vec<i64>,
+) {
     let mut offset: Option<i64> = None;
-
-    // shared pending approvals — keyed by nonce
-    let pending = Arc::new(PendingApprovals::new());
 
     loop {
         let updates = match bot.get_updates(offset).await {
@@ -196,60 +266,20 @@ async fn run_telegram() -> Result<(), error::Error> {
                 continue;
             }
 
-            // spawn agent processing so we can continue polling for callback queries
-            let bot_clone = Arc::clone(&bot);
-            let pending_clone = Arc::clone(&pending);
-
-            tokio::spawn(async move {
-                let db = match Database::open() {
-                    Ok(db) => db,
-                    Err(e) => {
-                        tracing::error!(%e, "database open failed");
-                        let _ = bot_clone
-                            .send_message(chat_id, &format!("error: {e}"))
-                            .await;
-                        return;
-                    }
-                };
-
-                let provider = match provider_for_session(&db) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::error!(%e, "provider init failed");
-                        let _ = bot_clone
-                            .send_message(chat_id, &format!("error: {e}"))
-                            .await;
-                        return;
-                    }
-                };
-
-                let approver = TelegramApprover::new(
-                    Arc::clone(&bot_clone),
+            // push to queue instead of spawning a task
+            let queued = QueuedMessage {
+                channel: ChannelKind::Telegram,
+                content: text,
+                sink: ResponseSink::Telegram {
                     chat_id,
-                    Arc::clone(&pending_clone),
-                );
+                    bot: Arc::clone(&bot),
+                },
+            };
 
-                let agent = Agent::new(provider, approver, db);
-
-                let inbound = InboundMessage {
-                    channel: ChannelKind::Telegram,
-                    content: text,
-                };
-
-                match agent.process(inbound).await {
-                    Ok(outbound) => {
-                        if let Err(e) = bot_clone.send_message(chat_id, &outbound.content).await {
-                            tracing::error!(%e, chat_id, "failed to send telegram message");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(%e, chat_id, "agent processing failed");
-                        let _ = bot_clone
-                            .send_message(chat_id, &format!("error: {e}"))
-                            .await;
-                    }
-                }
-            });
+            if tx.send(queued).await.is_err() {
+                tracing::error!("agent loop stopped, exiting telegram producer");
+                return;
+            }
         }
     }
 }
