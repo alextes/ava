@@ -55,6 +55,8 @@ async fn main() {
         )
         .init();
 
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting ava");
+
     let cli = Cli::parse();
 
     match cli.command {
