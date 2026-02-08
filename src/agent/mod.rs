@@ -120,7 +120,7 @@ impl Agent {
             );
 
             tool_rounds += 1;
-            if tool_rounds > 5 {
+            if tool_rounds > 20 {
                 return Err(Error::Provider("tool loop exceeded".into()));
             }
 
