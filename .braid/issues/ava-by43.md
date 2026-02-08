@@ -5,7 +5,8 @@ title: design character/persona customization
 priority: P2
 status: open
 type: design
-deps: []
+deps:
+- ava-x7nq
 tags:
 - core
 owner: null

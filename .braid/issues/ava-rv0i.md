@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-rv0i
 title: design unified message queue and agent loop
 priority: P2
-status: open
+status: done
 type: design
 deps: []
 tags:
@@ -11,6 +11,7 @@ tags:
 - session
 owner: null
 created_at: 2026-02-08T16:00:24.238029Z
+completed_at: 2026-02-08T17:57:23.368417Z
 ---
 
 the current architecture spawns independent tokio tasks per inbound message (telegram) or runs one-shot (CLI). all tasks share a single active session. this causes a real bug: if two messages arrive close together, both load conversation history at ~the same time, process independently, and append results — neither sees the other's response, producing interleaved turns that break conversation coherence.

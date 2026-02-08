@@ -6,7 +6,7 @@ priority: P2
 status: open
 type: design
 deps:
-- ava-rv0i
+- ava-lzbb
 tags:
 - core
 owner: null

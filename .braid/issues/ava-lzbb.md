@@ -3,13 +3,13 @@ schema_version: 9
 id: ava-lzbb
 title: restructure binary around unified ava start command
 priority: P2
-status: open
-deps:
-- ava-rv0i
+status: done
+deps: []
 tags:
 - core
 owner: null
 created_at: 2026-02-08T16:00:37.573446Z
+completed_at: 2026-02-08T17:57:25.760872Z
 ---
 
 replace channel-specific binary commands (`ava telegram`) with a unified `ava start` that starts all configured channels and drives a single agent loop.
