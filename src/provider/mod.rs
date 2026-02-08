@@ -23,12 +23,23 @@ pub enum StopReason {
     ToolUse,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct Usage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    /// anthropic: tokens written to cache this request
+    pub cache_creation_tokens: Option<u32>,
+    /// anthropic: tokens read from cache this request
+    pub cache_read_tokens: Option<u32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderResponse {
     pub content: String,
     #[allow(dead_code)]
     pub stop_reason: StopReason,
     pub tool_calls: Vec<ToolCall>,
+    pub usage: Usage,
 }
 
 pub trait Provider: Send + Sync {

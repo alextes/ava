@@ -64,6 +64,12 @@ async fn main() {
         Commands::Status => {
             println!("ava {}", env!("CARGO_PKG_VERSION"));
             println!("db: {}", config::default_db_path().display());
+            if let Ok(db) = Database::open()
+                && let Ok(sid) = db.active_session()
+            {
+                let msg_count = db.session_message_count(sid).unwrap_or(0);
+                println!("session: {sid} ({msg_count} messages)");
+            }
         }
         Commands::Message { content } => {
             if let Err(e) = run_message(content).await {

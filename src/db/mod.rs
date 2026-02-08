@@ -200,6 +200,17 @@ impl Database {
         Ok(())
     }
 
+    /// count messages in a session
+    pub fn session_message_count(&self, session_id: i64) -> Result<u32, Error> {
+        let conn = self.conn.lock().unwrap();
+        let count: u32 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     pub fn recent_facts(&self) -> Result<Vec<Fact>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -540,5 +551,20 @@ mod tests {
         let sid = db.active_session().unwrap();
         let messages = db.load_messages(sid).unwrap();
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_session_message_count() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        assert_eq!(db.session_message_count(sid).unwrap(), 0);
+
+        db.append_message(sid, "user", &[MessageContent::text("hi")], Some("cli"))
+            .unwrap();
+        db.append_message(sid, "assistant", &[MessageContent::text("hey")], None)
+            .unwrap();
+
+        assert_eq!(db.session_message_count(sid).unwrap(), 2);
     }
 }

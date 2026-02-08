@@ -44,6 +44,25 @@ impl<A: Approver> Agent<A> {
             let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
             let response = active_provider.complete(&system_prompt, &messages).await?;
 
+            let usage = &response.usage;
+            if let (Some(created), Some(read)) =
+                (usage.cache_creation_tokens, usage.cache_read_tokens)
+            {
+                tracing::info!(
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    cache_created = created,
+                    cache_read = read,
+                    "provider usage"
+                );
+            } else {
+                tracing::info!(
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "provider usage"
+                );
+            }
+
             if response.tool_calls.is_empty() {
                 // persist the final assistant response
                 let assistant_content = vec![MessageContent::text(&response.content)];
@@ -184,7 +203,7 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::message::ChannelKind;
-    use crate::provider::{ProviderResponse, StopReason, TestProvider};
+    use crate::provider::{ProviderResponse, StopReason, TestProvider, Usage};
     use crate::tool::CliApprover;
 
     fn make_test_provider(response: &str) -> AnyProvider {
@@ -195,6 +214,7 @@ mod tests {
                     content: response.clone(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    usage: Usage::default(),
                 })
             }),
         })
@@ -253,6 +273,7 @@ mod tests {
                     content: "hi".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    usage: Usage::default(),
                 })
             }),
         });
@@ -308,6 +329,7 @@ mod tests {
                     content: "your name is alex".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    usage: Usage::default(),
                 })
             }),
         });

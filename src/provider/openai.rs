@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::message::{Message, MessageContent, Role};
-use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall};
+use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
 use crate::tool::{ToolDefinition, tool_definitions};
 
 const API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -105,6 +105,14 @@ struct ChatFunction {
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -282,10 +290,20 @@ impl Provider for OpenAiProvider {
             });
         }
 
+        let usage = api_response
+            .usage
+            .map(|u| Usage {
+                input_tokens: u.prompt_tokens,
+                output_tokens: u.completion_tokens,
+                ..Default::default()
+            })
+            .unwrap_or_default();
+
         Ok(ProviderResponse {
             content,
             stop_reason,
             tool_calls,
+            usage,
         })
     }
 }

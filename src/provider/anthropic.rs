@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::error::Error;
 use crate::message::Message;
-use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall};
+use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
 use crate::tool::{ToolDefinition, tool_definitions};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -53,6 +53,17 @@ struct ApiRequest<'a> {
 struct ApiResponse {
     content: Vec<ContentBlock>,
     stop_reason: StopReason,
+    usage: ApiUsage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiUsage {
+    input_tokens: u32,
+    output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +164,12 @@ impl Provider for AnthropicProvider {
             content,
             stop_reason: api_response.stop_reason,
             tool_calls,
+            usage: Usage {
+                input_tokens: api_response.usage.input_tokens,
+                output_tokens: api_response.usage.output_tokens,
+                cache_creation_tokens: api_response.usage.cache_creation_input_tokens,
+                cache_read_tokens: api_response.usage.cache_read_input_tokens,
+            },
         })
     }
 }
@@ -163,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_parse_text_response() {
-        let json = r#"{"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"}"#;
+        let json = r#"{"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}"#;
         let response: ApiResponse = serde_json::from_str(json).unwrap();
 
         assert_eq!(response.content.len(), 1);
@@ -172,11 +189,13 @@ mod tests {
             _ => panic!("expected text block"),
         }
         assert_eq!(response.stop_reason, StopReason::EndTurn);
+        assert_eq!(response.usage.input_tokens, 10);
+        assert_eq!(response.usage.output_tokens, 5);
     }
 
     #[test]
     fn test_parse_multiple_text_blocks() {
-        let json = r#"{"content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}],"stop_reason":"end_turn"}"#;
+        let json = r#"{"content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}"#;
         let response: ApiResponse = serde_json::from_str(json).unwrap();
 
         assert_eq!(response.content.len(), 2);
@@ -196,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_parse_tool_use_response() {
-        let json = r#"{"content":[{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"location":"sf"}}],"stop_reason":"tool_use"}"#;
+        let json = r#"{"content":[{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"location":"sf"}}],"stop_reason":"tool_use","usage":{"input_tokens":20,"output_tokens":15}}"#;
         let response: ApiResponse = serde_json::from_str(json).unwrap();
 
         assert_eq!(response.content.len(), 1);
@@ -209,6 +228,17 @@ mod tests {
             _ => panic!("expected tool_use block"),
         }
         assert_eq!(response.stop_reason, StopReason::ToolUse);
+    }
+
+    #[test]
+    fn test_parse_usage_with_cache() {
+        let json = r#"{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":80,"cache_read_input_tokens":0}}"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.usage.input_tokens, 100);
+        assert_eq!(response.usage.output_tokens, 50);
+        assert_eq!(response.usage.cache_creation_input_tokens, Some(80));
+        assert_eq!(response.usage.cache_read_input_tokens, Some(0));
     }
 
     #[test]
