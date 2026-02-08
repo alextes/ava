@@ -154,7 +154,7 @@ struct ManageRulesInput {
 }
 
 pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<ToolCallResult, Error> {
-    tracing::info!(tool = %call.name, "handling tool call");
+    tracing::info!(tool = %call.name, input = %call.input, "handling tool call");
     match call.name.as_str() {
         REMEMBER_TOOL_NAME => match serde_json::from_value::<RememberInput>(call.input.clone()) {
             Ok(input) => {
@@ -985,6 +985,38 @@ mod tests {
     async fn test_requires_approval_manage_rules_delete() {
         let call = make_call("manage_rules", json!({"action": "delete", "id": 1}));
         assert!(!requires_approval(&call));
+    }
+
+    // text_editor tool
+
+    #[tokio::test]
+    async fn test_handle_text_editor_view_not_found() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call(
+            "str_replace_based_edit_tool",
+            json!({"command": "view", "path": "/tmp/nonexistent_ava_test_12345.txt"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(
+            text.contains("does not exist"),
+            "expected 'does not exist' but got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_text_editor_unknown_command() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call(
+            "str_replace_based_edit_tool",
+            json!({"command": "bogus", "path": "/tmp/whatever"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(
+            text.contains("unknown command"),
+            "expected 'unknown command' but got: {text}"
+        );
     }
 
     // unknown tool
