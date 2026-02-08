@@ -1,7 +1,7 @@
 ---
 schema_version: 9
 id: ava-lzbb
-title: restructure binary around unified ava run command
+title: restructure binary around unified ava start command
 priority: P2
 status: open
 deps:
@@ -12,7 +12,7 @@ owner: null
 created_at: 2026-02-08T16:00:37.573446Z
 ---
 
-replace channel-specific binary commands (`ava telegram`) with a unified `ava run` that starts all configured channels and drives a single agent loop.
+replace channel-specific binary commands (`ava telegram`) with a unified `ava start` that starts all configured channels and drives a single agent loop.
 
 ## current state
 
@@ -24,7 +24,7 @@ adding another channel (e.g. whatsapp) would mean adding `ava whatsapp` — a se
 ## proposed change
 
 ```
-ava run
+ava start
 ```
 
 starts a single long-running process that:
@@ -43,11 +43,11 @@ channels are enabled based on which env vars are set:
 ## CLI message command
 
 `ava message <text>` can remain as a convenience for one-shot usage. it either:
-- pushes to the queue and waits for response (if `ava run` is already running), or
+- pushes to the queue and waits for response (if `ava start` is already running), or
 - runs its own ephemeral agent loop (current behavior, for quick testing)
 
 ## acceptance criteria
 
-- `ava run` starts all configured channels
-- `ava telegram` removed or aliased to `ava run`
+- `ava start` starts all configured channels
+- `ava telegram` removed or aliased to `ava start`
 - single agent loop, no per-message task spawning
