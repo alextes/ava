@@ -33,7 +33,8 @@ output: architecture doc covering session storage, context management, and cross
 one global session shared across all channels. telegram and CLI both feed into the same session. no "start a new conversation" — ava is a single continuous entity.
 
 - session is never explicitly closed (for MVP)
-- context window slides over recent history (last 50 messages)
+- growing window — send all messages from session start (maximizes prompt cache hits, see ava-pvpj)
+- compaction deferred to ava-oh2z (not needed for MVP — 50 exchanges ≈ 25k tokens, well within 200k context)
 - messages stored in the universal `Message`/`MessageContent` format (provider-agnostic)
 
 ### schema changes — v4 migration
@@ -53,7 +54,7 @@ no new tables. leave unused `model` column in place (harmless).
 new methods on `Database`:
 
 - `active_session() -> Result<i64>` — query `WHERE active = 1`, auto-create if missing
-- `load_messages(session_id, limit) -> Result<Vec<Message>>` — last N messages, oldest-first. content deserialized from JSON
+- `load_messages(session_id) -> Result<Vec<Message>>` — all messages, oldest-first. content deserialized from JSON
 - `append_message(session_id, role, content, channel)` — serialize `Vec<MessageContent>` to JSON, insert, update `sessions.updated_at`
 
 ### agent changes
@@ -61,14 +62,14 @@ new methods on `Database`:
 `Agent::process()` flow becomes:
 
 1. `db.active_session()` → session_id
-2. `db.load_messages(session_id, 50)` → history
+2. `db.load_messages(session_id)` → history (all messages, growing window)
 3. `db.append_message(session_id, "user", [user_text], channel)`
 4. `messages = history ++ [new_user_msg]`
 5. tool loop (same as today, but also persists each assistant/tool_result message as they happen — crash-safe)
 6. `db.append_message(session_id, "assistant", [final_response])`
 7. return `OutboundMessage`
 
-`MAX_HISTORY_MESSAGES` constant = 50.
+no message count limit — growing window for prompt cache efficiency (see ava-pvpj). compaction deferred to ava-oh2z.
 
 ### message.rs change
 
@@ -97,7 +98,7 @@ telegram and CLI write to the same session:
 
 - **concurrent telegram messages**: both load same history, both append. interleaving is slightly odd but harmless. later: per-session mutex to serialize.
 - **tool loop crash**: dangling assistant message with tool_use but no tool_result. on load, trim trailing incomplete exchange.
-- **very long sessions**: context window (last 50) keeps provider calls bounded.
+- **very long sessions**: growing window means token count increases over time. compaction (ava-oh2z) will address this. for MVP, context windows are large enough (200k tokens) that this won't be hit in casual use.
 
 ### files modified
 

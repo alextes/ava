@@ -5,7 +5,8 @@ title: design scheduled tasks
 priority: P2
 status: open
 type: design
-deps: []
+deps:
+- ava-rv0i
 tags:
 - core
 owner: null
