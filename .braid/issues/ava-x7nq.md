@@ -3,13 +3,14 @@ schema_version: 9
 id: ava-x7nq
 title: design memory system
 priority: P2
-status: open
+status: done
 type: design
 deps: []
 tags:
 - tool
 owner: null
 created_at: 2026-02-01T22:32:41.7411Z
+completed_at: 2026-02-08T18:45:06.459279Z
 ---
 
 design ava's memory/recall system.

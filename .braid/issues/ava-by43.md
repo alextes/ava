@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-by43
 title: design character/persona customization
 priority: P2
-status: open
+status: done
 type: design
 deps:
 - ava-x7nq
@@ -11,6 +11,7 @@ tags:
 - core
 owner: null
 created_at: 2026-02-08T16:23:41.313971Z
+completed_at: 2026-02-08T18:45:06.4882Z
 ---
 
 ## goal

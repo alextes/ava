@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-zwm8
 title: add memory tool
 priority: P2
-status: open
+status: done
 deps:
 - ava-b13x
 - ava-1q20
@@ -12,6 +12,7 @@ tags:
 - tool
 owner: null
 created_at: 2026-02-01T21:37:21.592951Z
+completed_at: 2026-02-08T18:45:06.473273Z
 ---
 
 tool for recording memories of relevant things that happened:
