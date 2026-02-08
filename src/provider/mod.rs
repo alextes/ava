@@ -65,6 +65,16 @@ impl AnyProvider {
         Ok(Self::Anthropic(AnthropicProvider::from_env()?))
     }
 
+    /// returns a `"provider/model"` identifier string (e.g. `"anthropic/claude-sonnet-4-5"`)
+    pub fn model_id(&self) -> String {
+        match self {
+            Self::Anthropic(p) => format!("anthropic/{}", p.model_name()),
+            Self::OpenAi(p) => format!("openai/{}", p.model_name()),
+            #[cfg(test)]
+            Self::Test(_) => "test/test".to_string(),
+        }
+    }
+
     /// create a provider by name, for the switch_model tool.
     /// if a model is specified, it must be in the provider's allowed list.
     pub fn from_name(provider: &str, model: Option<&str>) -> Result<Self, Error> {
@@ -131,5 +141,32 @@ impl Provider for TestProvider {
         messages: &[Message],
     ) -> Result<ProviderResponse, Error> {
         (self.handler)(system_prompt, messages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_id_format_anthropic() {
+        let p = AnthropicProvider::new("test-key".into());
+        let any = AnyProvider::Anthropic(p);
+        assert_eq!(any.model_id(), "anthropic/claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn test_model_id_format_openai() {
+        let p = OpenAiProvider::new("test-key".into());
+        let any = AnyProvider::OpenAi(p);
+        assert_eq!(any.model_id(), "openai/gpt-5.2");
+    }
+
+    #[test]
+    fn test_model_id_format_test() {
+        let p = AnyProvider::Test(TestProvider {
+            handler: Box::new(|_, _| unreachable!()),
+        });
+        assert_eq!(p.model_id(), "test/test");
     }
 }

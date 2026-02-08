@@ -104,7 +104,11 @@ impl<A: Approver> Agent<A> {
             for call in &response.tool_calls {
                 let result = self.handle_tool_call_with_approval(call).await?;
                 if let Some(new_provider) = result.switch_provider {
-                    tracing::info!("switching provider mid-conversation");
+                    let model_id = new_provider.model_id();
+                    tracing::info!(%model_id, "switching provider mid-conversation");
+                    if let Err(e) = self.db.set_session_model(session_id, &model_id) {
+                        tracing::warn!(%e, "failed to persist model selection");
+                    }
                     switched_provider = Some(new_provider);
                 }
                 tool_results.push(result.content);

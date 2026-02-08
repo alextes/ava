@@ -88,9 +88,30 @@ async fn main() {
     }
 }
 
+/// load the persisted provider/model for the active session, falling back to default
+fn provider_for_session(db: &Database) -> Result<AnyProvider, error::Error> {
+    let session_id = db.active_session()?;
+    if let Ok(Some(model_id)) = db.session_model(session_id) {
+        if let Some((provider_name, model)) = model_id.split_once('/') {
+            match AnyProvider::from_name(provider_name, Some(model)) {
+                Ok(p) => {
+                    tracing::info!(%model_id, "loaded persisted model");
+                    return Ok(p);
+                }
+                Err(e) => {
+                    tracing::warn!(%e, %model_id, "failed to load persisted model, using default");
+                }
+            }
+        } else {
+            tracing::warn!(%model_id, "invalid model id format, using default");
+        }
+    }
+    AnyProvider::default_from_env()
+}
+
 async fn run_message(content: String) -> Result<(), error::Error> {
-    let provider = AnyProvider::default_from_env()?;
     let db = Database::open()?;
+    let provider = provider_for_session(&db)?;
     let agent = Agent::new(provider, CliApprover, db);
 
     let inbound = InboundMessage {
@@ -180,10 +201,10 @@ async fn run_telegram() -> Result<(), error::Error> {
             let pending_clone = Arc::clone(&pending);
 
             tokio::spawn(async move {
-                let provider = match AnyProvider::default_from_env() {
-                    Ok(p) => p,
+                let db = match Database::open() {
+                    Ok(db) => db,
                     Err(e) => {
-                        tracing::error!(%e, "provider init failed");
+                        tracing::error!(%e, "database open failed");
                         let _ = bot_clone
                             .send_message(chat_id, &format!("error: {e}"))
                             .await;
@@ -191,10 +212,10 @@ async fn run_telegram() -> Result<(), error::Error> {
                     }
                 };
 
-                let db = match Database::open() {
-                    Ok(db) => db,
+                let provider = match provider_for_session(&db) {
+                    Ok(p) => p,
                     Err(e) => {
-                        tracing::error!(%e, "database open failed");
+                        tracing::error!(%e, "provider init failed");
                         let _ = bot_clone
                             .send_message(chat_id, &format!("error: {e}"))
                             .await;

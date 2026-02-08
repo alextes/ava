@@ -35,6 +35,10 @@ impl AnthropicProvider {
         Ok(Self::new(api_key))
     }
 
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
     pub fn set_model(&mut self, model: String) {
         self.model = model;
     }

@@ -211,6 +211,29 @@ impl Database {
         Ok(count)
     }
 
+    /// persist the selected model for a session
+    pub fn set_session_model(&self, session_id: i64, model_id: &str) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET model = ?1 WHERE id = ?2",
+            rusqlite::params![model_id, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// load the persisted model for a session
+    pub fn session_model(&self, session_id: i64) -> Result<Option<String>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let model: Option<String> = conn
+            .query_row(
+                "SELECT model FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(Error::from)?;
+        Ok(model)
+    }
+
     pub fn recent_facts(&self) -> Result<Vec<Fact>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -566,5 +589,32 @@ mod tests {
             .unwrap();
 
         assert_eq!(db.session_message_count(sid).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_set_and_get_session_model() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        db.set_session_model(sid, "anthropic/claude-sonnet-4-5")
+            .unwrap();
+        assert_eq!(
+            db.session_model(sid).unwrap().as_deref(),
+            Some("anthropic/claude-sonnet-4-5")
+        );
+
+        // update to a different model
+        db.set_session_model(sid, "openai/gpt-5.2").unwrap();
+        assert_eq!(
+            db.session_model(sid).unwrap().as_deref(),
+            Some("openai/gpt-5.2")
+        );
+    }
+
+    #[test]
+    fn test_session_model_default_is_none() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+        assert_eq!(db.session_model(sid).unwrap(), None);
     }
 }
