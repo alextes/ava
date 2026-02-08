@@ -53,12 +53,19 @@ impl AnyProvider {
         Ok(Self::Anthropic(AnthropicProvider::from_env()?))
     }
 
-    /// create a provider by name, for the switch_model tool
+    /// create a provider by name, for the switch_model tool.
+    /// if a model is specified, it must be in the provider's allowed list.
     pub fn from_name(provider: &str, model: Option<&str>) -> Result<Self, Error> {
         match provider {
             "anthropic" => {
                 let mut p = AnthropicProvider::from_env()?;
                 if let Some(m) = model {
+                    if !anthropic::ALLOWED_MODELS.contains(&m) {
+                        return Err(Error::Provider(format!(
+                            "model {m} not allowed for anthropic. allowed: {}",
+                            anthropic::ALLOWED_MODELS.join(", ")
+                        )));
+                    }
                     p.set_model(m.to_string());
                 }
                 Ok(Self::Anthropic(p))
@@ -66,6 +73,12 @@ impl AnyProvider {
             "openai" => {
                 let mut p = OpenAiProvider::from_env()?;
                 if let Some(m) = model {
+                    if !openai::ALLOWED_MODELS.contains(&m) {
+                        return Err(Error::Provider(format!(
+                            "model {m} not allowed for openai. allowed: {}",
+                            openai::ALLOWED_MODELS.join(", ")
+                        )));
+                    }
                     p.set_model(m.to_string());
                 }
                 Ok(Self::OpenAi(p))

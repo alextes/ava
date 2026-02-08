@@ -8,6 +8,7 @@ use crate::tool::{ToolDefinition, tool_definitions};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+pub const ALLOWED_MODELS: &[&str] = &["claude-opus-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"];
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct AnthropicProvider {

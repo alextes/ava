@@ -594,7 +594,8 @@ fn switch_model_definition() -> ToolDefinition {
                 },
                 "model": {
                     "type": "string",
-                    "description": "optional model name (e.g. gpt-4.1, claude-sonnet-4-5). if omitted, uses the provider's default model."
+                    "enum": ["claude-opus-4-6", "claude-sonnet-4-5", "claude-haiku-4-5", "gpt-5.2", "gpt-5-mini"],
+                    "description": "model name. must match the chosen provider. anthropic: claude-opus-4-6, claude-sonnet-4-5, claude-haiku-4-5. openai: gpt-5.2, gpt-5-mini. if omitted, uses the provider's default."
                 }
             },
             "required": ["provider"]
