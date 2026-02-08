@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-gmi8
 title: wire auto-approval rules into telegram approver
 priority: P2
-status: open
+status: done
 deps:
 - ava-obhq
 tags:
@@ -11,6 +11,8 @@ tags:
 - approval
 owner: null
 created_at: 2026-02-07T18:03:02.762657Z
+started_at: 2026-02-08T19:31:35.428792Z
+completed_at: 2026-02-08T19:32:43.261666Z
 ---
 
 the TelegramApprover currently always prompts the user for exec commands. it should first check stored approval rules in the database and auto-approve if a matching rule exists.

@@ -3,14 +3,18 @@ schema_version: 9
 id: ava-61em
 title: add browser tool
 priority: P2
-status: doing
+status: done
+type: meta
 deps:
 - ava-b13x
+- ava-a5d8
+- ava-i727
 tags:
 - tool
-owner: agent-two
+owner: null
 created_at: 2026-02-01T21:37:34.076221Z
 started_at: 2026-02-08T19:21:31.106785Z
+completed_at: 2026-02-08T19:50:09.369699Z
 ---
 
 browser automation tool for the agent loop:
@@ -113,11 +117,17 @@ for ava's use case (web research, form filling, scraping), either works fine. us
 - supports system chrome via `chrome_executable()` — prefer user's installed chrome, fall back to auto-download or error
 - active maintenance
 
-### open design questions
+### design decisions (resolved)
 
-- **tool shape**: single `browser` tool with `action` parameter, or separate tools (navigate, click, screenshot)?
-- **browser lifecycle**: reuse one browser instance per conversation, or launch fresh each time?
-- **chrome binary**: prefer system chrome, fall back to `BrowserFetcher` auto-download, or require manual install?
-- **output format**: return page text content (like web_fetch), accessibility tree snapshots, or screenshot bytes?
-- **headless vs visible**: headless by default for server/telegram, visible option for CLI debugging?
-- **resource limits**: timeout per action, max pages open, memory budget?
+- **tool shape**: single `browser` tool with `action` parameter
+- **browser lifecycle**: global static instance (OnceLock), lazy-initialized on first call
+- **chrome binary**: require system chrome at known paths, error if not found
+- **output format**: text by default, screenshot action returns base64 image (requires image content support)
+- **headless vs visible**: headless by default, `AVA_BROWSER_VISIBLE=1` env var for debugging
+- **actions**: navigate, click, type, screenshot, get_text
+- **resource limits**: 30s timeout per action, single tab, 4000 char text truncation
+
+### implementation issues
+
+- ava-a5d8: add image content support to message and provider layer
+- ava-i727: add browser tool with chromiumoxide (depends on ava-a5d8)
