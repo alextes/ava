@@ -3,12 +3,13 @@ schema_version: 9
 id: ava-o6ip
 title: support built-in tool types in anthropic provider
 priority: P2
-status: open
+status: doing
 deps: []
 tags:
 - tool
-owner: null
+owner: alextes
 created_at: 2026-02-07T19:12:47.296814Z
+started_at: 2026-02-08T20:05:49.008048Z
 ---
 
 update the provider layer to support anthropic's schema-less built-in tools alongside regular custom tools.

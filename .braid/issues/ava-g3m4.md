@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-g3m4
 title: add approval rule management (list/delete)
 priority: P2
-status: open
+status: done
 deps:
 - ava-obhq
 tags:
@@ -11,6 +11,8 @@ tags:
 - approval
 owner: null
 created_at: 2026-02-07T18:03:12.538034Z
+started_at: 2026-02-08T20:03:22.593545Z
+completed_at: 2026-02-08T20:04:05.746866Z
 ---
 
 users need a way to view and delete approval rules. the DB methods already exist (list_approval_rules, delete_approval_rule) but there's no way to invoke them.

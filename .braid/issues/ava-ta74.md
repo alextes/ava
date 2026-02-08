@@ -3,13 +3,14 @@ schema_version: 9
 id: ava-ta74
 title: research exec tool prior art across agent harnesses
 priority: P2
-status: open
+status: doing
 type: design
 deps: []
 tags:
 - tool
-owner: null
+owner: agent-two
 created_at: 2026-02-08T19:51:29.948941Z
+started_at: 2026-02-08T19:54:03.885692Z
 ---
 
 research how other agent harnesses handle exec/shell tools. compare approaches across:
