@@ -40,16 +40,19 @@ pub fn references_sensitive_env(command: &str) -> bool {
 struct ExecInput {
     command: String,
     timeout_secs: Option<u64>,
+    cwd: Option<String>,
 }
 
 pub(super) async fn handle_exec(call: &ToolCall) -> String {
     match serde_json::from_value::<ExecInput>(call.input.clone()) {
-        Ok(input) => execute_command(&input.command, input.timeout_secs).await,
+        Ok(input) => {
+            execute_command(&input.command, input.timeout_secs, input.cwd.as_deref()).await
+        }
         Err(err) => format!("invalid input: {err}"),
     }
 }
 
-async fn execute_command(command: &str, timeout_secs: Option<u64>) -> String {
+async fn execute_command(command: &str, timeout_secs: Option<u64>, cwd: Option<&str>) -> String {
     // safety filter
     if let Some(reason) = check_safety_filter(command) {
         return reason.to_string();
@@ -59,16 +62,15 @@ async fn execute_command(command: &str, timeout_secs: Option<u64>) -> String {
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .min(MAX_TIMEOUT_SECS);
 
-    tracing::info!(command, timeout, "executing command");
+    tracing::info!(command, timeout, ?cwd, "executing command");
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout),
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .output(),
-    )
-    .await;
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(command);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout), cmd.output()).await;
 
     match result {
         Ok(Ok(output)) => {
@@ -122,6 +124,10 @@ pub(super) fn exec_definition() -> ToolDefinition {
                 "timeout_secs": {
                     "type": "integer",
                     "description": "timeout in seconds (default 30, max 300)"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "working directory for the command (default: process working directory)"
                 }
             },
             "required": ["command"]
@@ -179,20 +185,38 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_command_ls() {
-        let result = execute_command("echo hello", None).await;
+        let result = execute_command("echo hello", None, None).await;
         assert!(result.contains("exit code: 0"));
         assert!(result.contains("hello"));
     }
 
     #[tokio::test]
     async fn test_execute_command_timeout() {
-        let result = execute_command("sleep 10", Some(1)).await;
+        let result = execute_command("sleep 10", Some(1), None).await;
         assert!(result.contains("timed out"));
     }
 
     #[tokio::test]
     async fn test_execute_command_safety_filter() {
-        let result = execute_command("rm -rf /", None).await;
+        let result = execute_command("rm -rf /", None, None).await;
         assert!(result.contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_with_cwd() {
+        let result = execute_command("pwd", None, Some("/tmp")).await;
+        assert!(result.contains("exit code: 0"));
+        assert!(result.contains("/tmp") || result.contains("/private/tmp"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_with_nonexistent_cwd() {
+        let result = execute_command(
+            "echo hi",
+            None,
+            Some("/nonexistent_dir_that_does_not_exist"),
+        )
+        .await;
+        assert!(result.contains("failed to execute command"));
     }
 }
