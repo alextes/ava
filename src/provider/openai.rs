@@ -45,7 +45,7 @@ impl OpenAiProvider {
 #[derive(Debug, Serialize)]
 struct ApiRequest<'a> {
     model: &'a str,
-    max_tokens: u32,
+    max_completion_tokens: u32,
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatTool>,
@@ -249,7 +249,7 @@ impl Provider for OpenAiProvider {
 
         let request = ApiRequest {
             model: &self.model,
-            max_tokens: self.max_tokens,
+            max_completion_tokens: self.max_tokens,
             messages: chat_messages,
             tools: chat_tools,
         };
