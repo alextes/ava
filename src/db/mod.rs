@@ -272,7 +272,6 @@ impl Database {
         Ok(None)
     }
 
-    #[allow(dead_code)]
     pub fn list_approval_rules(&self) -> Result<Vec<ApprovalRule>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, pattern FROM approval_rules ORDER BY id")?;

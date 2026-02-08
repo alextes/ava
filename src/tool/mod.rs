@@ -15,6 +15,7 @@ pub const EXEC_TOOL_NAME: &str = "exec";
 pub const WEB_SEARCH_TOOL_NAME: &str = "web_search";
 pub const WEB_FETCH_TOOL_NAME: &str = "web_fetch";
 pub const SWITCH_MODEL_TOOL_NAME: &str = "switch_model";
+pub const MANAGE_RULES_TOOL_NAME: &str = "manage_rules";
 
 const MAX_OUTPUT_CHARS: usize = 4000;
 const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
@@ -109,6 +110,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         web_search_definition(),
         web_fetch_definition(),
         switch_model_definition(),
+        manage_rules_definition(),
     ]
 }
 
@@ -158,6 +160,12 @@ struct WebFetchInput {
 struct SwitchModelInput {
     provider: String,
     model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManageRulesInput {
+    action: String,
+    id: Option<i64>,
 }
 
 pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<ToolCallResult, Error> {
@@ -346,6 +354,60 @@ pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<ToolCall
                         }),
                     }
                 }
+                Err(err) => Ok(ToolCallResult {
+                    content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
+                    switch_provider: None,
+                }),
+            }
+        }
+        MANAGE_RULES_TOOL_NAME => {
+            match serde_json::from_value::<ManageRulesInput>(call.input.clone()) {
+                Ok(input) => match input.action.as_str() {
+                    "list" => {
+                        let rules = db.list_approval_rules()?;
+                        if rules.is_empty() {
+                            return Ok(ToolCallResult {
+                                content: MessageContent::tool_result(
+                                    &call.id,
+                                    "no approval rules saved",
+                                ),
+                                switch_provider: None,
+                            });
+                        }
+                        let mut output = String::new();
+                        for (i, rule) in rules.iter().enumerate() {
+                            if i > 0 {
+                                output.push('\n');
+                            }
+                            output.push_str(&format!("id={}: {}", rule.id, rule.pattern));
+                        }
+                        Ok(ToolCallResult {
+                            content: MessageContent::tool_result(&call.id, output),
+                            switch_provider: None,
+                        })
+                    }
+                    "delete" => match input.id {
+                        Some(id) => {
+                            let deleted = db.delete_approval_rule(id)?;
+                            let msg = if deleted { "deleted" } else { "not found" };
+                            Ok(ToolCallResult {
+                                content: MessageContent::tool_result(&call.id, msg),
+                                switch_provider: None,
+                            })
+                        }
+                        None => Ok(ToolCallResult {
+                            content: MessageContent::tool_result(&call.id, "delete requires id"),
+                            switch_provider: None,
+                        }),
+                    },
+                    other => Ok(ToolCallResult {
+                        content: MessageContent::tool_result(
+                            &call.id,
+                            format!("invalid action: {other}"),
+                        ),
+                        switch_provider: None,
+                    }),
+                },
                 Err(err) => Ok(ToolCallResult {
                     content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                     switch_provider: None,
@@ -766,6 +828,28 @@ fn switch_model_definition() -> ToolDefinition {
                 }
             },
             "required": ["provider"]
+        }),
+    }
+}
+
+fn manage_rules_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: MANAGE_RULES_TOOL_NAME,
+        description: "manage approval rules for command execution. action=list: show all saved rules. action=delete: remove a rule by id.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "delete"],
+                    "description": "action to perform"
+                },
+                "id": {
+                    "type": "integer",
+                    "description": "rule id to delete (required for action=delete)"
+                }
+            },
+            "required": ["action"]
         }),
     }
 }
@@ -1246,6 +1330,77 @@ mod tests {
         assert!(text.contains("[fact]"));
         assert!(text.contains("[episode]"));
         assert!(text.contains("[character]"));
+    }
+
+    // manage_rules tool
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_list_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("manage_rules", json!({"action": "list"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "no approval rules saved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_list() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule("ls *").unwrap();
+        db.save_approval_rule("cargo *").unwrap();
+
+        let call = make_call("manage_rules", json!({"action": "list"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.contains("ls *"));
+        assert!(text.contains("cargo *"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_delete() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule("ls *").unwrap();
+        let rules = db.list_approval_rules().unwrap();
+
+        let call = make_call(
+            "manage_rules",
+            json!({"action": "delete", "id": rules[0].id}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(extract_tool_result_text(&result.content), "deleted");
+        assert!(db.list_approval_rules().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_delete_not_found() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("manage_rules", json!({"action": "delete", "id": 999}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(extract_tool_result_text(&result.content), "not found");
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_delete_missing_id() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("manage_rules", json!({"action": "delete"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "delete requires id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_manage_rules_invalid_action() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("manage_rules", json!({"action": "update"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "invalid action: update"
+        );
     }
 
     // unknown tool
