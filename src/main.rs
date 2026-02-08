@@ -18,7 +18,7 @@ use crate::approver::{PendingApprovals, TelegramApprover};
 use crate::channel::Channel;
 use crate::db::Database;
 use crate::message::{ChannelKind, InboundMessage};
-use crate::provider::AnthropicProvider;
+use crate::provider::AnyProvider;
 use crate::telegram::TelegramBot;
 use crate::tool::CliApprover;
 
@@ -81,7 +81,7 @@ async fn main() {
 }
 
 async fn run_message(content: String) -> Result<(), error::Error> {
-    let provider = AnthropicProvider::from_env()?;
+    let provider = AnyProvider::default_from_env()?;
     let db = Database::open()?;
     let agent = Agent::new(provider, CliApprover, db);
 
@@ -172,7 +172,7 @@ async fn run_telegram() -> Result<(), error::Error> {
             let pending_clone = Arc::clone(&pending);
 
             tokio::spawn(async move {
-                let provider = match AnthropicProvider::from_env() {
+                let provider = match AnyProvider::default_from_env() {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::error!(%e, "provider init failed");

@@ -32,6 +32,10 @@ impl AnthropicProvider {
             .map_err(|_| Error::MissingApiKey("ANTHROPIC_API_KEY"))?;
         Ok(Self::new(api_key))
     }
+
+    pub fn set_model(&mut self, model: String) {
+        self.model = model;
+    }
 }
 
 #[derive(Debug, Serialize)]

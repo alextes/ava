@@ -6,11 +6,13 @@ use serde_json::json;
 use crate::db::Database;
 use crate::error::Error;
 use crate::message::MessageContent;
+use crate::provider::AnyProvider;
 
 pub const REMEMBER_FACT_TOOL_NAME: &str = "remember_fact";
 pub const EXEC_TOOL_NAME: &str = "exec";
 pub const WEB_SEARCH_TOOL_NAME: &str = "web_search";
 pub const WEB_FETCH_TOOL_NAME: &str = "web_fetch";
+pub const SWITCH_MODEL_TOOL_NAME: &str = "switch_model";
 
 const MAX_OUTPUT_CHARS: usize = 4000;
 const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
@@ -36,6 +38,11 @@ pub struct ToolDefinition {
     pub name: &'static str,
     pub description: &'static str,
     pub input_schema: serde_json::Value,
+}
+
+pub struct ToolCallResult {
+    pub content: MessageContent,
+    pub switch_provider: Option<AnyProvider>,
 }
 
 // --- approver trait ---
@@ -106,6 +113,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         exec_definition(),
         web_search_definition(),
         web_fetch_definition(),
+        switch_model_definition(),
     ]
 }
 
@@ -136,59 +144,112 @@ struct WebFetchInput {
     max_chars: Option<u64>,
 }
 
-pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<MessageContent, Error> {
+#[derive(Debug, Deserialize)]
+struct SwitchModelInput {
+    provider: String,
+    model: Option<String>,
+}
+
+pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<ToolCallResult, Error> {
     tracing::info!(tool = %call.name, "handling tool call");
     match call.name.as_str() {
         REMEMBER_FACT_TOOL_NAME => {
             match serde_json::from_value::<RememberFactInput>(call.input.clone()) {
                 Ok(input) => {
                     db.remember_fact(&input.category, &input.key, &input.value)?;
-                    Ok(MessageContent::tool_result(&call.id, "ok"))
+                    Ok(ToolCallResult {
+                        content: MessageContent::tool_result(&call.id, "ok"),
+                        switch_provider: None,
+                    })
                 }
-                Err(err) => Ok(MessageContent::tool_result(
-                    &call.id,
-                    format!("invalid input: {err}"),
-                )),
+                Err(err) => Ok(ToolCallResult {
+                    content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
+                    switch_provider: None,
+                }),
             }
         }
         EXEC_TOOL_NAME => match serde_json::from_value::<ExecInput>(call.input.clone()) {
             Ok(input) => {
                 let result = execute_command(&input.command, input.timeout_secs).await;
-                Ok(MessageContent::tool_result(&call.id, result))
+                Ok(ToolCallResult {
+                    content: MessageContent::tool_result(&call.id, result),
+                    switch_provider: None,
+                })
             }
-            Err(err) => Ok(MessageContent::tool_result(
-                &call.id,
-                format!("invalid input: {err}"),
-            )),
+            Err(err) => Ok(ToolCallResult {
+                content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
+                switch_provider: None,
+            }),
         },
         WEB_SEARCH_TOOL_NAME => {
             match serde_json::from_value::<WebSearchInput>(call.input.clone()) {
                 Ok(input) => {
                     let result = web_search(&input.query, input.max_results).await;
-                    Ok(MessageContent::tool_result(&call.id, result))
+                    Ok(ToolCallResult {
+                        content: MessageContent::tool_result(&call.id, result),
+                        switch_provider: None,
+                    })
                 }
-                Err(err) => Ok(MessageContent::tool_result(
-                    &call.id,
-                    format!("invalid input: {err}"),
-                )),
+                Err(err) => Ok(ToolCallResult {
+                    content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
+                    switch_provider: None,
+                }),
             }
         }
         WEB_FETCH_TOOL_NAME => match serde_json::from_value::<WebFetchInput>(call.input.clone()) {
             Ok(input) => {
                 let result = web_fetch(&input.url, input.max_chars).await;
-                Ok(MessageContent::tool_result(&call.id, result))
+                Ok(ToolCallResult {
+                    content: MessageContent::tool_result(&call.id, result),
+                    switch_provider: None,
+                })
             }
-            Err(err) => Ok(MessageContent::tool_result(
-                &call.id,
-                format!("invalid input: {err}"),
-            )),
+            Err(err) => Ok(ToolCallResult {
+                content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
+                switch_provider: None,
+            }),
         },
+        SWITCH_MODEL_TOOL_NAME => {
+            match serde_json::from_value::<SwitchModelInput>(call.input.clone()) {
+                Ok(input) => {
+                    match AnyProvider::from_name(&input.provider, input.model.as_deref()) {
+                        Ok(provider) => {
+                            let model_info = input.model.as_deref().unwrap_or("default");
+                            Ok(ToolCallResult {
+                                content: MessageContent::tool_result(
+                                    &call.id,
+                                    format!(
+                                        "switched to provider: {}, model: {model_info}",
+                                        input.provider
+                                    ),
+                                ),
+                                switch_provider: Some(provider),
+                            })
+                        }
+                        Err(err) => Ok(ToolCallResult {
+                            content: MessageContent::tool_result(
+                                &call.id,
+                                format!("failed to switch: {err}"),
+                            ),
+                            switch_provider: None,
+                        }),
+                    }
+                }
+                Err(err) => Ok(ToolCallResult {
+                    content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
+                    switch_provider: None,
+                }),
+            }
+        }
         _ => {
             tracing::warn!(tool = %call.name, "unknown tool");
-            Ok(MessageContent::tool_result(
-                &call.id,
-                format!("unknown tool: {}", call.name),
-            ))
+            Ok(ToolCallResult {
+                content: MessageContent::tool_result(
+                    &call.id,
+                    format!("unknown tool: {}", call.name),
+                ),
+                switch_provider: None,
+            })
         }
     }
 }
@@ -515,6 +576,28 @@ fn web_fetch_definition() -> ToolDefinition {
                 }
             },
             "required": ["url"]
+        }),
+    }
+}
+
+fn switch_model_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: SWITCH_MODEL_TOOL_NAME,
+        description: "switch the ai provider and model for the remainder of this conversation. use this to delegate to a different model (e.g. a cheaper one for simple tasks, or a more capable one for hard tasks).",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "enum": ["anthropic", "openai"],
+                    "description": "the provider to switch to"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "optional model name (e.g. gpt-4.1, claude-sonnet-4-5). if omitted, uses the provider's default model."
+                }
+            },
+            "required": ["provider"]
         }),
     }
 }

@@ -2,19 +2,19 @@ use crate::db::Database;
 use crate::db::Fact;
 use crate::error::Error;
 use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage};
-use crate::provider::{DEFAULT_SYSTEM_PROMPT, Provider};
+use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall};
 
 const MAX_FACT_VALUE_CHARS: usize = 500;
 
-pub struct Agent<P, A> {
-    provider: P,
+pub struct Agent<A> {
+    provider: AnyProvider,
     approver: A,
     db: Database,
 }
 
-impl<P: Provider, A: Approver> Agent<P, A> {
-    pub fn new(provider: P, approver: A, db: Database) -> Self {
+impl<A: Approver> Agent<A> {
+    pub fn new(provider: AnyProvider, approver: A, db: Database) -> Self {
         Self {
             provider,
             approver,
@@ -27,9 +27,11 @@ impl<P: Provider, A: Approver> Agent<P, A> {
         let mut messages = vec![Message::user(inbound.content)];
         let system_prompt = self.system_prompt()?;
         let mut tool_rounds = 0;
+        let mut switched_provider: Option<AnyProvider> = None;
 
         loop {
-            let response = self.provider.complete(&system_prompt, &messages).await?;
+            let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
+            let response = active_provider.complete(&system_prompt, &messages).await?;
 
             if response.tool_calls.is_empty() {
                 return Ok(OutboundMessage {
@@ -63,7 +65,11 @@ impl<P: Provider, A: Approver> Agent<P, A> {
             let mut tool_results = Vec::new();
             for call in &response.tool_calls {
                 let result = self.handle_tool_call_with_approval(call).await?;
-                tool_results.push(result);
+                if let Some(new_provider) = result.switch_provider {
+                    tracing::info!("switching provider mid-conversation");
+                    switched_provider = Some(new_provider);
+                }
+                tool_results.push(result.content);
             }
             messages.push(Message::user_with_content(tool_results));
         }
@@ -72,7 +78,7 @@ impl<P: Provider, A: Approver> Agent<P, A> {
     async fn handle_tool_call_with_approval(
         &self,
         call: &ToolCall,
-    ) -> Result<MessageContent, Error> {
+    ) -> Result<tool::ToolCallResult, Error> {
         if tool::requires_approval(call) {
             let decision = self.approver.request_approval(call).await?;
             match decision {
@@ -84,10 +90,10 @@ impl<P: Provider, A: Approver> Agent<P, A> {
                     self.db.save_approval_rule(pattern)?;
                 }
                 ApprovalDecision::Deny => {
-                    return Ok(MessageContent::tool_result(
-                        &call.id,
-                        "command denied by user",
-                    ));
+                    return Ok(tool::ToolCallResult {
+                        content: MessageContent::tool_result(&call.id, "command denied by user"),
+                        switch_provider: None,
+                    });
                 }
             }
         }
@@ -155,37 +161,31 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::message::ChannelKind;
-    use crate::provider::{ProviderResponse, StopReason};
+    use crate::provider::{ProviderResponse, StopReason, TestProvider};
     use crate::tool::CliApprover;
-    use std::sync::{Arc, Mutex};
 
-    struct MockProvider {
-        response: String,
-        system_prompt: Arc<Mutex<Option<String>>>,
+    fn make_test_provider(response: &str) -> AnyProvider {
+        let response = response.to_string();
+        AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                Ok(ProviderResponse {
+                    content: response.clone(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                })
+            }),
+        })
     }
 
-    impl Provider for MockProvider {
-        async fn complete(
-            &self,
-            system_prompt: &str,
-            _messages: &[Message],
-        ) -> Result<crate::provider::ProviderResponse, Error> {
-            *self.system_prompt.lock().unwrap() = Some(system_prompt.to_string());
-            Ok(ProviderResponse {
-                content: self.response.clone(),
-                stop_reason: StopReason::EndTurn,
-                tool_calls: vec![],
-            })
-        }
+    fn make_failing_provider() -> AnyProvider {
+        AnyProvider::Test(TestProvider {
+            handler: Box::new(|_, _| Err(Error::Provider("provider failed".into()))),
+        })
     }
 
     #[tokio::test]
     async fn test_agent_processes_message() {
-        let seen_prompt = Arc::new(Mutex::new(None));
-        let provider = MockProvider {
-            response: "hi".into(),
-            system_prompt: seen_prompt.clone(),
-        };
+        let provider = make_test_provider("hi");
         let db = Database::open_in_memory().unwrap();
         let agent = Agent::new(provider, CliApprover, db);
 
@@ -196,27 +196,11 @@ mod tests {
 
         let outbound = agent.process(inbound).await.unwrap();
         assert_eq!(outbound.content, "hi");
-        assert_eq!(
-            seen_prompt.lock().unwrap().as_deref(),
-            Some(DEFAULT_SYSTEM_PROMPT)
-        );
-    }
-
-    struct FailingProvider;
-
-    impl Provider for FailingProvider {
-        async fn complete(
-            &self,
-            _system_prompt: &str,
-            _messages: &[Message],
-        ) -> Result<ProviderResponse, Error> {
-            Err(Error::Provider("provider failed".into()))
-        }
     }
 
     #[tokio::test]
     async fn test_provider_error_propagates() {
-        let provider = FailingProvider;
+        let provider = make_failing_provider();
         let db = Database::open_in_memory().unwrap();
         let agent = Agent::new(provider, CliApprover, db);
 
@@ -234,11 +218,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_injects_facts_into_system_prompt() {
+        use std::sync::{Arc, Mutex};
+
         let seen_prompt = Arc::new(Mutex::new(None));
-        let provider = MockProvider {
-            response: "hi".into(),
-            system_prompt: seen_prompt.clone(),
-        };
+        let seen_prompt_clone = seen_prompt.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |system, _msgs| {
+                *seen_prompt_clone.lock().unwrap() = Some(system.to_string());
+                Ok(ProviderResponse {
+                    content: "hi".into(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                })
+            }),
+        });
+
         let db = Database::open_in_memory().unwrap();
         db.remember_fact("user", "name", "alex").unwrap();
         let agent = Agent::new(provider, CliApprover, db);

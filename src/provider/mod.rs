@@ -1,7 +1,9 @@
 mod anthropic;
+mod openai;
 
 pub use crate::tool::ToolCall;
 pub use anthropic::AnthropicProvider;
+pub use openai::OpenAiProvider;
 
 use std::future::Future;
 
@@ -34,4 +36,74 @@ pub trait Provider: Send + Sync {
         system_prompt: &str,
         messages: &[Message],
     ) -> impl Future<Output = Result<ProviderResponse, Error>> + Send;
+}
+
+// -- AnyProvider enum dispatch --
+
+pub enum AnyProvider {
+    Anthropic(AnthropicProvider),
+    OpenAi(OpenAiProvider),
+    #[cfg(test)]
+    Test(TestProvider),
+}
+
+impl AnyProvider {
+    /// create the default provider from environment variables (anthropic)
+    pub fn default_from_env() -> Result<Self, Error> {
+        Ok(Self::Anthropic(AnthropicProvider::from_env()?))
+    }
+
+    /// create a provider by name, for the switch_model tool
+    pub fn from_name(provider: &str, model: Option<&str>) -> Result<Self, Error> {
+        match provider {
+            "anthropic" => {
+                let mut p = AnthropicProvider::from_env()?;
+                if let Some(m) = model {
+                    p.set_model(m.to_string());
+                }
+                Ok(Self::Anthropic(p))
+            }
+            "openai" => {
+                let mut p = OpenAiProvider::from_env()?;
+                if let Some(m) = model {
+                    p.set_model(m.to_string());
+                }
+                Ok(Self::OpenAi(p))
+            }
+            _ => Err(Error::Provider(format!("unknown provider: {provider}"))),
+        }
+    }
+}
+
+impl Provider for AnyProvider {
+    async fn complete(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+    ) -> Result<ProviderResponse, Error> {
+        match self {
+            Self::Anthropic(p) => p.complete(system_prompt, messages).await,
+            Self::OpenAi(p) => p.complete(system_prompt, messages).await,
+            #[cfg(test)]
+            Self::Test(p) => p.complete(system_prompt, messages).await,
+        }
+    }
+}
+
+// -- test provider --
+
+#[cfg(test)]
+pub struct TestProvider {
+    pub handler: Box<dyn Fn(&str, &[Message]) -> Result<ProviderResponse, Error> + Send + Sync>,
+}
+
+#[cfg(test)]
+impl Provider for TestProvider {
+    async fn complete(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+    ) -> Result<ProviderResponse, Error> {
+        (self.handler)(system_prompt, messages)
+    }
 }
