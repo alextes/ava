@@ -30,4 +30,10 @@ focus areas:
 - timeout and resource limits
 - output handling (truncation, streaming, etc.)
 
+### specific design questions
+
+1. **dangerous command blocking** — ava currently has a basic blocklist (`rm -rf /`, `mkfs`, fork bombs). should we expand it? what do other harnesses block? is a blocklist the right approach or is approval-based gating better? research what patterns others use (blocklist, allowlist, sandbox, approval tiers).
+
+2. **working directory argument** — should the exec tool accept a `cwd` parameter to run commands in a specific directory? how do other harnesses handle this? (e.g. does claude code pass cwd, does it cd internally, does it maintain a stateful shell session with persistent cwd?)
+
 output: summary of approaches and recommendations for ava's exec tool improvements.
