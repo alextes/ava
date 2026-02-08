@@ -5,7 +5,6 @@ title: implement session mechanism
 priority: P2
 status: open
 deps:
-- ava-er4q
 - ava-1q20
 tags:
 - session
