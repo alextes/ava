@@ -16,6 +16,7 @@ pub const WEB_SEARCH_TOOL_NAME: &str = "web_search";
 pub const WEB_FETCH_TOOL_NAME: &str = "web_fetch";
 pub const SWITCH_MODEL_TOOL_NAME: &str = "switch_model";
 pub const MANAGE_RULES_TOOL_NAME: &str = "manage_rules";
+pub const TEXT_EDITOR_TOOL_NAME: &str = "str_replace_based_edit_tool";
 
 const MAX_OUTPUT_CHARS: usize = 4000;
 const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
@@ -36,11 +37,26 @@ pub struct ToolCall {
     pub input: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolDefinition {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub input_schema: serde_json::Value,
+#[derive(Debug, Clone)]
+pub enum ToolDefinition {
+    Custom {
+        name: &'static str,
+        description: &'static str,
+        input_schema: serde_json::Value,
+    },
+    BuiltIn {
+        tool_type: &'static str,
+        name: &'static str,
+    },
+}
+
+impl ToolDefinition {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Custom { name, .. } => name,
+            Self::BuiltIn { name, .. } => name,
+        }
+    }
 }
 
 pub struct ToolCallResult {
@@ -119,6 +135,10 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         web_fetch_definition(),
         switch_model_definition(),
         manage_rules_definition(),
+        ToolDefinition::BuiltIn {
+            tool_type: "text_editor_20250728",
+            name: TEXT_EDITOR_TOOL_NAME,
+        },
     ]
 }
 
@@ -694,7 +714,7 @@ fn truncate_to_chars(text: &str, max: usize) -> String {
 // --- tool definition builders ---
 
 fn remember_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: REMEMBER_TOOL_NAME,
         description: "store something in long-term memory. kind=fact: structured knowledge (requires category + key, e.g. user/name: alex). kind=episode: events, decisions, context worth preserving. kind=character: persona traits that shape behavior (requires key).",
         input_schema: json!({
@@ -724,7 +744,7 @@ fn remember_definition() -> ToolDefinition {
 }
 
 fn forget_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: FORGET_TOOL_NAME,
         description: "delete a memory. for facts: provide kind+category+key. for character traits: provide kind+key. for episodes: provide kind+id.",
         input_schema: json!({
@@ -754,7 +774,7 @@ fn forget_definition() -> ToolDefinition {
 }
 
 fn recall_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: RECALL_TOOL_NAME,
         description: "search stored memories by keyword or phrase. use this proactively to look up past context when relevant.",
         input_schema: json!({
@@ -775,7 +795,7 @@ fn recall_definition() -> ToolDefinition {
 }
 
 fn exec_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: EXEC_TOOL_NAME,
         description: "execute a shell command via sh -c. use this to run commands on the host system. the user may need to approve the command before it runs.",
         input_schema: json!({
@@ -796,7 +816,7 @@ fn exec_definition() -> ToolDefinition {
 }
 
 fn web_search_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: WEB_SEARCH_TOOL_NAME,
         description: "search the web using brave search. use this to find current information, look up documentation, or answer questions that require up-to-date knowledge.",
         input_schema: json!({
@@ -817,7 +837,7 @@ fn web_search_definition() -> ToolDefinition {
 }
 
 fn web_fetch_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: WEB_FETCH_TOOL_NAME,
         description: "fetch a web page and return its content as plain text. use this to read the full content of a URL found via web_search or provided by the user.",
         input_schema: json!({
@@ -838,7 +858,7 @@ fn web_fetch_definition() -> ToolDefinition {
 }
 
 fn switch_model_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: SWITCH_MODEL_TOOL_NAME,
         description: "switch the ai provider and model for the remainder of this conversation. use this to delegate to a different model (e.g. a cheaper one for simple tasks, or a more capable one for hard tasks).",
         input_schema: json!({
@@ -861,7 +881,7 @@ fn switch_model_definition() -> ToolDefinition {
 }
 
 fn manage_rules_definition() -> ToolDefinition {
-    ToolDefinition {
+    ToolDefinition::Custom {
         name: MANAGE_RULES_TOOL_NAME,
         description: "manage approval rules for command execution. action=list: show all saved rules. action=add: propose a new rule (requires human approval). action=delete: remove a rule by id. patterns use wildcard matching (e.g. 'cargo *' matches any cargo subcommand).",
         input_schema: json!({

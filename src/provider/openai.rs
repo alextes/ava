@@ -224,13 +224,20 @@ fn convert_messages(system_prompt: &str, messages: &[Message]) -> Vec<ChatMessag
 fn convert_tools(definitions: &[ToolDefinition]) -> Vec<ChatTool> {
     definitions
         .iter()
-        .map(|def| ChatTool {
-            tool_type: "function".to_string(),
-            function: ChatFunction {
-                name: def.name,
-                description: def.description,
-                parameters: def.input_schema.clone(),
-            },
+        .filter_map(|def| match def {
+            ToolDefinition::Custom {
+                name,
+                description,
+                input_schema,
+            } => Some(ChatTool {
+                tool_type: "function".to_string(),
+                function: ChatFunction {
+                    name,
+                    description,
+                    parameters: input_schema.clone(),
+                },
+            }),
+            ToolDefinition::BuiltIn { .. } => None,
         })
         .collect()
 }
@@ -375,13 +382,25 @@ mod tests {
     #[test]
     fn test_convert_tools() {
         let definitions = tool_definitions();
+        let custom_count = definitions
+            .iter()
+            .filter(|d| matches!(d, ToolDefinition::Custom { .. }))
+            .count();
         let tools = convert_tools(&definitions);
 
-        assert!(!tools.is_empty());
+        // built-in tools should be filtered out
+        assert_eq!(tools.len(), custom_count);
+        assert!(tools.len() < definitions.len());
+
         let json = serde_json::to_value(&tools[0]).unwrap();
         assert_eq!(json["type"], "function");
         assert!(json["function"]["name"].is_string());
         assert!(json["function"]["parameters"].is_object());
+
+        // verify no tool is named after the built-in text editor
+        for tool in &tools {
+            assert_ne!(tool.function.name, "str_replace_based_edit_tool");
+        }
     }
 
     #[test]

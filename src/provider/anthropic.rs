@@ -54,7 +54,7 @@ struct ApiRequest<'a> {
     max_tokens: u32,
     system: serde_json::Value,
     messages: serde_json::Value,
-    tools: &'a [ToolDefinition],
+    tools: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,12 +126,31 @@ impl Provider for AnthropicProvider {
             last_block["cache_control"] = json!({"type": "ephemeral"});
         }
 
+        let tools_json: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| match t {
+                ToolDefinition::Custom {
+                    name,
+                    description,
+                    input_schema,
+                } => json!({
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
+                }),
+                ToolDefinition::BuiltIn { tool_type, name } => json!({
+                    "type": tool_type,
+                    "name": name,
+                }),
+            })
+            .collect();
+
         let request = ApiRequest {
             model: &self.model,
             max_tokens: self.max_tokens,
             system,
             messages: messages_value,
-            tools: &tools,
+            tools: serde_json::Value::Array(tools_json),
         };
 
         let response = self
@@ -282,12 +301,31 @@ mod tests {
             last_block["cache_control"] = json!({"type": "ephemeral"});
         }
 
+        let tools_json: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| match t {
+                ToolDefinition::Custom {
+                    name,
+                    description,
+                    input_schema,
+                } => json!({
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
+                }),
+                ToolDefinition::BuiltIn { tool_type, name } => json!({
+                    "type": tool_type,
+                    "name": name,
+                }),
+            })
+            .collect();
+
         let request = ApiRequest {
             model: "claude-sonnet-4-5",
             max_tokens: 1024,
             system,
             messages: messages_value,
-            tools: &tools,
+            tools: serde_json::Value::Array(tools_json),
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -304,6 +342,17 @@ mod tests {
             json["messages"][0]["content"][0]["cache_control"]["type"],
             "ephemeral"
         );
+        // custom tool has name, description, input_schema (no type)
         assert_eq!(json["tools"][0]["name"], "remember");
+        assert!(json["tools"][0]["description"].is_string());
+        assert!(json["tools"][0]["input_schema"].is_object());
+        assert!(json["tools"][0].get("type").is_none());
+
+        // built-in tool has type and name (no description, no input_schema)
+        let last_tool = json["tools"].as_array().unwrap().last().unwrap();
+        assert_eq!(last_tool["type"], "text_editor_20250728");
+        assert_eq!(last_tool["name"], "str_replace_based_edit_tool");
+        assert!(last_tool.get("description").is_none());
+        assert!(last_tool.get("input_schema").is_none());
     }
 }
