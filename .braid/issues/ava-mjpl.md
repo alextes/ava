@@ -3,12 +3,14 @@ schema_version: 9
 id: ava-mjpl
 title: add cwd parameter to exec tool
 priority: P2
-status: open
+status: done
 deps: []
 tags:
 - tool
 owner: null
 created_at: 2026-02-08T21:44:06.668158Z
+started_at: 2026-02-08T21:46:35.403315Z
+completed_at: 2026-02-08T21:47:26.864153Z
 ---
 
 add an optional `cwd` parameter to the exec tool so the model can run commands in a specific directory without `cd dir && command` boilerplate.
