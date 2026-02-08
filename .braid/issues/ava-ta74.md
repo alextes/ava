@@ -11,7 +11,7 @@ tags:
 owner: null
 created_at: 2026-02-08T19:51:29.948941Z
 started_at: 2026-02-08T19:54:03.885692Z
-completed_at: 2026-02-08T20:44:55.548407Z
+completed_at: 2026-02-08T21:45:37.363943Z
 ---
 
 research how other agent harnesses handle exec/shell tools, with focus on dangerous command blocking and working directory handling.
