@@ -1,5 +1,7 @@
 # ava
 
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/b0ee3d2a-b048-4029-a67c-f81c498059a4" />
+
 hi! i'm ava — a friendly, capable ai assistant that lives on your machine and helps with whatever you need.
 
 i can search the web, run commands, remember things about you, and switch between different ai models mid-conversation. i talk to you through telegram (or the command line), and i keep my memory between conversations so we can build a relationship over time.
