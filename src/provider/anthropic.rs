@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::error::Error;
 use crate::message::Message;
@@ -43,8 +44,8 @@ impl AnthropicProvider {
 struct ApiRequest<'a> {
     model: &'a str,
     max_tokens: u32,
-    system: &'a str,
-    messages: &'a [Message],
+    system: serde_json::Value,
+    messages: serde_json::Value,
     tools: &'a [ToolDefinition],
 }
 
@@ -85,11 +86,32 @@ impl Provider for AnthropicProvider {
         messages: &[Message],
     ) -> Result<ProviderResponse, Error> {
         let tools = tool_definitions();
+
+        // system prompt as array with cache_control breakpoint
+        let system = json!([{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"}
+        }]);
+
+        // serialize messages and add cache_control to the last content block
+        // of the last message for incremental conversation caching
+        let mut messages_value = serde_json::to_value(messages)
+            .map_err(|e| Error::Provider(format!("failed to serialize messages: {e}")))?;
+        if let Some(last_msg) = messages_value.as_array_mut().and_then(|a| a.last_mut())
+            && let Some(last_block) = last_msg
+                .get_mut("content")
+                .and_then(|c| c.as_array_mut())
+                .and_then(|a| a.last_mut())
+        {
+            last_block["cache_control"] = json!({"type": "ephemeral"});
+        }
+
         let request = ApiRequest {
             model: &self.model,
             max_tokens: self.max_tokens,
-            system: system_prompt,
-            messages,
+            system,
+            messages: messages_value,
             tools: &tools,
         };
 
@@ -201,11 +223,28 @@ mod tests {
     fn test_request_serialization() {
         let messages = vec![Message::user("hello")];
         let tools = tool_definitions();
+
+        let system = json!([{
+            "type": "text",
+            "text": "test system prompt",
+            "cache_control": {"type": "ephemeral"}
+        }]);
+
+        let mut messages_value = serde_json::to_value(&messages).unwrap();
+        if let Some(last_msg) = messages_value.as_array_mut().and_then(|a| a.last_mut())
+            && let Some(last_block) = last_msg
+                .get_mut("content")
+                .and_then(|c| c.as_array_mut())
+                .and_then(|a| a.last_mut())
+        {
+            last_block["cache_control"] = json!({"type": "ephemeral"});
+        }
+
         let request = ApiRequest {
             model: "claude-sonnet-4-5",
             max_tokens: 1024,
-            system: "test system prompt",
-            messages: &messages,
+            system,
+            messages: messages_value,
             tools: &tools,
         };
 
@@ -213,10 +252,16 @@ mod tests {
 
         assert_eq!(json["model"], "claude-sonnet-4-5");
         assert_eq!(json["max_tokens"], 1024);
-        assert_eq!(json["system"], "test system prompt");
+        // system is now an array with cache_control
+        assert_eq!(json["system"][0]["text"], "test system prompt");
+        assert_eq!(json["system"][0]["cache_control"]["type"], "ephemeral");
+        // messages have cache_control on the last block
         assert_eq!(json["messages"][0]["role"], "user");
-        assert_eq!(json["messages"][0]["content"][0]["type"], "text");
         assert_eq!(json["messages"][0]["content"][0]["text"], "hello");
+        assert_eq!(
+            json["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
         assert_eq!(json["tools"][0]["name"], "remember_fact");
     }
 }
