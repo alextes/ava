@@ -774,6 +774,7 @@ fn switch_model_definition() -> ToolDefinition {
 mod tests {
     use super::*;
     use crate::approver::CliApprover;
+    use crate::db::Database;
 
     #[test]
     fn test_safety_filter_blocks_rm_rf_root() {
@@ -998,5 +999,263 @@ mod tests {
         let result = truncate_to_chars(&long, 100);
         assert!(result.starts_with("xxxx"));
         assert!(result.ends_with("... (content truncated)"));
+    }
+
+    // --- handle_tool_call integration tests ---
+
+    fn make_call(name: &str, input: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "test_id".into(),
+            name: name.into(),
+            input,
+        }
+    }
+
+    fn extract_tool_result_text(content: &MessageContent) -> &str {
+        match content {
+            MessageContent::ToolResult { content, .. } => content.as_str(),
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    // remember tool
+
+    #[tokio::test]
+    async fn test_handle_remember_fact() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call(
+            "remember",
+            json!({"content": "alex", "kind": "fact", "category": "user", "key": "name"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.starts_with("ok (id="));
+        assert!(result.switch_provider.is_none());
+
+        // verify persisted
+        let facts = db.recent_facts().unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].content, "alex");
+    }
+
+    #[tokio::test]
+    async fn test_handle_remember_episode() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call(
+            "remember",
+            json!({"content": "discussed migration plan", "kind": "episode"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert!(extract_tool_result_text(&result.content).starts_with("ok (id="));
+
+        let episodes = db.recent_episodes().unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].content, "discussed migration plan");
+    }
+
+    #[tokio::test]
+    async fn test_handle_remember_character() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call(
+            "remember",
+            json!({"content": "formal and precise", "kind": "character", "key": "tone"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert!(extract_tool_result_text(&result.content).starts_with("ok (id="));
+
+        let traits = db.character_traits().unwrap();
+        assert_eq!(traits.len(), 1);
+        assert_eq!(traits[0].content, "formal and precise");
+    }
+
+    #[tokio::test]
+    async fn test_handle_remember_invalid_kind() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("remember", json!({"content": "test", "kind": "bogus"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "invalid kind: bogus"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_remember_missing_fields() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("remember", json!({"kind": "fact"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.starts_with("invalid input:"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_remember_fact_upserts() {
+        let db = Database::open_in_memory().unwrap();
+        let call1 = make_call(
+            "remember",
+            json!({"content": "v1", "kind": "fact", "category": "user", "key": "name"}),
+        );
+        let call2 = make_call(
+            "remember",
+            json!({"content": "v2", "kind": "fact", "category": "user", "key": "name"}),
+        );
+        handle_tool_call(&db, &call1).await.unwrap();
+        handle_tool_call(&db, &call2).await.unwrap();
+
+        let facts = db.recent_facts().unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].content, "v2");
+    }
+
+    // forget tool
+
+    #[tokio::test]
+    async fn test_handle_forget_fact() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
+            .unwrap();
+
+        let call = make_call(
+            "forget",
+            json!({"kind": "fact", "category": "user", "key": "name"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(extract_tool_result_text(&result.content), "deleted");
+        assert!(db.recent_facts().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_forget_character() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+            .unwrap();
+
+        let call = make_call("forget", json!({"kind": "character", "key": "tone"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(extract_tool_result_text(&result.content), "deleted");
+        assert!(db.character_traits().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_forget_episode_by_id() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .remember(MemoryKind::Episode, "some event", None, None)
+            .unwrap();
+
+        let call = make_call("forget", json!({"kind": "episode", "id": id}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(extract_tool_result_text(&result.content), "deleted");
+    }
+
+    #[tokio::test]
+    async fn test_handle_forget_episode_missing_id() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("forget", json!({"kind": "episode"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "episode forget requires id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_forget_not_found() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call(
+            "forget",
+            json!({"kind": "fact", "category": "user", "key": "nonexistent"}),
+        );
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(extract_tool_result_text(&result.content), "not found");
+    }
+
+    #[tokio::test]
+    async fn test_handle_forget_invalid_kind() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("forget", json!({"kind": "bogus"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "invalid kind: bogus"
+        );
+    }
+
+    // recall tool
+
+    #[tokio::test]
+    async fn test_handle_recall_finds_results() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "loves rust programming",
+            Some("user"),
+            Some("hobby"),
+        )
+        .unwrap();
+        db.remember(
+            MemoryKind::Episode,
+            "discussed python migration",
+            None,
+            None,
+        )
+        .unwrap();
+        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+            .unwrap();
+
+        let call = make_call("recall", json!({"query": "rust"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.contains("[fact] user/hobby: loves rust programming"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_recall_no_results() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("recall", json!({"query": "nonexistent"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "no memories found"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_recall_formats_all_kinds() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "rust developer",
+            Some("user"),
+            Some("role"),
+        )
+        .unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust project", None, None)
+            .unwrap();
+        db.remember(
+            MemoryKind::Character,
+            "rust enthusiast",
+            None,
+            Some("personality"),
+        )
+        .unwrap();
+
+        let call = make_call("recall", json!({"query": "rust"}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.contains("[fact]"));
+        assert!(text.contains("[episode]"));
+        assert!(text.contains("[character]"));
+    }
+
+    // unknown tool
+
+    #[tokio::test]
+    async fn test_handle_unknown_tool() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("nonexistent_tool", json!({}));
+        let result = handle_tool_call(&db, &call).await.unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.contains("unknown tool: nonexistent_tool"));
     }
 }

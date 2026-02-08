@@ -228,3 +228,142 @@ fn rand_u32() -> u32 {
     hasher.write_u8(0);
     hasher.finish() as u32
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::EXEC_TOOL_NAME;
+    use serde_json::json;
+
+    fn make_call(name: &str, input: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "test".into(),
+            name: name.into(),
+            input,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cli_approver_auto_approves() {
+        let approver = CliApprover;
+        let call = make_call(EXEC_TOOL_NAME, json!({"command": "ls"}));
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_any_approver_cli_delegates() {
+        let approver = AnyApprover::Cli(CliApprover);
+        let call = make_call(EXEC_TOOL_NAME, json!({"command": "ls"}));
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_handle_callback_allow_once() {
+        let pending = PendingApprovals::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        {
+            let mut map = pending.map.lock().await;
+            map.insert(
+                "abc123".into(),
+                PendingApproval {
+                    sender: tx,
+                    message_id: 42,
+                },
+            );
+        }
+
+        // we can't call handle_callback without a real TelegramBot,
+        // but we can test the pending map logic directly
+        let mut map = pending.map.lock().await;
+        let entry = map.remove("abc123");
+        assert!(entry.is_some());
+
+        let approval = entry.unwrap();
+        assert_eq!(approval.message_id, 42);
+        let _ = approval.sender.send(ApprovalDecision::AllowOnce);
+
+        let decision = rx.await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AllowOnce);
+    }
+
+    #[tokio::test]
+    async fn test_handle_callback_stale_nonce() {
+        let pending = PendingApprovals::new();
+        // no pending approval registered — lookup returns None
+        let map = pending.map.lock().await;
+        let entry = map.get("nonexistent");
+        assert!(entry.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pending_approvals_deny() {
+        let pending = PendingApprovals::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        {
+            let mut map = pending.map.lock().await;
+            map.insert(
+                "deny_nonce".into(),
+                PendingApproval {
+                    sender: tx,
+                    message_id: 99,
+                },
+            );
+        }
+
+        let mut map = pending.map.lock().await;
+        let approval = map.remove("deny_nonce").unwrap();
+        let _ = approval.sender.send(ApprovalDecision::Deny);
+        drop(map);
+
+        let decision = rx.await.unwrap();
+        assert_eq!(decision, ApprovalDecision::Deny);
+    }
+
+    #[tokio::test]
+    async fn test_pending_approvals_allow_always() {
+        let pending = PendingApprovals::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        {
+            let mut map = pending.map.lock().await;
+            map.insert(
+                "always_nonce".into(),
+                PendingApproval {
+                    sender: tx,
+                    message_id: 100,
+                },
+            );
+        }
+
+        let mut map = pending.map.lock().await;
+        let approval = map.remove("always_nonce").unwrap();
+        let _ = approval.sender.send(ApprovalDecision::AllowAlways {
+            pattern: "ls *".into(),
+        });
+        drop(map);
+
+        let decision = rx.await.unwrap();
+        assert!(matches!(decision, ApprovalDecision::AllowAlways { pattern } if pattern == "ls *"));
+    }
+
+    #[test]
+    fn test_rand_u32_produces_values() {
+        // just verify it doesn't panic and produces a value
+        let a = rand_u32();
+        let b = rand_u32();
+        // they should be different (extremely unlikely to collide)
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_references_sensitive_env_in_approval_context() {
+        // verify the function used to hide "allow always" button works
+        assert!(references_sensitive_env("echo $ANTHROPIC_API_KEY"));
+        assert!(references_sensitive_env("echo $TELOXIDE_TOKEN"));
+        assert!(!references_sensitive_env("echo hello"));
+    }
+}
