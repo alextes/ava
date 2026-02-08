@@ -3,8 +3,7 @@ mod compaction;
 use std::sync::Arc;
 
 use crate::approver::AnyApprover;
-use crate::db::Database;
-use crate::db::Fact;
+use crate::db::{Database, Memory};
 use crate::error::Error;
 use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage};
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
@@ -188,15 +187,28 @@ impl Agent {
     }
 
     fn system_prompt(&self) -> Result<String, Error> {
+        let traits = self.db.character_traits()?;
         let facts = self.db.recent_facts()?;
-        if facts.is_empty() {
-            return Ok(DEFAULT_SYSTEM_PROMPT.to_string());
+        let episodes = self.db.recent_episodes()?;
+
+        let mut prompt = DEFAULT_SYSTEM_PROMPT.to_string();
+
+        if !traits.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&format_character_traits(&traits));
         }
 
-        Ok(format!(
-            "{DEFAULT_SYSTEM_PROMPT}\n\n{}",
-            format_known_facts(&facts)
-        ))
+        if !facts.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&format_known_facts(&facts));
+        }
+
+        if !episodes.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&format_recent_episodes(&episodes));
+        }
+
+        Ok(prompt)
     }
 }
 
@@ -204,19 +216,31 @@ fn tool_use_content(call: &ToolCall) -> MessageContent {
     MessageContent::tool_use(call.id.clone(), call.name.clone(), call.input.clone())
 }
 
-fn format_known_facts(facts: &[Fact]) -> String {
+fn format_character_traits(traits: &[Memory]) -> String {
+    let mut output = String::from("## character");
+    for t in traits {
+        let key = t.key.as_deref().unwrap_or("?");
+        let value = truncate_chars(&t.content, MAX_FACT_VALUE_CHARS);
+        output.push_str("\n- ");
+        output.push_str(key);
+        output.push_str(": ");
+        output.push_str(&value);
+    }
+    output
+}
+
+fn format_known_facts(facts: &[Memory]) -> String {
     let mut grouped: Vec<(String, Vec<(String, String)>)> = Vec::new();
 
     for fact in facts {
-        let value = truncate_chars(&fact.value, MAX_FACT_VALUE_CHARS);
+        let category = fact.category.as_deref().unwrap_or("general").to_string();
+        let key = fact.key.as_deref().unwrap_or("?").to_string();
+        let value = truncate_chars(&fact.content, MAX_FACT_VALUE_CHARS);
 
-        if let Some((_, entries)) = grouped
-            .iter_mut()
-            .find(|(category, _)| category == &fact.category)
-        {
-            entries.push((fact.key.clone(), value));
+        if let Some((_, entries)) = grouped.iter_mut().find(|(cat, _)| cat == &category) {
+            entries.push((key, value));
         } else {
-            grouped.push((fact.category.clone(), vec![(fact.key.clone(), value)]));
+            grouped.push((category, vec![(key, value)]));
         }
     }
 
@@ -235,6 +259,18 @@ fn format_known_facts(facts: &[Fact]) -> String {
     output
 }
 
+fn format_recent_episodes(episodes: &[Memory]) -> String {
+    let mut output = String::from("## recent memories");
+    for ep in episodes {
+        let date = ep.created_at.split(' ').next().unwrap_or(&ep.created_at);
+        output.push_str("\n- [");
+        output.push_str(date);
+        output.push_str("] ");
+        output.push_str(&truncate_chars(&ep.content, MAX_FACT_VALUE_CHARS));
+    }
+    output
+}
+
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -247,6 +283,7 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::approver::CliApprover;
+    use crate::db::MemoryKind;
     use crate::message::ChannelKind;
     use crate::provider::{ProviderResponse, StopReason, TestProvider, Usage};
 
@@ -323,7 +360,8 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        db.remember_fact("user", "name", "alex").unwrap();
+        db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
+            .unwrap();
         let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
 
         let inbound = InboundMessage {
@@ -391,24 +429,38 @@ mod tests {
         assert_eq!(msg_count, 3);
     }
 
+    fn make_memory(
+        kind: MemoryKind,
+        content: &str,
+        category: Option<&str>,
+        key: Option<&str>,
+    ) -> Memory {
+        Memory {
+            id: 0,
+            kind,
+            content: content.into(),
+            category: category.map(|s| s.into()),
+            key: key.map(|s| s.into()),
+            created_at: "2024-01-15 12:00:00".into(),
+        }
+    }
+
     #[test]
     fn test_format_known_facts_groups_by_category() {
         let facts = vec![
-            Fact {
-                category: "user".into(),
-                key: "name".into(),
-                value: "alex".into(),
-            },
-            Fact {
-                category: "preferences".into(),
-                key: "response_style".into(),
-                value: "concise".into(),
-            },
-            Fact {
-                category: "user".into(),
-                key: "timezone".into(),
-                value: "Europe/Amsterdam".into(),
-            },
+            make_memory(MemoryKind::Fact, "alex", Some("user"), Some("name")),
+            make_memory(
+                MemoryKind::Fact,
+                "concise",
+                Some("preferences"),
+                Some("response_style"),
+            ),
+            make_memory(
+                MemoryKind::Fact,
+                "Europe/Amsterdam",
+                Some("user"),
+                Some("timezone"),
+            ),
         ];
 
         let formatted = format_known_facts(&facts);
@@ -421,16 +473,75 @@ mod tests {
 
     #[test]
     fn test_format_known_facts_truncates_values() {
-        let facts = vec![Fact {
-            category: "user".into(),
-            key: "bio".into(),
-            value: "x".repeat(MAX_FACT_VALUE_CHARS + 10),
-        }];
+        let facts = vec![make_memory(
+            MemoryKind::Fact,
+            &"x".repeat(MAX_FACT_VALUE_CHARS + 10),
+            Some("user"),
+            Some("bio"),
+        )];
 
         let formatted = format_known_facts(&facts);
         let expected = format!("- bio: {}", "x".repeat(MAX_FACT_VALUE_CHARS));
 
         assert!(formatted.contains(&expected));
         assert!(!formatted.contains(&"x".repeat(MAX_FACT_VALUE_CHARS + 1)));
+    }
+
+    #[test]
+    fn test_format_character_traits() {
+        let traits = vec![
+            make_memory(
+                MemoryKind::Character,
+                "formal and precise",
+                None,
+                Some("tone"),
+            ),
+            make_memory(
+                MemoryKind::Character,
+                "dry wit, concise",
+                None,
+                Some("personality"),
+            ),
+        ];
+
+        let formatted = format_character_traits(&traits);
+        assert!(formatted.contains("## character"));
+        assert!(formatted.contains("- tone: formal and precise"));
+        assert!(formatted.contains("- personality: dry wit, concise"));
+    }
+
+    #[test]
+    fn test_format_recent_episodes() {
+        let episodes = vec![
+            make_memory(MemoryKind::Episode, "discussed migration plan", None, None),
+            make_memory(MemoryKind::Episode, "user mentioned traveling", None, None),
+        ];
+
+        let formatted = format_recent_episodes(&episodes);
+        assert!(formatted.contains("## recent memories"));
+        assert!(formatted.contains("[2024-01-15] discussed migration plan"));
+        assert!(formatted.contains("[2024-01-15] user mentioned traveling"));
+    }
+
+    #[test]
+    fn test_system_prompt_includes_all_sections() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+            .unwrap();
+        db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
+            .unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust", None, None)
+            .unwrap();
+
+        let provider = make_test_provider("hi");
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
+        let prompt = agent.system_prompt().unwrap();
+
+        assert!(prompt.contains("## character"));
+        assert!(prompt.contains("- tone: formal"));
+        assert!(prompt.contains("## known facts"));
+        assert!(prompt.contains("- name: alex"));
+        assert!(prompt.contains("## recent memories"));
+        assert!(prompt.contains("discussed rust"));
     }
 }

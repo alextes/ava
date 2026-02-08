@@ -304,6 +304,6 @@ mod tests {
             json["messages"][0]["content"][0]["cache_control"]["type"],
             "ephemeral"
         );
-        assert_eq!(json["tools"][0]["name"], "remember_fact");
+        assert_eq!(json["tools"][0]["name"], "remember");
     }
 }
