@@ -261,7 +261,6 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn find_matching_rule(&self, command: &str) -> Result<Option<i64>, Error> {
         let rules = self.list_approval_rules()?;
         for rule in rules {

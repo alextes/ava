@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, oneshot};
 
-use crate::db::generate_pattern;
+use crate::db::{Database, generate_pattern};
 use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
 use crate::tool::{ApprovalDecision, Approver, ToolCall, references_sensitive_env};
@@ -57,14 +57,21 @@ pub struct TelegramApprover {
     bot: Arc<TelegramBot>,
     chat_id: i64,
     pending: Arc<PendingApprovals>,
+    db: Arc<Database>,
 }
 
 impl TelegramApprover {
-    pub fn new(bot: Arc<TelegramBot>, chat_id: i64, pending: Arc<PendingApprovals>) -> Self {
+    pub fn new(
+        bot: Arc<TelegramBot>,
+        chat_id: i64,
+        pending: Arc<PendingApprovals>,
+        db: Arc<Database>,
+    ) -> Self {
         Self {
             bot,
             chat_id,
             pending,
+            db,
         }
     }
 
@@ -143,6 +150,12 @@ impl Approver for TelegramApprover {
             .get("command")
             .and_then(|v| v.as_str())
             .unwrap_or("<unknown command>");
+
+        // check stored approval rules before prompting
+        if let Ok(Some(_rule_id)) = self.db.find_matching_rule(command) {
+            tracing::debug!(command, "auto-approved by stored rule");
+            return Ok(ApprovalDecision::AutoApproved);
+        }
 
         // generate nonce
         let nonce = format!("{:08x}", rand_u32());
@@ -365,5 +378,39 @@ mod tests {
         assert!(references_sensitive_env("echo $ANTHROPIC_API_KEY"));
         assert!(references_sensitive_env("echo $TELOXIDE_TOKEN"));
         assert!(!references_sensitive_env("echo hello"));
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_auto_approves_matching_rule() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo test *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(EXEC_TOOL_NAME, json!({"command": "cargo test --release"}));
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_no_rule_match_times_out() {
+        // with no matching rule and no callback handler, approval should time out.
+        // we use a very short timeout scenario by dropping the sender side.
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        // save a rule that won't match
+        db.save_approval_rule("cargo test *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, Arc::clone(&db));
+
+        // "rm -rf /" won't match "cargo test *" — would proceed to prompt
+        // but since we have a fake bot token, the send_message_with_keyboard call will fail
+        let call = make_call(EXEC_TOOL_NAME, json!({"command": "rm stuff"}));
+        let result = approver.request_approval(&call).await;
+        // the fake bot can't send messages, so this will error
+        assert!(result.is_err());
     }
 }

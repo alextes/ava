@@ -190,9 +190,14 @@ async fn agent_loop(mut rx: MessageReceiver, db: Arc<Database>, pending: Arc<Pen
         };
 
         let approver = match &queued.sink {
-            ResponseSink::Telegram { chat_id, bot } => AnyApprover::Telegram(
-                TelegramApprover::new(Arc::clone(bot), *chat_id, Arc::clone(&pending)),
-            ),
+            ResponseSink::Telegram { chat_id, bot } => {
+                AnyApprover::Telegram(TelegramApprover::new(
+                    Arc::clone(bot),
+                    *chat_id,
+                    Arc::clone(&pending),
+                    Arc::clone(&db),
+                ))
+            }
         };
 
         let agent = Agent::new(provider, approver, Arc::clone(&db));
