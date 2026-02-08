@@ -83,6 +83,15 @@ pub enum ChannelKind {
     Telegram,
 }
 
+impl ChannelKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChannelKind::Cli => "cli",
+            ChannelKind::Telegram => "telegram",
+        }
+    }
+}
+
 /// a message coming into the agent
 #[derive(Debug, Clone)]
 pub struct InboundMessage {

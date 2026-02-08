@@ -24,7 +24,18 @@ impl<A: Approver> Agent<A> {
 
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
     pub async fn process(self, inbound: InboundMessage) -> Result<OutboundMessage, Error> {
-        let mut messages = vec![Message::user(inbound.content)];
+        let session_id = self.db.active_session()?;
+        let channel_str = inbound.channel.as_str();
+
+        // load conversation history (growing window for prompt cache efficiency)
+        let mut messages = self.db.load_messages(session_id)?;
+
+        // append and persist the new user message
+        let user_content = vec![MessageContent::text(&inbound.content)];
+        self.db
+            .append_message(session_id, "user", &user_content, Some(channel_str))?;
+        messages.push(Message::user(inbound.content));
+
         let system_prompt = self.system_prompt()?;
         let mut tool_rounds = 0;
         let mut switched_provider: Option<AnyProvider> = None;
@@ -34,6 +45,11 @@ impl<A: Approver> Agent<A> {
             let response = active_provider.complete(&system_prompt, &messages).await?;
 
             if response.tool_calls.is_empty() {
+                // persist the final assistant response
+                let assistant_content = vec![MessageContent::text(&response.content)];
+                self.db
+                    .append_message(session_id, "assistant", &assistant_content, None)?;
+
                 return Ok(OutboundMessage {
                     content: response.content,
                 });
@@ -60,6 +76,9 @@ impl<A: Approver> Agent<A> {
                 assistant_blocks.push(tool_use_content(call));
             }
 
+            // persist the assistant message (including tool_use blocks)
+            self.db
+                .append_message(session_id, "assistant", &assistant_blocks, None)?;
             messages.push(Message::assistant_with_content(assistant_blocks));
 
             let mut tool_results = Vec::new();
@@ -71,6 +90,10 @@ impl<A: Approver> Agent<A> {
                 }
                 tool_results.push(result.content);
             }
+
+            // persist tool results
+            self.db
+                .append_message(session_id, "user", &tool_results, None)?;
             messages.push(Message::user_with_content(tool_results));
         }
     }
@@ -249,6 +272,57 @@ mod tests {
         assert!(prompt.contains("## known facts"));
         assert!(prompt.contains("### user"));
         assert!(prompt.contains("- name: alex"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_loads_history_from_session() {
+        use std::sync::{Arc, Mutex};
+
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        // seed conversation history in the db
+        db.append_message(
+            sid,
+            "user",
+            &[MessageContent::text("my name is alex")],
+            Some("cli"),
+        )
+        .unwrap();
+        db.append_message(
+            sid,
+            "assistant",
+            &[MessageContent::text("nice to meet you alex")],
+            None,
+        )
+        .unwrap();
+
+        // track what messages the provider sees
+        let seen_msgs = Arc::new(Mutex::new(None));
+        let seen_clone = seen_msgs.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, msgs| {
+                *seen_clone.lock().unwrap() = Some(msgs.len());
+                Ok(ProviderResponse {
+                    content: "your name is alex".into(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                })
+            }),
+        });
+
+        let agent = Agent::new(provider, CliApprover, db);
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "what is my name?".into(),
+        };
+        agent.process(inbound).await.unwrap();
+
+        // provider should have seen 3 messages: 2 history + 1 new
+        let msg_count = seen_msgs.lock().unwrap().unwrap();
+        assert_eq!(msg_count, 3);
     }
 
     #[test]

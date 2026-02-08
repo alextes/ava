@@ -47,6 +47,12 @@ const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     "#,
+    // v4: activate sessions + messages tables, add channel column
+    r#"
+    ALTER TABLE sessions ADD COLUMN active INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN channel TEXT;
+    INSERT INTO sessions (active, title) VALUES (1, 'default');
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

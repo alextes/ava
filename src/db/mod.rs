@@ -7,6 +7,7 @@ use rusqlite::Connection;
 
 use crate::config::default_db_path;
 use crate::error::Error;
+use crate::message::{Message, MessageContent, Role};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
@@ -115,6 +116,88 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute("DELETE FROM approval_rules WHERE id = ?1", [id])?;
         Ok(rows > 0)
+    }
+
+    /// get the active session id, creating one if none exists
+    pub fn active_session(&self) -> Result<i64, Error> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE active = 1 LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(id) = result {
+            return Ok(id);
+        }
+
+        // no active session — create one
+        conn.execute(
+            "INSERT INTO sessions (active, title) VALUES (1, 'default')",
+            [],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// load all messages for a session, oldest first
+    pub fn load_messages(&self, session_id: i64) -> Result<Vec<Message>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT role, content FROM messages
+             WHERE session_id = ?1
+             ORDER BY created_at ASC, id ASC",
+        )?;
+
+        let messages = stmt
+            .query_map([session_id], |row| {
+                let role_str: String = row.get(0)?;
+                let content_json: String = row.get(1)?;
+                Ok((role_str, content_json))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut result = Vec::with_capacity(messages.len());
+        for (role_str, content_json) in messages {
+            let role = match role_str.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                _ => continue, // skip unknown roles
+            };
+            let content: Vec<MessageContent> = serde_json::from_str(&content_json)
+                .map_err(|e| Error::Provider(format!("failed to deserialize message: {e}")))?;
+            result.push(Message { role, content });
+        }
+
+        Ok(result)
+    }
+
+    /// append a message to the session
+    pub fn append_message(
+        &self,
+        session_id: i64,
+        role: &str,
+        content: &[MessageContent],
+        channel: Option<&str>,
+    ) -> Result<(), Error> {
+        let content_json = serde_json::to_string(content)
+            .map_err(|e| Error::Provider(format!("failed to serialize message: {e}")))?;
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, channel)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![session_id, role, content_json, channel],
+        )?;
+
+        // update session timestamp
+        conn.execute(
+            "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
+            [session_id],
+        )?;
+
+        Ok(())
     }
 
     pub fn recent_facts(&self) -> Result<Vec<Fact>, Error> {
@@ -254,7 +337,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -265,7 +348,7 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -391,5 +474,71 @@ mod tests {
     fn test_generate_pattern() {
         assert_eq!(generate_pattern("ls -la /tmp"), "ls *");
         assert_eq!(generate_pattern("cargo test -- --nocapture"), "cargo *");
+    }
+
+    #[test]
+    fn test_active_session_returns_seeded_session() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db.active_session().unwrap();
+        assert!(id > 0);
+        // calling again returns the same id
+        assert_eq!(db.active_session().unwrap(), id);
+    }
+
+    #[test]
+    fn test_append_and_load_messages() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        let user_content = vec![MessageContent::text("hello")];
+        db.append_message(sid, "user", &user_content, Some("cli"))
+            .unwrap();
+
+        let asst_content = vec![MessageContent::text("hi there")];
+        db.append_message(sid, "assistant", &asst_content, None)
+            .unwrap();
+
+        let messages = db.load_messages(sid).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[1].role, Role::Assistant);
+
+        // verify content round-trips
+        match &messages[0].content[0] {
+            MessageContent::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected text content"),
+        }
+    }
+
+    #[test]
+    fn test_load_messages_preserves_tool_blocks() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        let content = vec![
+            MessageContent::text("thinking..."),
+            MessageContent::tool_use("call_1", "web_search", serde_json::json!({"query": "rust"})),
+        ];
+        db.append_message(sid, "assistant", &content, None).unwrap();
+
+        let messages = db.load_messages(sid).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content.len(), 2);
+
+        match &messages[0].content[1] {
+            MessageContent::ToolUse { id, name, .. } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(name, "web_search");
+            }
+            _ => panic!("expected tool_use content"),
+        }
+    }
+
+    #[test]
+    fn test_load_messages_empty_session() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+        let messages = db.load_messages(sid).unwrap();
+        assert!(messages.is_empty());
     }
 }
