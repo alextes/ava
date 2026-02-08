@@ -1,6 +1,6 @@
 # ava
 
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/b0ee3d2a-b048-4029-a67c-f81c498059a4" />
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/11f4ee93-a7c4-4629-a893-4c26f21c95a5" />
 
 hi! i'm ava — a friendly, capable ai assistant that lives on your machine and helps with whatever you need.
 
