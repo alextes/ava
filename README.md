@@ -1,16 +1,20 @@
 # ava
 
-a capable agent harness for personal assistance. ava connects to LLM providers (anthropic, openai) and processes messages through a single sequential agent loop — no interleaved conversations, no race conditions.
+hi! i'm ava — a friendly, capable ai assistant that lives on your machine and helps with whatever you need.
 
-## install
+i can search the web, run commands, remember things about you, and switch between different ai models mid-conversation. i talk to you through telegram (or the command line), and i keep my memory between conversations so we can build a relationship over time.
 
-from a github release:
+under the hood i'm a rust-based agent harness that connects to LLM providers (anthropic, openai) through a single sequential processing loop. but you don't need to worry about that — just say hi.
+
+## getting started
+
+install from a github release:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/alextes/ava/main/install.sh | bash
 ```
 
-or from source:
+or build from source:
 
 ```bash
 cargo install --git https://github.com/alextes/ava.git
@@ -30,55 +34,54 @@ ava reads environment variables (and `.env` files via dotenvy).
 
 | variable | description |
 |----------|-------------|
-| `OPENAI_API_KEY` | openai API key (for `switch_model` tool) |
-| `TELOXIDE_TOKEN` | telegram bot token (enables telegram channel) |
+| `OPENAI_API_KEY` | openai API key (for switching models) |
+| `TELOXIDE_TOKEN` | telegram bot token (enables telegram) |
 | `TELEGRAM_ALLOWED_IDS` | comma-separated user IDs allowed to message the bot |
-| `BRAVE_SEARCH_API_KEY` | brave search API key (enables `web_search` tool) |
-| `JINA_API_KEY` | jina reader API key (improves `web_fetch` results) |
+| `BRAVE_SEARCH_API_KEY` | brave search API key (enables web search) |
+| `JINA_API_KEY` | jina reader API key (improves web page reading) |
 
 ## usage
 
-### one-shot message
+send a quick message:
 
 ```bash
 ava message "what's the weather like in amsterdam?"
 ```
 
-### start all channels
+or start ava as a long-running assistant:
 
 ```bash
 ava start
 ```
 
-starts a long-running process with a single agent loop. channels (telegram, etc.) push messages into a shared queue; the agent processes them sequentially. channels are enabled based on which env vars are set.
-
-### other commands
+this starts the agent loop and enables any configured channels (telegram, etc.). messages are processed one at a time — no crossed wires.
 
 ```bash
 ava version   # show version
 ava status    # show version, db path, session info
 ```
 
-## tools
+## what i can do
 
-ava has built-in tools the LLM can use:
-
-- **exec** — run shell commands (requires approval via CLI auto-approve or telegram buttons)
-- **remember_fact** — store facts for future conversations (e.g. user preferences)
+- **exec** — run shell commands on your machine (with your approval for anything risky)
+- **remember / recall / forget** — store and retrieve facts, episodes, and character traits across conversations
 - **web_search** — search the web via brave search
-- **web_fetch** — fetch and read web pages via jina reader
-- **switch_model** — switch LLM provider/model mid-conversation
+- **web_fetch** — read web pages
+- **switch_model** — swap between ai providers and models mid-conversation
 
-## architecture
+## how it works
 
-- **single agent loop** — all inbound messages flow through one sequential processing loop, preventing interleaved conversation history
-- **message queue** — channels push to a shared `tokio::mpsc` queue; the agent loop is the sole consumer
-- **session persistence** — conversation history is stored in SQLite with a growing window for prompt cache efficiency
-- **context compaction** — when approaching the model's context limit, older messages are summarized to free space
-- **approval system** — dangerous tool calls (shell commands) require explicit approval, with "allow always" patterns for trusted commands
+- **single agent loop** — all messages flow through one sequential loop, keeping conversation history clean
+- **session persistence** — conversations are stored in SQLite so nothing is lost between restarts
+- **context compaction** — when a conversation gets long, older messages are summarized to make room
+- **approval system** — shell commands require your explicit okay, with "allow always" patterns for commands you trust
 
 ## development
 
 ```bash
 cargo fmt --all && cargo clippy && cargo test
 ```
+
+## early days
+
+ava is young and growing. if you've found your way here, welcome — and feel free to say hi.
