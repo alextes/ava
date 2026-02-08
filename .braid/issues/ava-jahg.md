@@ -3,13 +3,14 @@ schema_version: 9
 id: ava-jahg
 title: implement filesystem operations and tool dispatch
 priority: P2
-status: open
+status: doing
 deps:
 - ava-o6ip
 tags:
 - tool
-owner: null
+owner: alextes
 created_at: 2026-02-07T19:12:58.041404Z
+started_at: 2026-02-08T21:49:01.154445Z
 ---
 
 implement the filesystem tool end-to-end:
