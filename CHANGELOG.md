@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Added
+- **manage_rules tool**: list and delete approval rules, plus agent-proposed `action=add` for suggesting new rules
+- **auto-approval from stored rules**: telegram approver checks saved rules before prompting the user
+- **built-in tool types**: provider serialization supports anthropic built-in tools (e.g. text_editor)
+
+### Changed
+- tool loop limit increased from 5 to 20
+- split large `tool/mod.rs` and `db/mod.rs` into focused submodules
+- README rewritten in ava's voice
+
 ## [0.1.0]
 
 ### Added
@@ -28,5 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - openai provider uses `max_completion_tokens` instead of deprecated `max_tokens`
 
-[Unreleased]: https://github.com/alextes/ava/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/alextes/ava/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/alextes/ava/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/alextes/ava/releases/tag/v0.1.0
