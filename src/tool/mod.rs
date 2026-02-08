@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_format_search_results() {
-        let results = vec![
+        let results = [
             BraveWebResult {
                 title: "Rust Programming Language".into(),
                 url: "https://www.rust-lang.org/".into(),
@@ -740,10 +740,10 @@ mod tests {
                 output.push('\n');
             }
             output.push_str(&format!("{}. {}\n   {}", i + 1, result.title, result.url));
-            if let Some(desc) = &result.description {
-                if !desc.is_empty() {
-                    output.push_str(&format!("\n   {desc}"));
-                }
+            if let Some(desc) = &result.description
+                && !desc.is_empty()
+            {
+                output.push_str(&format!("\n   {desc}"));
             }
         }
 

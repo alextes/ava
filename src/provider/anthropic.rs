@@ -162,14 +162,11 @@ mod tests {
         // verify the joining logic works as expected
         let mut content = String::new();
         for block in &response.content {
-            match block {
-                ContentBlock::Text { text } => {
-                    if !content.is_empty() {
-                        content.push('\n');
-                    }
-                    content.push_str(text);
+            if let ContentBlock::Text { text } = block {
+                if !content.is_empty() {
+                    content.push('\n');
                 }
-                _ => {}
+                content.push_str(text);
             }
         }
         assert_eq!(content, "hello\nworld");

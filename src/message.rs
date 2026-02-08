@@ -57,6 +57,7 @@ impl Message {
         Self::user_with_content(vec![MessageContent::text(content)])
     }
 
+    #[allow(dead_code)]
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::assistant_with_content(vec![MessageContent::text(content)])
     }

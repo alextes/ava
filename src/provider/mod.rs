@@ -26,6 +26,7 @@ pub enum StopReason {
 #[derive(Debug, Clone)]
 pub struct ProviderResponse {
     pub content: String,
+    #[allow(dead_code)]
     pub stop_reason: StopReason,
     pub tool_calls: Vec<ToolCall>,
 }
@@ -107,6 +108,7 @@ impl Provider for AnyProvider {
 
 #[cfg(test)]
 pub struct TestProvider {
+    #[allow(clippy::type_complexity)]
     pub handler: Box<dyn Fn(&str, &[Message]) -> Result<ProviderResponse, Error> + Send + Sync>,
 }
 
