@@ -44,6 +44,7 @@ pub enum ToolDefinition {
 }
 
 impl ToolDefinition {
+    #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Custom { name, .. } => name,
