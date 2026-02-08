@@ -3,14 +3,15 @@ schema_version: 9
 id: ava-oh2z
 title: design context compaction for long sessions
 priority: P2
-status: open
+status: doing
 type: design
 deps: []
 tags:
 - session
 - context
-owner: null
+owner: alextes
 created_at: 2026-02-08T14:08:45.570297Z
+started_at: 2026-02-08T16:22:30.371241Z
 ---
 
 as sessions grow beyond the context window limit, ava needs a strategy for compacting older history while preserving important context.
