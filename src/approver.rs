@@ -7,7 +7,8 @@ use crate::db::{Database, generate_pattern};
 use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
 use crate::tool::{
-    ApprovalDecision, Approver, MANAGE_RULES_TOOL_NAME, ToolCall, references_sensitive_env,
+    ApprovalDecision, Approver, MANAGE_RULES_TOOL_NAME, TEXT_EDITOR_TOOL_NAME, ToolCall,
+    references_sensitive_env,
 };
 
 /// auto-approves all tool calls (used for CLI)
@@ -148,6 +149,7 @@ impl TelegramApprover {
 impl Approver for TelegramApprover {
     async fn request_approval(&self, tool_call: &ToolCall) -> Result<ApprovalDecision, Error> {
         let is_rule_add = tool_call.name == MANAGE_RULES_TOOL_NAME;
+        let is_text_editor = tool_call.name == TEXT_EDITOR_TOOL_NAME;
 
         let command = tool_call
             .input
@@ -156,7 +158,10 @@ impl Approver for TelegramApprover {
             .unwrap_or("");
 
         // for exec commands, check stored approval rules before prompting
-        if !is_rule_add && let Ok(Some(_rule_id)) = self.db.find_matching_rule(command) {
+        if !is_rule_add
+            && !is_text_editor
+            && let Ok(Some(_rule_id)) = self.db.find_matching_rule(command)
+        {
             tracing::debug!(command, "auto-approved by stored rule");
             return Ok(ApprovalDecision::AutoApproved);
         }
@@ -172,6 +177,35 @@ impl Approver for TelegramApprover {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<unknown pattern>");
             (format!("proposed rule: {pattern}"), false)
+        } else if is_text_editor {
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            let mut text = format!("file {command}: {path}");
+            match command {
+                "str_replace" => {
+                    if let Some(old) = tool_call.input.get("old_str").and_then(|v| v.as_str()) {
+                        let preview = if old.len() > 80 { &old[..80] } else { old };
+                        text.push_str(&format!("\n  replace: {preview}"));
+                    }
+                }
+                "create" => {
+                    if let Some(ft) = tool_call.input.get("file_text").and_then(|v| v.as_str()) {
+                        let lines = ft.lines().count();
+                        text.push_str(&format!("\n  {lines} lines"));
+                    }
+                }
+                "insert" => {
+                    if let Some(line) = tool_call.input.get("insert_line").and_then(|v| v.as_u64())
+                    {
+                        text.push_str(&format!("\n  at line {line}"));
+                    }
+                }
+                _ => {}
+            }
+            (text, false)
         } else {
             let has_sensitive = references_sensitive_env(command);
             let mut text = format!("command: {command}");

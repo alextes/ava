@@ -1,4 +1,5 @@
 mod exec;
+mod filesystem;
 mod web;
 
 use std::future::Future;
@@ -12,6 +13,7 @@ use crate::message::MessageContent;
 use crate::provider::AnyProvider;
 
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
+pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use web::{WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME};
 
 pub const REMEMBER_TOOL_NAME: &str = "remember";
@@ -19,7 +21,6 @@ pub const FORGET_TOOL_NAME: &str = "forget";
 pub const RECALL_TOOL_NAME: &str = "recall";
 pub const SWITCH_MODEL_TOOL_NAME: &str = "switch_model";
 pub const MANAGE_RULES_TOOL_NAME: &str = "manage_rules";
-pub const TEXT_EDITOR_TOOL_NAME: &str = "str_replace_based_edit_tool";
 
 // --- tool call types ---
 
@@ -84,6 +85,14 @@ pub fn requires_approval(tool_call: &ToolCall) -> bool {
             .get("action")
             .and_then(|v| v.as_str())
             .is_some_and(|a| a == "add"),
+        TEXT_EDITOR_TOOL_NAME => {
+            let cmd = tool_call
+                .input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            matches!(cmd, "str_replace" | "create" | "insert")
+        }
         _ => false,
     }
 }
@@ -279,6 +288,13 @@ pub async fn handle_tool_call(db: &Database, call: &ToolCall) -> Result<ToolCall
         }
         WEB_FETCH_TOOL_NAME => {
             let result = web::handle_web_fetch(call).await;
+            Ok(ToolCallResult {
+                content: MessageContent::tool_result(&call.id, result),
+                switch_provider: None,
+            })
+        }
+        TEXT_EDITOR_TOOL_NAME => {
+            let result = filesystem::handle_text_editor(call).await;
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
