@@ -53,6 +53,10 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN channel TEXT;
     INSERT INTO sessions (active, title) VALUES (1, 'default');
     "#,
+    // v5: summary column for context compaction
+    r#"
+    ALTER TABLE sessions ADD COLUMN summary TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

@@ -42,6 +42,10 @@ impl OpenAiProvider {
     pub fn set_model(&mut self, model: String) {
         self.model = model;
     }
+
+    pub fn context_window(&self) -> u32 {
+        400_000
+    }
 }
 
 // -- request types --
@@ -269,6 +273,10 @@ impl Provider for OpenAiProvider {
 
         if !response.status().is_success() {
             let error: ApiError = response.json().await?;
+            let msg = &error.error.message;
+            if msg.contains("maximum context length") || msg.contains("too many tokens") {
+                return Err(Error::ContextOverflow);
+            }
             return Err(Error::Provider(error.error.message));
         }
 

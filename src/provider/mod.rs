@@ -108,6 +108,15 @@ impl AnyProvider {
             _ => Err(Error::Provider(format!("unknown provider: {provider}"))),
         }
     }
+
+    pub fn context_window(&self) -> u32 {
+        match self {
+            Self::Anthropic(p) => p.context_window(),
+            Self::OpenAi(p) => p.context_window(),
+            #[cfg(test)]
+            Self::Test(_) => 200_000,
+        }
+    }
 }
 
 impl Provider for AnyProvider {

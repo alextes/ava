@@ -1,3 +1,5 @@
+mod compaction;
+
 use crate::db::Database;
 use crate::db::Fact;
 use crate::error::Error;
@@ -39,10 +41,43 @@ impl<A: Approver> Agent<A> {
         let system_prompt = self.system_prompt()?;
         let mut tool_rounds = 0;
         let mut switched_provider: Option<AnyProvider> = None;
+        let mut last_input_tokens: Option<u32> = None;
 
         loop {
+            // compact context if approaching the model's limit
+            let context_window = switched_provider
+                .as_ref()
+                .unwrap_or(&self.provider)
+                .context_window();
+
+            if compaction::needs_compaction(&messages, last_input_tokens, context_window) {
+                let prior_summary = self.db.get_session_summary(session_id)?;
+                let provider = switched_provider.as_ref().unwrap_or(&self.provider);
+                match compaction::compact_messages(provider, messages.clone(), prior_summary).await
+                {
+                    Ok((compacted, summary)) => {
+                        messages = compacted;
+                        self.db.set_session_summary(session_id, &summary)?;
+                        tracing::info!("compacted context");
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "compaction failed, continuing with full context");
+                    }
+                }
+            }
+
             let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
-            let response = active_provider.complete(&system_prompt, &messages).await?;
+            let response = match active_provider.complete(&system_prompt, &messages).await {
+                Ok(r) => r,
+                Err(Error::ContextOverflow) => {
+                    return Ok(OutboundMessage {
+                        content: "conversation context is full. key facts have been preserved \
+                            — please start a new session."
+                            .into(),
+                    });
+                }
+                Err(e) => return Err(e),
+            };
 
             let usage = &response.usage;
             if let (Some(created), Some(read)) =
@@ -62,6 +97,8 @@ impl<A: Approver> Agent<A> {
                     "provider usage"
                 );
             }
+
+            last_input_tokens = Some(usage.input_tokens);
 
             if response.tool_calls.is_empty() {
                 // persist the final assistant response

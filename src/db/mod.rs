@@ -234,6 +234,25 @@ impl Database {
         Ok(model)
     }
 
+    pub fn get_session_summary(&self, session_id: i64) -> Result<Option<String>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let summary: Option<String> = conn.query_row(
+            "SELECT summary FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        Ok(summary)
+    }
+
+    pub fn set_session_summary(&self, session_id: i64, summary: &str) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET summary = ?1 WHERE id = ?2",
+            rusqlite::params![summary, session_id],
+        )?;
+        Ok(())
+    }
+
     pub fn recent_facts(&self) -> Result<Vec<Fact>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -371,7 +390,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -382,7 +401,7 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -616,5 +635,28 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let sid = db.active_session().unwrap();
         assert_eq!(db.session_model(sid).unwrap(), None);
+    }
+
+    #[test]
+    fn test_session_summary_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        // default is none
+        assert_eq!(db.get_session_summary(sid).unwrap(), None);
+
+        // set and get
+        db.set_session_summary(sid, "user discussed rust").unwrap();
+        assert_eq!(
+            db.get_session_summary(sid).unwrap().as_deref(),
+            Some("user discussed rust")
+        );
+
+        // update
+        db.set_session_summary(sid, "updated summary").unwrap();
+        assert_eq!(
+            db.get_session_summary(sid).unwrap().as_deref(),
+            Some("updated summary")
+        );
     }
 }

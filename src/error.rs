@@ -33,4 +33,7 @@ pub enum Error {
 
     #[error("approval timed out")]
     ApprovalTimeout,
+
+    #[error("context overflow")]
+    ContextOverflow,
 }

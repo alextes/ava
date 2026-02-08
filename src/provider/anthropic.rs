@@ -42,6 +42,10 @@ impl AnthropicProvider {
     pub fn set_model(&mut self, model: String) {
         self.model = model;
     }
+
+    pub fn context_window(&self) -> u32 {
+        200_000
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -142,6 +146,10 @@ impl Provider for AnthropicProvider {
 
         if !response.status().is_success() {
             let error: ApiError = response.json().await?;
+            let msg = &error.error.message;
+            if msg.contains("prompt is too long") || msg.contains("too many tokens") {
+                return Err(Error::ContextOverflow);
+            }
             return Err(Error::Provider(error.error.message));
         }
 
