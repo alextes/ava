@@ -1,6 +1,5 @@
 /// escape text for telegram HTML mode
 /// escapes <, >, and & characters
-#[allow(dead_code)]
 pub fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")

@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::message::{ChannelKind, OutboundMessage};
 use crate::telegram::TelegramBot;
+use crate::telegram_fmt::markdown_to_telegram_html;
 
 /// routes agent responses back to the originating channel
 pub enum ResponseSink {
@@ -28,7 +29,8 @@ pub fn message_queue(buffer: usize) -> (MessageSender, MessageReceiver) {
 pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
     match sink {
         ResponseSink::Telegram { chat_id, bot } => {
-            if let Err(e) = bot.send_message(chat_id, &outbound.content).await {
+            let html = markdown_to_telegram_html(&outbound.content);
+            if let Err(e) = bot.send_message(chat_id, &html).await {
                 tracing::error!(%e, chat_id, "failed to send telegram response");
             }
         }
