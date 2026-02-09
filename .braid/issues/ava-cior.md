@@ -3,14 +3,15 @@ schema_version: 9
 id: ava-cior
 title: research heartbeat patterns in AI agents
 priority: P2
-status: doing
+status: done
 type: design
 deps: []
 tags:
 - core
-owner: agent-one
+owner: null
 created_at: 2026-02-09T08:37:56.600644Z
 started_at: 2026-02-09T08:37:58.865215Z
+completed_at: 2026-02-09T16:29:30.92988Z
 ---
 
 explore how openclaw, aidaemon, nanobot, and other AI agent projects implement heartbeat/cron/scheduled wake-up patterns. how do they trigger periodic runs, what context does the agent get, how do they prevent runaway costs, and how do they persist state between heartbeats. output: summary of patterns and recommendations for ava heartbeat design.
