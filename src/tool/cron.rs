@@ -67,6 +67,7 @@ pub fn handle_cron(db: &Database, call_id: &str, input: &serde_json::Value) -> T
             return ToolCallResult {
                 content: MessageContent::tool_result(call_id, format!("invalid input: {e}")),
                 switch_provider: None,
+                complete: false,
             };
         }
     };
@@ -78,6 +79,7 @@ pub fn handle_cron(db: &Database, call_id: &str, input: &serde_json::Value) -> T
         other => ToolCallResult {
             content: MessageContent::tool_result(call_id, format!("invalid action: {other}")),
             switch_provider: None,
+            complete: false,
         },
     }
 }
@@ -89,6 +91,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
             return ToolCallResult {
                 content: MessageContent::tool_result(call_id, "schedule requires description"),
                 switch_provider: None,
+                complete: false,
             };
         }
     };
@@ -99,6 +102,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
             return ToolCallResult {
                 content: MessageContent::tool_result(call_id, "schedule requires prompt"),
                 switch_provider: None,
+                complete: false,
             };
         }
     };
@@ -114,6 +118,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                         format!("invalid cron expression: {e}"),
                     ),
                     switch_provider: None,
+                    complete: false,
                 };
             }
         };
@@ -127,6 +132,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                         format!("could not compute next occurrence: {e}"),
                     ),
                     switch_provider: None,
+                    complete: false,
                 };
             }
         };
@@ -150,6 +156,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                         format!("invalid run_at datetime: {e}"),
                     ),
                     switch_provider: None,
+                    complete: false,
                 };
             }
         }
@@ -160,6 +167,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                 "schedule requires either cron_expr or run_at",
             ),
             switch_provider: None,
+            complete: false,
         };
     };
 
@@ -176,11 +184,13 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                     format!("scheduled ({kind}, id={id}, next_run_at={next_run_at})"),
                 ),
                 switch_provider: None,
+                complete: false,
             }
         }
         Err(e) => ToolCallResult {
             content: MessageContent::tool_result(call_id, format!("error: {e}")),
             switch_provider: None,
+            complete: false,
         },
     }
 }
@@ -192,6 +202,7 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
                 return ToolCallResult {
                     content: MessageContent::tool_result(call_id, "no active schedules"),
                     switch_provider: None,
+                    complete: false,
                 };
             }
             let mut output = String::new();
@@ -212,11 +223,13 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
             ToolCallResult {
                 content: MessageContent::tool_result(call_id, output),
                 switch_provider: None,
+                complete: false,
             }
         }
         Err(e) => ToolCallResult {
             content: MessageContent::tool_result(call_id, format!("error: {e}")),
             switch_provider: None,
+            complete: false,
         },
     }
 }
@@ -228,6 +241,7 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
             return ToolCallResult {
                 content: MessageContent::tool_result(call_id, "cancel requires id"),
                 switch_provider: None,
+                complete: false,
             };
         }
     };
@@ -236,14 +250,17 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
         Ok(true) => ToolCallResult {
             content: MessageContent::tool_result(call_id, "cancelled"),
             switch_provider: None,
+            complete: false,
         },
         Ok(false) => ToolCallResult {
             content: MessageContent::tool_result(call_id, "not found"),
             switch_provider: None,
+            complete: false,
         },
         Err(e) => ToolCallResult {
             content: MessageContent::tool_result(call_id, format!("error: {e}")),
             switch_provider: None,
+            complete: false,
         },
     }
 }

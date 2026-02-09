@@ -34,7 +34,10 @@ impl Agent {
     }
 
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
-    pub async fn process(&self, inbound: &InboundMessage) -> Result<OutboundMessage, Error> {
+    pub async fn process(
+        &self,
+        inbound: &InboundMessage,
+    ) -> Result<Option<OutboundMessage>, Error> {
         let session_id = self.db.active_session()?;
         let channel_str = inbound.channel.as_str();
 
@@ -79,11 +82,11 @@ impl Agent {
             let response = match active_provider.complete(&system_prompt, &messages).await {
                 Ok(r) => r,
                 Err(Error::ContextOverflow) => {
-                    return Ok(OutboundMessage {
+                    return Ok(Some(OutboundMessage {
                         content: "conversation context is full. key facts have been preserved \
                             — please start a new session."
                             .into(),
-                    });
+                    }));
                 }
                 Err(e) => return Err(e),
             };
@@ -115,9 +118,9 @@ impl Agent {
                 self.db
                     .append_message(session_id, "assistant", &assistant_content, None)?;
 
-                return Ok(OutboundMessage {
+                return Ok(Some(OutboundMessage {
                     content: response.content,
-                });
+                }));
             }
 
             tracing::debug!(
@@ -149,6 +152,12 @@ impl Agent {
             let mut tool_results = Vec::new();
             for call in &response.tool_calls {
                 let result = self.handle_tool_call_with_approval(call).await?;
+                if result.complete {
+                    tool_results.push(result.content);
+                    self.db
+                        .append_message(session_id, "user", &tool_results, None)?;
+                    return Ok(None);
+                }
                 if let Some(new_provider) = result.switch_provider {
                     let model_id = new_provider.model_id();
                     tracing::info!(%model_id, "switching provider mid-conversation");
@@ -185,6 +194,7 @@ impl Agent {
                     return Ok(tool::ToolCallResult {
                         content: MessageContent::tool_result(&call.id, "command denied by user"),
                         switch_provider: None,
+                        complete: false,
                     });
                 }
             }
@@ -330,7 +340,7 @@ mod tests {
             content: "hello".into(),
         };
 
-        let outbound = agent.process(&inbound).await.unwrap();
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
         assert_eq!(outbound.content, "hi");
     }
 
@@ -391,7 +401,7 @@ mod tests {
             content: "hello".into(),
         };
 
-        agent.process(&inbound).await.unwrap();
+        agent.process(&inbound).await.unwrap().unwrap();
 
         let prompt = seen_prompt.lock().unwrap().clone().unwrap();
         assert!(prompt.contains("## known facts"));
@@ -449,7 +459,7 @@ mod tests {
             channel: ChannelKind::Cli,
             content: "what is my name?".into(),
         };
-        agent.process(&inbound).await.unwrap();
+        agent.process(&inbound).await.unwrap().unwrap();
 
         // provider should have seen 3 messages: 2 history + 1 new
         let msg_count = seen_msgs.lock().unwrap().unwrap();
@@ -602,7 +612,7 @@ mod tests {
             content: "my name is alex".into(),
         };
 
-        let outbound = agent.process(&inbound).await.unwrap();
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
         assert_eq!(outbound.content, "done, i remembered that");
 
         // provider was called twice (tool call round + final response)
@@ -715,7 +725,7 @@ mod tests {
             content: "run echo hi".into(),
         };
 
-        let outbound = agent.process(&inbound).await.unwrap();
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
         // CliApprover auto-approves, so the command executed
         assert_eq!(outbound.content, "ok, command was denied");
 
@@ -751,5 +761,48 @@ mod tests {
         assert!(prompt.contains("- name: alex"));
         assert!(prompt.contains("## recent memories"));
         assert!(prompt.contains("discussed rust"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_complete_tool_returns_none() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(ProviderResponse {
+                    content: "".into(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: vec![tool::ToolCall {
+                        id: "call_1".into(),
+                        name: "complete".into(),
+                        input: serde_json::json!({"reason": "memory distillation done"}),
+                    }],
+                    usage: Usage::default(),
+                })
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), Arc::clone(&db));
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "distill memories".into(),
+        };
+
+        let result = agent.process(&inbound).await.unwrap();
+        assert!(result.is_none(), "expected None for complete tool");
+
+        // provider was called once
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // messages were persisted (user + assistant[tool_use] + user[tool_result])
+        let sid = db.active_session().unwrap();
+        let count = db.session_message_count(sid).unwrap();
+        assert_eq!(count, 3);
     }
 }

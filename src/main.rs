@@ -128,8 +128,9 @@ async fn run_message(content: String) -> Result<(), error::Error> {
         content,
     };
 
-    let outbound = agent.process(&inbound).await?;
-    channel::CliChannel.send(outbound)?;
+    if let Some(outbound) = agent.process(&inbound).await? {
+        channel::CliChannel.send(outbound)?;
+    }
     Ok(())
 }
 
@@ -228,7 +229,8 @@ async fn agent_loop(
         };
 
         match agent.process(&inbound).await {
-            Ok(outbound) => send_response(queued.sink, outbound).await,
+            Ok(Some(outbound)) => send_response(queued.sink, outbound).await,
+            Ok(None) => tracing::debug!("agent completed silently"),
             Err(e) => {
                 tracing::error!(%e, "agent processing failed");
                 send_error(queued.sink, &format!("error: {e}")).await;

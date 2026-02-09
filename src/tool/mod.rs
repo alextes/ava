@@ -1,3 +1,4 @@
+mod complete;
 mod cron;
 mod exec;
 mod filesystem;
@@ -13,6 +14,7 @@ use crate::error::Error;
 use crate::message::MessageContent;
 use crate::provider::AnyProvider;
 
+pub use complete::COMPLETE_TOOL_NAME;
 pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
@@ -59,6 +61,7 @@ impl ToolDefinition {
 pub struct ToolCallResult {
     pub content: MessageContent,
     pub switch_provider: Option<AnyProvider>,
+    pub complete: bool,
 }
 
 // --- approver trait ---
@@ -112,6 +115,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         switch_model_definition(),
         manage_rules_definition(),
         cron::cron_definition(),
+        complete::complete_definition(),
         ToolDefinition::BuiltIn {
             tool_type: "text_editor_20250728",
             name: TEXT_EDITOR_TOOL_NAME,
@@ -174,6 +178,7 @@ pub async fn handle_tool_call(
                                 format!("invalid kind: {}", input.kind),
                             ),
                             switch_provider: None,
+                            complete: false,
                         });
                     }
                 };
@@ -186,11 +191,13 @@ pub async fn handle_tool_call(
                 Ok(ToolCallResult {
                     content: MessageContent::tool_result(&call.id, format!("ok (id={id})")),
                     switch_provider: None,
+                    complete: false,
                 })
             }
             Err(err) => Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                 switch_provider: None,
+                complete: false,
             }),
         },
         FORGET_TOOL_NAME => match serde_json::from_value::<ForgetInput>(call.input.clone()) {
@@ -214,6 +221,7 @@ pub async fn handle_tool_call(
                                     "episode forget requires id",
                                 ),
                                 switch_provider: None,
+                                complete: false,
                             });
                         }
                     },
@@ -224,6 +232,7 @@ pub async fn handle_tool_call(
                                 format!("invalid kind: {other}"),
                             ),
                             switch_provider: None,
+                            complete: false,
                         });
                     }
                 };
@@ -231,11 +240,13 @@ pub async fn handle_tool_call(
                 Ok(ToolCallResult {
                     content: MessageContent::tool_result(&call.id, msg),
                     switch_provider: None,
+                    complete: false,
                 })
             }
             Err(err) => Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                 switch_provider: None,
+                complete: false,
             }),
         },
         RECALL_TOOL_NAME => match serde_json::from_value::<RecallInput>(call.input.clone()) {
@@ -246,6 +257,7 @@ pub async fn handle_tool_call(
                     return Ok(ToolCallResult {
                         content: MessageContent::tool_result(&call.id, "no memories found"),
                         switch_provider: None,
+                        complete: false,
                     });
                 }
                 let mut output = String::new();
@@ -272,11 +284,13 @@ pub async fn handle_tool_call(
                 Ok(ToolCallResult {
                     content: MessageContent::tool_result(&call.id, output),
                     switch_provider: None,
+                    complete: false,
                 })
             }
             Err(err) => Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                 switch_provider: None,
+                complete: false,
             }),
         },
         EXEC_TOOL_NAME => {
@@ -284,6 +298,7 @@ pub async fn handle_tool_call(
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
+                complete: false,
             })
         }
         WEB_SEARCH_TOOL_NAME => {
@@ -291,6 +306,7 @@ pub async fn handle_tool_call(
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
+                complete: false,
             })
         }
         WEB_FETCH_TOOL_NAME => {
@@ -298,6 +314,7 @@ pub async fn handle_tool_call(
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
+                complete: false,
             })
         }
         TEXT_EDITOR_TOOL_NAME => {
@@ -305,9 +322,11 @@ pub async fn handle_tool_call(
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
+                complete: false,
             })
         }
         CRON_TOOL_NAME => Ok(cron::handle_cron(db, &call.id, &call.input)),
+        COMPLETE_TOOL_NAME => Ok(complete::handle_complete(&call.id, &call.input)),
         SWITCH_MODEL_TOOL_NAME => {
             match serde_json::from_value::<SwitchModelInput>(call.input.clone()) {
                 Ok(input) => {
@@ -327,6 +346,7 @@ pub async fn handle_tool_call(
                                     ),
                                 ),
                                 switch_provider: Some(provider),
+                                complete: false,
                             })
                         }
                         Err(err) => Ok(ToolCallResult {
@@ -335,12 +355,14 @@ pub async fn handle_tool_call(
                                 format!("failed to switch: {err}"),
                             ),
                             switch_provider: None,
+                            complete: false,
                         }),
                     }
                 }
                 Err(err) => Ok(ToolCallResult {
                     content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                     switch_provider: None,
+                    complete: false,
                 }),
             }
         }
@@ -356,6 +378,7 @@ pub async fn handle_tool_call(
                                     "no approval rules saved",
                                 ),
                                 switch_provider: None,
+                                complete: false,
                             });
                         }
                         let mut output = String::new();
@@ -368,6 +391,7 @@ pub async fn handle_tool_call(
                         Ok(ToolCallResult {
                             content: MessageContent::tool_result(&call.id, output),
                             switch_provider: None,
+                            complete: false,
                         })
                     }
                     "add" => match input.pattern {
@@ -379,6 +403,7 @@ pub async fn handle_tool_call(
                                     format!("saved rule: {}", pattern.trim()),
                                 ),
                                 switch_provider: None,
+                                complete: false,
                             })
                         }
                         _ => Ok(ToolCallResult {
@@ -387,6 +412,7 @@ pub async fn handle_tool_call(
                                 "add requires a non-empty pattern",
                             ),
                             switch_provider: None,
+                            complete: false,
                         }),
                     },
                     "delete" => match input.id {
@@ -396,11 +422,13 @@ pub async fn handle_tool_call(
                             Ok(ToolCallResult {
                                 content: MessageContent::tool_result(&call.id, msg),
                                 switch_provider: None,
+                                complete: false,
                             })
                         }
                         None => Ok(ToolCallResult {
                             content: MessageContent::tool_result(&call.id, "delete requires id"),
                             switch_provider: None,
+                            complete: false,
                         }),
                     },
                     other => Ok(ToolCallResult {
@@ -409,11 +437,13 @@ pub async fn handle_tool_call(
                             format!("invalid action: {other}"),
                         ),
                         switch_provider: None,
+                        complete: false,
                     }),
                 },
                 Err(err) => Ok(ToolCallResult {
                     content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                     switch_provider: None,
+                    complete: false,
                 }),
             }
         }
@@ -425,6 +455,7 @@ pub async fn handle_tool_call(
                     format!("unknown tool: {}", call.name),
                 ),
                 switch_provider: None,
+                complete: false,
             })
         }
     }
@@ -1096,5 +1127,11 @@ mod tests {
             .unwrap();
         let text = extract_tool_result_text(&result.content);
         assert!(text.contains("unknown tool: nonexistent_tool"));
+    }
+
+    #[test]
+    fn test_requires_approval_complete() {
+        let call = make_call("complete", json!({}));
+        assert!(!requires_approval(&call));
     }
 }
