@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-uyvi
 title: add filesystem tool
 priority: P2
-status: open
+status: done
 type: meta
 deps:
 - ava-b13x
@@ -13,6 +13,7 @@ tags:
 - tool
 owner: null
 created_at: 2026-02-01T21:37:30.164217Z
+completed_at: 2026-02-08T21:56:21.245017Z
 ---
 
 meta issue tracking filesystem tool implementation. design in ava-xl8b (done).

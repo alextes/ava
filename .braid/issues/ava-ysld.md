@@ -3,11 +3,12 @@ schema_version: 9
 id: ava-ysld
 title: allow specifying provider in message command
 priority: P2
-status: open
+status: done
 deps:
 - ava-95z9
 owner: null
 created_at: 2026-02-01T22:57:22.762642Z
+completed_at: 2026-02-08T22:05:41.839414Z
 ---
 
 add a --provider flag to the message command to select which provider to use.
