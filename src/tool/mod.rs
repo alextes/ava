@@ -2,6 +2,7 @@ mod complete;
 mod cron;
 mod exec;
 mod filesystem;
+mod tasks;
 mod web;
 
 use std::future::Future;
@@ -18,6 +19,7 @@ pub use complete::COMPLETE_TOOL_NAME;
 pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
+pub use tasks::TASKS_TOOL_NAME;
 pub use web::{WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME};
 
 pub const REMEMBER_TOOL_NAME: &str = "remember";
@@ -115,6 +117,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         switch_model_definition(),
         manage_rules_definition(),
         cron::cron_definition(),
+        tasks::tasks_definition(),
         complete::complete_definition(),
         ToolDefinition::BuiltIn {
             tool_type: "text_editor_20250728",
@@ -326,6 +329,7 @@ pub async fn handle_tool_call(
             })
         }
         CRON_TOOL_NAME => Ok(cron::handle_cron(db, &call.id, &call.input)),
+        TASKS_TOOL_NAME => Ok(tasks::handle_tasks(db, &call.id, &call.input)),
         COMPLETE_TOOL_NAME => Ok(complete::handle_complete(&call.id, &call.input)),
         SWITCH_MODEL_TOOL_NAME => {
             match serde_json::from_value::<SwitchModelInput>(call.input.clone()) {

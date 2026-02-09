@@ -207,6 +207,7 @@ impl Agent {
         let traits = self.db.character_traits()?;
         let facts = self.db.recent_facts()?;
         let episodes = self.db.recent_episodes()?;
+        let pending_tasks = self.db.pending_task_titles()?;
 
         let mut prompt = DEFAULT_SYSTEM_PROMPT.to_string();
 
@@ -223,6 +224,11 @@ impl Agent {
         if !episodes.is_empty() {
             prompt.push_str("\n\n");
             prompt.push_str(&format_recent_episodes(&episodes));
+        }
+
+        if !pending_tasks.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&format_pending_tasks(&pending_tasks));
         }
 
         Ok(prompt)
@@ -284,6 +290,14 @@ fn format_recent_episodes(episodes: &[Memory]) -> String {
         output.push_str(date);
         output.push_str("] ");
         output.push_str(&truncate_chars(&ep.content, MAX_FACT_VALUE_CHARS));
+    }
+    output
+}
+
+fn format_pending_tasks(tasks: &[(i64, String)]) -> String {
+    let mut output = String::from("## pending tasks");
+    for (id, title) in tasks {
+        output.push_str(&format!("\n- [id:{id}] {title}"));
     }
     output
 }
@@ -763,6 +777,76 @@ mod tests {
         assert!(prompt.contains("discussed rust"));
     }
 
+    #[test]
+    fn test_system_prompt_includes_pending_tasks() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.add_task("fix CI failure", None).unwrap();
+        db.add_task("review PR #42", None).unwrap();
+
+        let provider = make_test_provider("hi");
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+        let prompt = agent.system_prompt().unwrap();
+
+        assert!(prompt.contains("## pending tasks"));
+        assert!(prompt.contains("fix CI failure"));
+        assert!(prompt.contains("review PR #42"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_empty_tasks() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+
+        let provider = make_test_provider("hi");
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+        let prompt = agent.system_prompt().unwrap();
+
+        assert!(!prompt.contains("## pending tasks"));
+    }
+
+    #[test]
+    fn test_system_prompt_excludes_completed_tasks() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let id = db.add_task("done task", None).unwrap();
+        db.complete_task(id).unwrap();
+        db.add_task("pending task", None).unwrap();
+
+        let provider = make_test_provider("hi");
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+        let prompt = agent.system_prompt().unwrap();
+
+        assert!(prompt.contains("## pending tasks"));
+        assert!(prompt.contains("pending task"));
+        assert!(!prompt.contains("done task"));
+    }
+
+    #[test]
+    fn test_format_pending_tasks() {
+        let tasks = vec![
+            (3, "investigate CI failure".into()),
+            (7, "fix test_session_persistence".into()),
+        ];
+        let formatted = format_pending_tasks(&tasks);
+        assert_eq!(
+            formatted,
+            "## pending tasks\n- [id:3] investigate CI failure\n- [id:7] fix test_session_persistence"
+        );
+    }
+
     #[tokio::test]
     async fn test_agent_complete_tool_returns_none() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -787,7 +871,12 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), Arc::clone(&db));
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,

@@ -118,6 +118,18 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_schedules_active_next
         ON schedules(next_run_at) WHERE active = 1;
     "#,
+    // v8: tasks table for agent scratchpad
+    r#"
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY,
+        title TEXT NOT NULL,
+        detail TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

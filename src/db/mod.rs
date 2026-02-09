@@ -3,6 +3,7 @@ mod migrations;
 mod rules;
 mod schedule;
 mod session;
+mod task;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -59,7 +60,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -70,7 +71,7 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -170,9 +171,9 @@ mod tests {
         // run migration (v6 only, since 1-5 are already applied)
         migrations::migrate(&conn).unwrap();
 
-        // verify schema version is 6
+        // verify schema version is latest
         let version = migrations::schema_version(&conn).unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
 
         // verify facts table is gone
         let table_exists: bool = conn
