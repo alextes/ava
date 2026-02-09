@@ -12,66 +12,65 @@ owner: null
 created_at: 2026-02-09T15:17:40.70128Z
 ---
 
-investigate how ava can update itself when running as a `cargo run` process from `main` on macos.
+investigate how ava can update itself. the broader direction is to run ava as a background daemon, which changes how start, stop, update, and logging work.
 
 ## context
 
-scheduled tasks always produce a response, but some background work is purely internal. similarly, it would be useful for ava to be able to pull the latest code, rebuild, and restart itself without human intervention. this is especially relevant for a long-running agent that needs to stay up-to-date.
+ava runs as a long-lived process. when new code is pushed to `main`, it has no way to update itself — requires manual intervention. adding a self-update mechanism lets the agent (or user) trigger an update that pulls latest code, rebuilds, and replaces the running process.
 
 ## scope
 
-focus only on the current real use-case: updating when running as a `cargo run` process from the `main` branch on macos. other deployment scenarios (docker, systemd, remote linux) are out of scope for now.
+focus on the current real use-case: macos, running from the `main` branch. other deployment scenarios (docker, systemd, remote linux) are out of scope for now.
+
+## resolved decisions
+
+- **daemon model**: `ava start` forks to background (traditional unix daemon), writes PID file, returns control to shell. `ava stop` sends SIGTERM.
+- **update flow**: build-then-hot-swap — `ava update` pulls code, builds as child process, then signals the running daemon to `exec()` into the new binary. minimal downtime.
+- **core mechanism**: `CommandExt::exec()` (unix exec syscall) replaces the current process image. PID stays the same, old code is gone. zero external dependencies.
+- **approval**: no approval needed for self-update tool
+- **DB safety**: trust SQLite WAL — crash-safe, no explicit cleanup before exec()
+- **version check**: always pull, no pre-check needed
 
 ## research summary
 
-### approaches considered
+### approaches considered for restart
 
-1. **`CommandExt::exec()` (unix exec syscall)** — replaces the current process image with a new one. the PID stays the same, old code is gone. zero external dependencies. **winner.**
-
-2. **wrapper/supervisor script** — shell script that restarts the binary in a loop. adds a moving part and friction (must always start via wrapper).
-
-3. **launchd restart-on-exit** — system-level process management. overkill for dev setup, doesn't handle git pull + rebuild, painful to debug.
-
+1. **`CommandExt::exec()`** — replaces process image atomically. zero deps. **winner.**
+2. **wrapper/supervisor script** — adds friction (must always start via wrapper).
+3. **launchd restart-on-exit** — overkill, doesn't handle git pull + rebuild.
 4. **fork-then-exec** — unnecessary complexity when exec alone suffices.
 
-### recommended approach: two-step exec
+### two-step exec pattern
 
 ```rust
-pub async fn self_update() -> Result<(), Error> {
-    let project_dir = env!("CARGO_MANIFEST_DIR");
+// step 1: pull and build as child process (recoverable on failure)
+let status = Command::new("sh")
+    .arg("-c")
+    .arg(format!("cd {project_dir} && git pull && cargo build"))
+    .output();
 
-    // step 1: pull and build as child process (can fail safely)
-    let status = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("cd {project_dir} && git pull && cargo build"))
-        .status()
-        .await?;
-
-    if !status.success() {
-        return Err(Error::Provider("rebuild failed".into()));
-    }
-
-    // step 2: exec into the new binary (point of no return)
-    // flush DB, close connections, etc. before this
-    let err = std::process::Command::new("cargo")
-        .args(["run", "--", "start"])
-        .current_dir(project_dir)
-        .exec(); // never returns on success
-
-    Err(Error::Provider(format!("exec failed: {err}")))
-}
+// step 2: exec into new binary (point of no return)
+let err = Command::new(&binary_path)
+    .arg("start")
+    .exec(); // never returns on success
 ```
 
-key points:
-- step 1 (pull + build) runs as a child process so failures are recoverable
-- step 2 uses `CommandExt::exec()` to replace the process — point of no return
-- `CARGO_MANIFEST_DIR` is baked in at compile time, always correct
-- no wrapper scripts, no config files, no extra processes
+- step 1 runs as child process — failures are recoverable
+- step 2 uses exec() — process is atomically replaced
+- `CARGO_MANIFEST_DIR` baked in at compile time for project directory
 
-### open questions
+## new subcommands to design
 
-- should this be a tool the LLM can call, or a built-in command?
-- how to handle graceful shutdown (telegram bot, open DB connections) before exec?
-- should we check if there's actually a new version before pulling?
-- how to handle build failures gracefully (report back to user?)
-- should this only be available in certain channels (e.g. not from telegram)?
+- `ava start` — fork to background, write PID file, log to file
+- `ava stop` — read PID file, send SIGTERM
+- `ava logs` — tail the log file
+- `ava update` — pull, build, signal daemon to exec() into new binary
+
+## open questions
+
+- PID file location (`~/.ava/ava.pid`? XDG runtime dir?)
+- log file location and rotation strategy
+- how the daemon receives the "exec into new binary" signal (SIGUSR1? control socket? SIGTERM + restart?)
+- graceful shutdown: drain in-flight messages before exec?
+- should `ava start` check if already running?
+- should `ava update` also be exposed as an LLM tool?
