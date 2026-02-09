@@ -257,10 +257,15 @@ impl Provider for OpenAiProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
+        include_tools: bool,
     ) -> Result<ProviderResponse, Error> {
-        let tools = tool_definitions();
         let chat_messages = convert_messages(system_prompt, messages);
-        let chat_tools = convert_tools(&tools);
+        let chat_tools = if include_tools {
+            let tools = tool_definitions();
+            convert_tools(&tools)
+        } else {
+            Vec::new()
+        };
 
         let request = ApiRequest {
             model: &self.model,

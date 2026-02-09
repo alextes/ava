@@ -10,6 +10,8 @@ use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall};
 
 const MAX_FACT_VALUE_CHARS: usize = 500;
+const MAX_TOOL_ROUNDS: u32 = 40;
+const WARNING_ROUND: u32 = 32;
 
 pub struct Agent {
     provider: AnyProvider,
@@ -79,7 +81,10 @@ impl Agent {
             }
 
             let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
-            let response = match active_provider.complete(&system_prompt, &messages).await {
+            let response = match active_provider
+                .complete(&system_prompt, &messages, true)
+                .await
+            {
                 Ok(r) => r,
                 Err(Error::ContextOverflow) => {
                     return Ok(Some(OutboundMessage {
@@ -123,15 +128,70 @@ impl Agent {
                 }));
             }
 
+            tool_rounds += 1;
+
             tracing::debug!(
                 tool_round = tool_rounds,
                 count = response.tool_calls.len(),
                 "executing tool calls"
             );
 
-            tool_rounds += 1;
-            if tool_rounds > 20 {
-                return Err(Error::Provider("tool loop exceeded".into()));
+            // graceful final turn: budget exhausted
+            if tool_rounds > MAX_TOOL_ROUNDS {
+                tracing::warn!(
+                    tool_rounds,
+                    "tool budget exhausted, requesting final summary"
+                );
+
+                // persist assistant message with its tool_use blocks (unanswered)
+                let mut assistant_blocks = Vec::new();
+                if !response.content.is_empty() {
+                    assistant_blocks.push(MessageContent::text(&response.content));
+                }
+                for call in &response.tool_calls {
+                    assistant_blocks.push(tool_use_content(call));
+                }
+                self.db
+                    .append_message(session_id, "assistant", &assistant_blocks, None)?;
+                messages.push(Message::assistant_with_content(assistant_blocks));
+
+                // synthetic tool results telling the model to wrap up
+                let synthetic_results: Vec<MessageContent> = response
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        MessageContent::tool_result(
+                            &call.id,
+                            "tool budget exhausted (40 rounds). you must respond now. \
+                             summarize progress and explain remaining work.",
+                        )
+                    })
+                    .collect();
+                self.db
+                    .append_message(session_id, "user", &synthetic_results, None)?;
+                messages.push(Message::user_with_content(synthetic_results));
+
+                // final text-only turn (no tools)
+                let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
+                let final_content = match active_provider
+                    .complete(&system_prompt, &messages, false)
+                    .await
+                {
+                    Ok(r) => r.content,
+                    Err(e) => {
+                        tracing::warn!(%e, "final summary call failed, using fallback");
+                        "i used all 40 tool rounds. send a follow-up message and i'll continue."
+                            .to_string()
+                    }
+                };
+
+                let final_blocks = vec![MessageContent::text(&final_content)];
+                self.db
+                    .append_message(session_id, "assistant", &final_blocks, None)?;
+
+                return Ok(Some(OutboundMessage {
+                    content: final_content,
+                }));
             }
 
             let mut assistant_blocks = Vec::new();
@@ -167,6 +227,15 @@ impl Agent {
                     switched_provider = Some(new_provider);
                 }
                 tool_results.push(result.content);
+            }
+
+            // inject budget warning at the warning round
+            if tool_rounds == WARNING_ROUND {
+                tool_results.push(MessageContent::text(format!(
+                    "[system: you have used {WARNING_ROUND} of {MAX_TOOL_ROUNDS} tool rounds. \
+                     {} remain before you must produce a final response. plan accordingly.]",
+                    MAX_TOOL_ROUNDS - WARNING_ROUND
+                )));
             }
 
             // persist tool results
@@ -230,6 +299,12 @@ impl Agent {
             prompt.push_str("\n\n");
             prompt.push_str(&format_pending_tasks(&pending_tasks));
         }
+
+        prompt.push_str(&format!(
+            "\n\n## tool budget\nyou have a budget of {MAX_TOOL_ROUNDS} tool rounds per user \
+             message. after exhausting the budget you get one final text-only turn. if you need \
+             more rounds, tell the user to send a follow-up message."
+        ));
 
         Ok(prompt)
     }
@@ -644,16 +719,153 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_tool_loop_limit_exceeded() {
+    async fn test_agent_tool_loop_limit_graceful() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let call_count = std::sync::Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        // provider always returns tool calls, never a final response
+        // provider returns tool calls for the first 41 calls, then a final
+        // text response on the 42nd (the text-only summary turn).
         let provider = AnyProvider::Test(TestProvider {
             handler: Box::new(move |_system, _msgs| {
                 let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n <= MAX_TOOL_ROUNDS as usize {
+                    Ok(ProviderResponse {
+                        content: format!("round {n}"),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: vec![tool::ToolCall {
+                            id: format!("call_{n}"),
+                            name: "remember".into(),
+                            input: serde_json::json!({
+                                "content": format!("event {n}"),
+                                "kind": "episode"
+                            }),
+                        }],
+                        usage: Usage::default(),
+                    })
+                } else {
+                    // final text-only turn
+                    Ok(ProviderResponse {
+                        content: "i've completed 40 rounds of work. here's a summary.".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "loop forever".into(),
+        };
+
+        let result = agent.process(&inbound).await;
+        assert!(result.is_ok(), "should return Ok, not Err");
+        let outbound = result.unwrap().unwrap();
+        assert!(outbound.content.contains("40 rounds"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_tool_budget_final_turn_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        // provider returns tool calls, and when the final text-only call
+        // happens it returns an error — agent should use the static fallback.
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n <= MAX_TOOL_ROUNDS as usize {
+                    Ok(ProviderResponse {
+                        content: format!("round {n}"),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: vec![tool::ToolCall {
+                            id: format!("call_{n}"),
+                            name: "remember".into(),
+                            input: serde_json::json!({
+                                "content": format!("event {n}"),
+                                "kind": "episode"
+                            }),
+                        }],
+                        usage: Usage::default(),
+                    })
+                } else {
+                    Err(Error::Provider("api error".into()))
+                }
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "loop forever".into(),
+        };
+
+        let result = agent.process(&inbound).await;
+        assert!(
+            result.is_ok(),
+            "should return Ok even when final call fails"
+        );
+        let outbound = result.unwrap().unwrap();
+        assert!(outbound.content.contains("40 tool rounds"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_tool_budget_warning_injected() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let seen_warning = Arc::new(Mutex::new(false));
+        let seen_warning_clone = seen_warning.clone();
+
+        // provider returns tool calls for WARNING_ROUND rounds, then check
+        // that the messages contain the budget warning on the next call.
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+
+                // after the warning round, check if the last user message
+                // contains the budget warning text
+                if n == WARNING_ROUND as usize {
+                    if let Some(last_msg) = msgs.last() {
+                        for block in &last_msg.content {
+                            if let MessageContent::Text { text } = block {
+                                if text.contains("[system: you have used") {
+                                    *seen_warning_clone.lock().unwrap() = true;
+                                }
+                            }
+                        }
+                    }
+                    // return a final text response to end the loop
+                    return Ok(ProviderResponse {
+                        content: "done".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    });
+                }
+
                 Ok(ProviderResponse {
                     content: format!("round {n}"),
                     stop_reason: StopReason::ToolUse,
@@ -680,13 +892,14 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
-            content: "loop forever".into(),
+            content: "do many things".into(),
         };
 
-        let result = agent.process(&inbound).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, Error::Provider(msg) if msg.contains("tool loop exceeded")));
+        agent.process(&inbound).await.unwrap();
+        assert!(
+            *seen_warning.lock().unwrap(),
+            "budget warning should have been injected at round {WARNING_ROUND}"
+        );
     }
 
     #[tokio::test]
@@ -775,6 +988,8 @@ mod tests {
         assert!(prompt.contains("- name: alex"));
         assert!(prompt.contains("## recent memories"));
         assert!(prompt.contains("discussed rust"));
+        assert!(prompt.contains("## tool budget"));
+        assert!(prompt.contains("40 tool rounds"));
     }
 
     #[test]

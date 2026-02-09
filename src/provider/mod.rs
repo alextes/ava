@@ -47,6 +47,7 @@ pub trait Provider: Send + Sync {
         &self,
         system_prompt: &str,
         messages: &[Message],
+        include_tools: bool,
     ) -> impl Future<Output = Result<ProviderResponse, Error>> + Send;
 }
 
@@ -128,12 +129,13 @@ impl Provider for AnyProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
+        include_tools: bool,
     ) -> Result<ProviderResponse, Error> {
         match self {
-            Self::Anthropic(p) => p.complete(system_prompt, messages).await,
-            Self::OpenAi(p) => p.complete(system_prompt, messages).await,
+            Self::Anthropic(p) => p.complete(system_prompt, messages, include_tools).await,
+            Self::OpenAi(p) => p.complete(system_prompt, messages, include_tools).await,
             #[cfg(test)]
-            Self::Test(p) => p.complete(system_prompt, messages).await,
+            Self::Test(p) => p.complete(system_prompt, messages, include_tools).await,
         }
     }
 }
@@ -152,6 +154,7 @@ impl Provider for TestProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
+        _include_tools: bool,
     ) -> Result<ProviderResponse, Error> {
         (self.handler)(system_prompt, messages)
     }

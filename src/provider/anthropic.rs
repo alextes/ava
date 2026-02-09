@@ -54,7 +54,8 @@ struct ApiRequest<'a> {
     max_tokens: u32,
     system: serde_json::Value,
     messages: serde_json::Value,
-    tools: serde_json::Value,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +104,7 @@ impl Provider for AnthropicProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
+        include_tools: bool,
     ) -> Result<ProviderResponse, Error> {
         let tools = tool_definitions();
 
@@ -126,31 +128,35 @@ impl Provider for AnthropicProvider {
             last_block["cache_control"] = json!({"type": "ephemeral"});
         }
 
-        let tools_json: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| match t {
-                ToolDefinition::Custom {
-                    name,
-                    description,
-                    input_schema,
-                } => json!({
-                    "name": name,
-                    "description": description,
-                    "input_schema": input_schema,
-                }),
-                ToolDefinition::BuiltIn { tool_type, name } => json!({
-                    "type": tool_type,
-                    "name": name,
-                }),
-            })
-            .collect();
+        let tools_json: Vec<serde_json::Value> = if include_tools {
+            tools
+                .iter()
+                .map(|t| match t {
+                    ToolDefinition::Custom {
+                        name,
+                        description,
+                        input_schema,
+                    } => json!({
+                        "name": name,
+                        "description": description,
+                        "input_schema": input_schema,
+                    }),
+                    ToolDefinition::BuiltIn { tool_type, name } => json!({
+                        "type": tool_type,
+                        "name": name,
+                    }),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         let request = ApiRequest {
             model: &self.model,
             max_tokens: self.max_tokens,
             system,
             messages: messages_value,
-            tools: serde_json::Value::Array(tools_json),
+            tools: tools_json,
         };
 
         let response = self
@@ -325,7 +331,7 @@ mod tests {
             max_tokens: 1024,
             system,
             messages: messages_value,
-            tools: serde_json::Value::Array(tools_json),
+            tools: tools_json,
         };
 
         let json = serde_json::to_value(&request).unwrap();
