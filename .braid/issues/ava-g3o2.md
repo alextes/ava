@@ -68,11 +68,15 @@ just titles and ids. no detail. this keeps the injection bounded even with 20+ t
 
 if there are zero pending tasks, omit the section entirely (no tokens burned).
 
-### phase 2: synthetic messages via cron (future, after ava-vg4w)
+### phase 2: scheduler-driven task board check (future)
 
-when the cron system exists, add a recurring entry that checks for pending tasks and pushes a synthetic message into the queue: "you have N pending tasks. review your task list and make progress where possible."
+**important: do NOT use a cron entry for this.** if the task board check is a cron entry, the agent can `cron cancel` it and disable its own task processing. instead, bake it directly into the scheduler loop — the scheduler already ticks every 60 seconds checking for due schedules. adding a "check pending tasks" query in the same loop makes it infrastructure the agent cannot disable.
 
-this gives the agent the "wake up and work on your backlog" behavior without a separate heartbeat mechanism.
+when pending tasks exist and the agent is idle, the scheduler pushes a synthetic message into the queue: "you have N pending tasks. review your task list and make progress where possible."
+
+configuration (check interval, active hours) should live in config/env, not in the schedules table.
+
+this gives the agent the "wake up and work on your backlog" behavior without a separate heartbeat mechanism, and without the agent being able to opt out.
 
 ### edge cases
 

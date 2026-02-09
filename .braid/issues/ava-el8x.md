@@ -3,13 +3,14 @@ schema_version: 9
 id: ava-el8x
 title: graceful tool loop limit with final LLM turn
 priority: P1
-status: open
+status: done
 deps: []
 tags:
 - core
 - agent
 owner: null
 created_at: 2026-02-09T16:33:33.942536Z
+completed_at: 2026-02-09T17:40:43.976477Z
 ---
 
 when the agent hits the 20-round tool loop limit, it currently returns `Err(Error::Provider("tool loop exceeded"))`. the user sees a raw error string with no context about what was accomplished. the conversation history ends with tool results the model never responded to.
