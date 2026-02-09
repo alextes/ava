@@ -61,8 +61,8 @@ pub enum AnyProvider {
 
 impl AnyProvider {
     /// create the default provider from environment variables (anthropic)
-    pub fn default_from_env() -> Result<Self, Error> {
-        Ok(Self::Anthropic(AnthropicProvider::from_env()?))
+    pub fn default_from_env(client: reqwest::Client) -> Result<Self, Error> {
+        Ok(Self::Anthropic(AnthropicProvider::from_env(client)?))
     }
 
     /// returns a `"provider/model"` identifier string (e.g. `"anthropic/claude-sonnet-4-5"`)
@@ -77,10 +77,14 @@ impl AnyProvider {
 
     /// create a provider by name, for the switch_model tool.
     /// if a model is specified, it must be in the provider's allowed list.
-    pub fn from_name(provider: &str, model: Option<&str>) -> Result<Self, Error> {
+    pub fn from_name(
+        client: reqwest::Client,
+        provider: &str,
+        model: Option<&str>,
+    ) -> Result<Self, Error> {
         match provider {
             "anthropic" => {
-                let mut p = AnthropicProvider::from_env()?;
+                let mut p = AnthropicProvider::from_env(client)?;
                 if let Some(m) = model {
                     if !anthropic::ALLOWED_MODELS.contains(&m) {
                         return Err(Error::Provider(format!(
@@ -93,7 +97,7 @@ impl AnyProvider {
                 Ok(Self::Anthropic(p))
             }
             "openai" => {
-                let mut p = OpenAiProvider::from_env()?;
+                let mut p = OpenAiProvider::from_env(client)?;
                 if let Some(m) = model {
                     if !openai::ALLOWED_MODELS.contains(&m) {
                         return Err(Error::Provider(format!(
@@ -159,14 +163,14 @@ mod tests {
 
     #[test]
     fn test_model_id_format_anthropic() {
-        let p = AnthropicProvider::new("test-key".into());
+        let p = AnthropicProvider::new(reqwest::Client::new(), "test-key".into());
         let any = AnyProvider::Anthropic(p);
         assert_eq!(any.model_id(), "anthropic/claude-sonnet-4-5");
     }
 
     #[test]
     fn test_model_id_format_openai() {
-        let p = OpenAiProvider::new("test-key".into());
+        let p = OpenAiProvider::new(reqwest::Client::new(), "test-key".into());
         let any = AnyProvider::OpenAi(p);
         assert_eq!(any.model_id(), "openai/gpt-5.2");
     }

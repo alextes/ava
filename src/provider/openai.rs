@@ -20,19 +20,19 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(client: Client, api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client,
             api_key,
             model: DEFAULT_MODEL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
 
-    pub fn from_env() -> Result<Self, Error> {
+    pub fn from_env(client: Client) -> Result<Self, Error> {
         let api_key =
             std::env::var("OPENAI_API_KEY").map_err(|_| Error::MissingApiKey("OPENAI_API_KEY"))?;
-        Ok(Self::new(api_key))
+        Ok(Self::new(client, api_key))
     }
 
     pub fn model_name(&self) -> &str {

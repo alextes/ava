@@ -15,14 +15,21 @@ pub struct Agent {
     provider: AnyProvider,
     approver: AnyApprover,
     db: Arc<Database>,
+    client: reqwest::Client,
 }
 
 impl Agent {
-    pub fn new(provider: AnyProvider, approver: AnyApprover, db: Arc<Database>) -> Self {
+    pub fn new(
+        provider: AnyProvider,
+        approver: AnyApprover,
+        db: Arc<Database>,
+        client: reqwest::Client,
+    ) -> Self {
         Self {
             provider,
             approver,
             db,
+            client,
         }
     }
 
@@ -183,7 +190,7 @@ impl Agent {
             }
         }
 
-        tool::handle_tool_call(&self.db, call).await
+        tool::handle_tool_call(&self.client, &self.db, call).await
     }
 
     fn system_prompt(&self) -> Result<String, Error> {
@@ -311,7 +318,12 @@ mod tests {
     async fn test_agent_processes_message() {
         let provider = make_test_provider("hi");
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -326,7 +338,12 @@ mod tests {
     async fn test_provider_error_propagates() {
         let provider = make_failing_provider();
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -362,7 +379,12 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
             .unwrap();
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -416,7 +438,12 @@ mod tests {
             }),
         });
 
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), Arc::clone(&db));
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -563,7 +590,12 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), Arc::clone(&db));
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -615,7 +647,12 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -666,7 +703,12 @@ mod tests {
         // use CliApprover (auto-approves) and verify exec actually runs.
         // for denial testing, we check handle_tool_call_with_approval indirectly.
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), Arc::clone(&db));
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            reqwest::Client::new(),
+        );
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -695,7 +737,12 @@ mod tests {
             .unwrap();
 
         let provider = make_test_provider("hi");
-        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
         let prompt = agent.system_prompt().unwrap();
 
         assert!(prompt.contains("## character"));

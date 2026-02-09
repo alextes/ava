@@ -44,21 +44,21 @@ struct BraveWebResult {
     description: Option<String>,
 }
 
-pub(super) async fn handle_web_search(call: &ToolCall) -> String {
+pub(super) async fn handle_web_search(client: &reqwest::Client, call: &ToolCall) -> String {
     match serde_json::from_value::<WebSearchInput>(call.input.clone()) {
-        Ok(input) => web_search(&input.query, input.max_results).await,
+        Ok(input) => web_search(client, &input.query, input.max_results).await,
         Err(err) => format!("invalid input: {err}"),
     }
 }
 
-pub(super) async fn handle_web_fetch(call: &ToolCall) -> String {
+pub(super) async fn handle_web_fetch(client: &reqwest::Client, call: &ToolCall) -> String {
     match serde_json::from_value::<WebFetchInput>(call.input.clone()) {
-        Ok(input) => web_fetch(&input.url, input.max_chars).await,
+        Ok(input) => web_fetch(client, &input.url, input.max_chars).await,
         Err(err) => format!("invalid input: {err}"),
     }
 }
 
-async fn web_search(query: &str, max_results: Option<u64>) -> String {
+async fn web_search(client: &reqwest::Client, query: &str, max_results: Option<u64>) -> String {
     let api_key = match std::env::var("BRAVE_SEARCH_API_KEY") {
         Ok(key) if !key.is_empty() => key,
         _ => return "web search unavailable: BRAVE_SEARCH_API_KEY not set".to_string(),
@@ -70,7 +70,6 @@ async fn web_search(query: &str, max_results: Option<u64>) -> String {
 
     tracing::info!(query, count, "searching web");
 
-    let client = reqwest::Client::new();
     let response = client
         .get(BRAVE_SEARCH_URL)
         .header("X-Subscription-Token", &api_key)
@@ -151,7 +150,7 @@ fn validate_fetch_url(url: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-async fn web_fetch(url: &str, max_chars: Option<u64>) -> String {
+async fn web_fetch(client: &reqwest::Client, url: &str, max_chars: Option<u64>) -> String {
     if let Err(reason) = validate_fetch_url(url) {
         return format!("invalid URL: {reason}");
     }
@@ -161,7 +160,6 @@ async fn web_fetch(url: &str, max_chars: Option<u64>) -> String {
 
     tracing::info!(url, "fetching web page");
 
-    let client = reqwest::Client::new();
     let mut request = client
         .get(&jina_url)
         .header("Accept", "text/plain")
@@ -286,7 +284,7 @@ mod tests {
         unsafe {
             std::env::remove_var("BRAVE_SEARCH_API_KEY");
         }
-        let result = web_search("test query", None).await;
+        let result = web_search(&reqwest::Client::new(), "test query", None).await;
         assert!(result.contains("BRAVE_SEARCH_API_KEY not set"));
         // restore if it was set
         if let Some(val) = _original {

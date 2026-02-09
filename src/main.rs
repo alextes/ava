@@ -93,11 +93,14 @@ async fn main() {
 }
 
 /// load the persisted provider/model for the active session, falling back to default
-fn provider_for_session(db: &Database) -> Result<AnyProvider, error::Error> {
+fn provider_for_session(
+    client: reqwest::Client,
+    db: &Database,
+) -> Result<AnyProvider, error::Error> {
     let session_id = db.active_session()?;
     if let Ok(Some(model_id)) = db.session_model(session_id) {
         if let Some((provider_name, model)) = model_id.split_once('/') {
-            match AnyProvider::from_name(provider_name, Some(model)) {
+            match AnyProvider::from_name(client.clone(), provider_name, Some(model)) {
                 Ok(p) => {
                     tracing::info!(%model_id, "loaded persisted model");
                     return Ok(p);
@@ -110,13 +113,14 @@ fn provider_for_session(db: &Database) -> Result<AnyProvider, error::Error> {
             tracing::warn!(%model_id, "invalid model id format, using default");
         }
     }
-    AnyProvider::default_from_env()
+    AnyProvider::default_from_env(client)
 }
 
 async fn run_message(content: String) -> Result<(), error::Error> {
+    let client = reqwest::Client::new();
     let db = Arc::new(Database::open()?);
-    let provider = provider_for_session(&db)?;
-    let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db);
+    let provider = provider_for_session(client.clone(), &db)?;
+    let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, client);
 
     let inbound = InboundMessage {
         channel: ChannelKind::Cli,
@@ -137,6 +141,7 @@ fn allowed_telegram_ids() -> Vec<i64> {
 }
 
 async fn run_start() -> Result<(), error::Error> {
+    let client = reqwest::Client::new();
     let db = Arc::new(Database::open()?);
     let (tx, rx) = message_queue(64);
     let pending = Arc::new(PendingApprovals::new());
@@ -144,8 +149,9 @@ async fn run_start() -> Result<(), error::Error> {
     // start agent loop
     let db_clone = Arc::clone(&db);
     let pending_clone = Arc::clone(&pending);
+    let client_clone = client.clone();
     let agent_handle = tokio::spawn(async move {
-        agent_loop(rx, db_clone, pending_clone).await;
+        agent_loop(rx, db_clone, pending_clone, client_clone).await;
     });
 
     // start telegram if configured
@@ -179,9 +185,14 @@ async fn run_start() -> Result<(), error::Error> {
     Ok(())
 }
 
-async fn agent_loop(mut rx: MessageReceiver, db: Arc<Database>, pending: Arc<PendingApprovals>) {
+async fn agent_loop(
+    mut rx: MessageReceiver,
+    db: Arc<Database>,
+    pending: Arc<PendingApprovals>,
+    client: reqwest::Client,
+) {
     while let Some(queued) = rx.recv().await {
-        let provider = match provider_for_session(&db) {
+        let provider = match provider_for_session(client.clone(), &db) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(%e, "provider init failed");
@@ -201,7 +212,7 @@ async fn agent_loop(mut rx: MessageReceiver, db: Arc<Database>, pending: Arc<Pen
             }
         };
 
-        let agent = Agent::new(provider, approver, Arc::clone(&db));
+        let agent = Agent::new(provider, approver, Arc::clone(&db), client.clone());
         let inbound = InboundMessage {
             channel: queued.channel,
             content: queued.content,
