@@ -3,13 +3,14 @@ schema_version: 9
 id: ava-ad5o
 title: design markdown to telegram HTML conversion
 priority: P2
-status: open
+status: done
 type: design
 deps: []
 tags:
 - telegram
 owner: null
 created_at: 2026-02-04T20:46:30.29674Z
+completed_at: 2026-02-09T17:08:59.105595Z
 ---
 
 when we want richer formatting in telegram, we'll need to convert LLM markdown output to telegram HTML.

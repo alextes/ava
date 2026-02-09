@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-g3o2
 title: design task scratchpad with system prompt injection
 priority: P2
-status: open
+status: done
 type: design
 deps: []
 tags:
@@ -11,6 +11,8 @@ tags:
 - core
 owner: null
 created_at: 2026-02-09T16:29:01.324179Z
+started_at: 2026-02-09T16:44:28.439742Z
+completed_at: 2026-02-09T17:11:22.743768Z
 ---
 
 a persistent task scratchpad the agent can write to during conversations without derailing the current thread. tasks are stored in SQLite, managed via a dedicated tool, and surfaced in the system prompt so the agent always sees pending work.
