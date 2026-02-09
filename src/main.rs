@@ -7,6 +7,7 @@ mod error;
 mod message;
 mod provider;
 mod queue;
+mod scheduler;
 mod telegram;
 mod telegram_fmt;
 mod tool;
@@ -163,6 +164,14 @@ async fn run_start() -> Result<(), error::Error> {
             tracing::warn!("TELEGRAM_ALLOWED_IDS not set, bot will ignore all messages");
         } else {
             tracing::info!(?allowed_ids, "loaded user whitelist");
+        }
+
+        // spawn scheduler if we have a default chat_id
+        if let Some(&chat_id) = allowed_ids.first() {
+            let db_sched = Arc::clone(&db);
+            let tx_sched = tx.clone();
+            let bot_sched = Arc::clone(&bot);
+            tokio::spawn(scheduler::run(db_sched, tx_sched, bot_sched, chat_id));
         }
 
         tracing::info!("starting telegram channel");

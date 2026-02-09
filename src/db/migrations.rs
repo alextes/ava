@@ -103,6 +103,21 @@ const MIGRATIONS: &[&str] = &[
 
     COMMIT;
     "#,
+    // v7: schedules table for cron tool
+    r#"
+    CREATE TABLE IF NOT EXISTS schedules (
+        id INTEGER PRIMARY KEY,
+        description TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        cron_expr TEXT,
+        next_run_at TEXT NOT NULL,
+        last_run_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_schedules_active_next
+        ON schedules(next_run_at) WHERE active = 1;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

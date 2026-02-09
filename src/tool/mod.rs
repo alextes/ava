@@ -1,3 +1,4 @@
+mod cron;
 mod exec;
 mod filesystem;
 mod web;
@@ -12,6 +13,7 @@ use crate::error::Error;
 use crate::message::MessageContent;
 use crate::provider::AnyProvider;
 
+pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use web::{WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME};
@@ -109,6 +111,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         web::web_fetch_definition(),
         switch_model_definition(),
         manage_rules_definition(),
+        cron::cron_definition(),
         ToolDefinition::BuiltIn {
             tool_type: "text_editor_20250728",
             name: TEXT_EDITOR_TOOL_NAME,
@@ -304,6 +307,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
             })
         }
+        CRON_TOOL_NAME => Ok(cron::handle_cron(db, &call.id, &call.input)),
         SWITCH_MODEL_TOOL_NAME => {
             match serde_json::from_value::<SwitchModelInput>(call.input.clone()) {
                 Ok(input) => {
