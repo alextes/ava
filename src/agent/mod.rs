@@ -2,6 +2,8 @@ mod compaction;
 
 use std::sync::Arc;
 
+use chrono::Utc;
+
 use crate::approver::AnyApprover;
 use crate::db::{Database, Memory};
 use crate::error::Error;
@@ -279,6 +281,11 @@ impl Agent {
         let pending_tasks = self.db.pending_task_titles()?;
 
         let mut prompt = DEFAULT_SYSTEM_PROMPT.to_string();
+
+        prompt.push_str(&format!(
+            "\n\ncurrent date and time: {}",
+            Utc::now().format("%Y-%m-%d %H:%M UTC")
+        ));
 
         if !traits.is_empty() {
             prompt.push_str("\n\n");
@@ -982,6 +989,7 @@ mod tests {
         );
         let prompt = agent.system_prompt().unwrap();
 
+        assert!(prompt.contains("current date and time:"));
         assert!(prompt.contains("## character"));
         assert!(prompt.contains("- tone: formal"));
         assert!(prompt.contains("## known facts"));
