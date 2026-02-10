@@ -210,8 +210,8 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
                 if i > 0 {
                     output.push('\n');
                 }
-                let kind = if s.cron_expr.is_some() {
-                    format!("recurring ({})", s.cron_expr.as_ref().unwrap())
+                let kind = if let Some(expr) = &s.cron_expr {
+                    format!("recurring ({expr})")
                 } else {
                     "one-time".to_string()
                 };

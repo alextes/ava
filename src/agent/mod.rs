@@ -1072,10 +1072,10 @@ mod tests {
                 if n == WARNING_ROUND as usize {
                     if let Some(last_msg) = msgs.last() {
                         for block in &last_msg.content {
-                            if let MessageContent::Text { text } = block {
-                                if text.contains("[system: you have used") {
-                                    *seen_warning_clone.lock().unwrap() = true;
-                                }
+                            if let MessageContent::Text { text } = block
+                                && text.contains("[system: you have used")
+                            {
+                                *seen_warning_clone.lock().unwrap() = true;
                             }
                         }
                     }
