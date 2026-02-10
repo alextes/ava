@@ -263,7 +263,7 @@ fn run_doctor_diagnose() -> Result<(), error::Error> {
             total_blocks,
             orphans.len()
         );
-        println!("         fix with `ava doctor fix`");
+        println!("         fix with `ava doctor repair-orphans`");
         issues += 1;
     }
 
