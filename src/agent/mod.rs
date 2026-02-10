@@ -342,8 +342,7 @@ impl Agent {
             .map(|id| {
                 MessageContent::tool_result(
                     id,
-                    "tool call was interrupted and never completed \
-                     (session crashed or approval timed out)",
+                    "the session was interrupted and it is unknown whether this tool call completed.",
                 )
             })
             .collect();
