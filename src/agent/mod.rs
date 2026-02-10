@@ -214,14 +214,21 @@ impl Agent {
                 .append_message(session_id, "assistant", &assistant_blocks, None)?;
             messages.push(Message::assistant_with_content(assistant_blocks));
 
+            // execute tool calls concurrently
+            let results = futures::future::join_all(
+                response
+                    .tool_calls
+                    .iter()
+                    .map(|call| self.handle_tool_call_with_approval(call)),
+            )
+            .await;
+
             let mut tool_results = Vec::new();
-            for call in &response.tool_calls {
-                let result = self.handle_tool_call_with_approval(call).await?;
+            let mut saw_complete = false;
+            for result in results {
+                let result = result?;
                 if result.complete {
-                    tool_results.push(result.content);
-                    self.db
-                        .append_message(session_id, "user", &tool_results, None)?;
-                    return Ok(None);
+                    saw_complete = true;
                 }
                 if let Some(new_provider) = result.switch_provider {
                     let model_id = new_provider.model_id();
@@ -232,6 +239,12 @@ impl Agent {
                     switched_provider = Some(new_provider);
                 }
                 tool_results.push(result.content);
+            }
+
+            if saw_complete {
+                self.db
+                    .append_message(session_id, "user", &tool_results, None)?;
+                return Ok(None);
             }
 
             // inject budget warning at the warning round
@@ -792,6 +805,95 @@ mod tests {
         let sid = db.active_session().unwrap();
         let count = db.session_message_count(sid).unwrap();
         assert_eq!(count, 4);
+    }
+
+    #[tokio::test]
+    async fn test_agent_multiple_tool_calls_execute_concurrently() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // first call: return multiple tool calls at once
+                    Ok(ProviderResponse {
+                        content: "let me remember several things".into(),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: vec![
+                            tool::ToolCall {
+                                id: "call_1".into(),
+                                name: "remember".into(),
+                                input: serde_json::json!({
+                                    "content": "alex",
+                                    "kind": "fact",
+                                    "category": "user",
+                                    "key": "name"
+                                }),
+                            },
+                            tool::ToolCall {
+                                id: "call_2".into(),
+                                name: "remember".into(),
+                                input: serde_json::json!({
+                                    "content": "rust",
+                                    "kind": "fact",
+                                    "category": "user",
+                                    "key": "language"
+                                }),
+                            },
+                            tool::ToolCall {
+                                id: "call_3".into(),
+                                name: "remember".into(),
+                                input: serde_json::json!({
+                                    "content": "met at a conference",
+                                    "kind": "episode"
+                                }),
+                            },
+                        ],
+                        usage: Usage::default(),
+                    })
+                } else {
+                    Ok(ProviderResponse {
+                        content: "remembered everything".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "remember these things".into(),
+        };
+
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+        assert_eq!(outbound.content, "remembered everything");
+
+        // all three tools executed
+        let facts = db.recent_facts().unwrap();
+        assert_eq!(facts.len(), 2);
+        let episodes = db.recent_episodes().unwrap();
+        assert_eq!(episodes.len(), 1);
+
+        // tool results message should contain 3 tool_result blocks
+        let sid = db.active_session().unwrap();
+        let msgs = db.load_messages(sid).unwrap();
+        // user + assistant[3 tool_use] + user[3 tool_result] + assistant[final]
+        assert_eq!(msgs.len(), 4);
+        // the tool results message (index 2) should have 3 blocks
+        assert_eq!(msgs[2].content.len(), 3);
     }
 
     #[tokio::test]
