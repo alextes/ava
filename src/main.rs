@@ -47,6 +47,8 @@ enum Commands {
     },
     /// start all configured channels
     Start,
+    /// list active schedules
+    Schedules,
 }
 
 #[tokio::main]
@@ -90,7 +92,33 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Schedules => {
+            if let Err(e) = run_schedules() {
+                tracing::error!(%e, "schedules command failed");
+                std::process::exit(1);
+            }
+        }
     }
+}
+
+fn run_schedules() -> Result<(), error::Error> {
+    let db = Database::open()?;
+    let schedules = db.list_schedules()?;
+    if schedules.is_empty() {
+        println!("no active schedules");
+    } else {
+        for s in schedules {
+            let kind = match &s.cron_expr {
+                Some(expr) => format!("recurring ({expr})"),
+                None => "one-time".to_string(),
+            };
+            println!(
+                "id={}: {} [{}] next={} | {}",
+                s.id, s.description, kind, s.next_run_at, s.prompt
+            );
+        }
+    }
+    Ok(())
 }
 
 /// load the persisted provider/model for the active session, falling back to default
