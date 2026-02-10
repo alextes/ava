@@ -252,7 +252,21 @@ impl Agent {
         call: &ToolCall,
     ) -> Result<tool::ToolCallResult, Error> {
         if tool::requires_approval(call) {
-            let decision = self.approver.request_approval(call).await?;
+            let decision = match self.approver.request_approval(call).await {
+                Ok(d) => d,
+                Err(Error::ApprovalTimeout) => {
+                    tracing::warn!(tool = %call.name, "approval timed out, treating as deny");
+                    return Ok(tool::ToolCallResult {
+                        content: MessageContent::tool_result(
+                            &call.id,
+                            "approval timed out — the user did not respond in time",
+                        ),
+                        switch_provider: None,
+                        complete: false,
+                    });
+                }
+                Err(e) => return Err(e),
+            };
             match decision {
                 ApprovalDecision::AllowOnce | ApprovalDecision::AutoApproved => {
                     // proceed with execution
