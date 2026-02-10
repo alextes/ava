@@ -7,7 +7,7 @@ use chrono::Utc;
 use crate::approver::AnyApprover;
 use crate::db::{Database, Memory};
 use crate::error::Error;
-use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage};
+use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage, Role};
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall};
 
@@ -47,6 +47,9 @@ impl Agent {
 
         // load conversation history (growing window for prompt cache efficiency)
         let mut messages = self.db.load_messages(session_id)?;
+
+        // fix orphaned tool_use blocks left by a previous crash/interruption
+        self.repair_orphaned_tool_calls(session_id, &mut messages)?;
 
         // append and persist the new user message
         let user_content = vec![MessageContent::text(&inbound.content)];
@@ -286,6 +289,58 @@ impl Agent {
         }
 
         tool::handle_tool_call(&self.client, &self.db, call).await
+    }
+
+    /// if the last loaded message is an assistant message with tool_use blocks
+    /// but no subsequent tool_result, append synthetic results so the API
+    /// doesn't reject the malformed history. this handles crashes, OOM kills,
+    /// or approval timeouts that occurred before results were persisted.
+    fn repair_orphaned_tool_calls(
+        &self,
+        session_id: i64,
+        messages: &mut Vec<Message>,
+    ) -> Result<(), Error> {
+        let Some(last) = messages.last() else {
+            return Ok(());
+        };
+        if last.role != Role::Assistant {
+            return Ok(());
+        }
+
+        let tool_use_ids: Vec<String> = last
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                MessageContent::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+
+        if tool_use_ids.is_empty() {
+            return Ok(());
+        }
+
+        tracing::warn!(
+            count = tool_use_ids.len(),
+            "repairing orphaned tool_use blocks from interrupted session"
+        );
+
+        let synthetic_results: Vec<MessageContent> = tool_use_ids
+            .iter()
+            .map(|id| {
+                MessageContent::tool_result(
+                    id,
+                    "tool call was interrupted and never completed \
+                     (session crashed or approval timed out)",
+                )
+            })
+            .collect();
+
+        self.db
+            .append_message(session_id, "user", &synthetic_results, None)?;
+        messages.push(Message::user_with_content(synthetic_results));
+
+        Ok(())
     }
 
     fn system_prompt(&self) -> Result<String, Error> {
@@ -1048,6 +1103,75 @@ mod tests {
         let prompt = agent.system_prompt().unwrap();
 
         assert!(!prompt.contains("## pending tasks"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_repairs_orphaned_tool_use() {
+        use std::sync::{Arc as StdArc, Mutex};
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let sid = db.active_session().unwrap();
+
+        // seed an assistant message with a tool_use block but no tool_result
+        let orphaned_assistant = vec![
+            MessageContent::text("let me run that"),
+            MessageContent::tool_use(
+                "orphan_1",
+                "exec",
+                serde_json::json!({"command": "echo hi"}),
+            ),
+        ];
+        db.append_message(sid, "assistant", &orphaned_assistant, None)
+            .unwrap();
+
+        // track messages the provider sees
+        let seen_msgs = StdArc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen_msgs.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, msgs| {
+                *seen_clone.lock().unwrap() = msgs.to_vec();
+                Ok(ProviderResponse {
+                    content: "recovered from crash".into(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: Usage::default(),
+                })
+            }),
+        });
+
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            content: "hello after crash".into(),
+        };
+
+        let result = agent.process(&inbound).await;
+        assert!(result.is_ok(), "should not error on orphaned tool_use");
+        let outbound = result.unwrap().unwrap();
+        assert_eq!(outbound.content, "recovered from crash");
+
+        // verify the provider saw the synthetic tool_result
+        let msgs = seen_msgs.lock().unwrap();
+        // expected: assistant(tool_use) + user(synthetic tool_result) + user(new message)
+        assert_eq!(msgs.len(), 3);
+
+        // second message should be the synthetic tool_result
+        let repair_msg = &msgs[1];
+        assert_eq!(repair_msg.role, Role::User);
+        assert!(matches!(
+            &repair_msg.content[0],
+            MessageContent::ToolResult {
+                tool_use_id,
+                content,
+            } if tool_use_id == "orphan_1" && content.contains("interrupted")
+        ));
     }
 
     #[test]
