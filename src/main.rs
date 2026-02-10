@@ -59,7 +59,7 @@ enum Commands {
 #[derive(Subcommand)]
 enum DoctorAction {
     /// repair orphaned tool_use blocks in the session history
-    Fix,
+    RepairOrphans,
 }
 
 #[tokio::main]
@@ -116,9 +116,9 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
-            Some(DoctorAction::Fix) => {
+            Some(DoctorAction::RepairOrphans) => {
                 if let Err(e) = run_doctor_fix() {
-                    tracing::error!(%e, "doctor fix failed");
+                    tracing::error!(%e, "doctor repair-orphans failed");
                     std::process::exit(1);
                 }
             }
