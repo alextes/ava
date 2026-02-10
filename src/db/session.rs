@@ -86,6 +86,86 @@ impl Database {
         Ok(())
     }
 
+    /// load all messages for a session with their DB row IDs, oldest first.
+    /// used by `doctor` to identify orphaned tool_use blocks by position.
+    pub fn load_messages_with_ids(&self, session_id: i64) -> Result<Vec<(i64, Message)>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, role, content FROM messages
+             WHERE session_id = ?1
+             ORDER BY created_at ASC, id ASC",
+        )?;
+
+        let rows = stmt
+            .query_map([session_id], |row| {
+                let id: i64 = row.get(0)?;
+                let role_str: String = row.get(1)?;
+                let content_json: String = row.get(2)?;
+                Ok((id, role_str, content_json))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for (id, role_str, content_json) in rows {
+            let role = match role_str.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                _ => continue,
+            };
+            let content: Vec<MessageContent> = serde_json::from_str(&content_json)
+                .map_err(|e| Error::Provider(format!("failed to deserialize message: {e}")))?;
+            result.push((id, Message { role, content }));
+        }
+
+        Ok(result)
+    }
+
+    /// insert a message immediately after a specific message ID.
+    ///
+    /// since `load_messages` uses `ORDER BY created_at ASC, id ASC`, we bump
+    /// the `created_at` of all later messages in this session by 1 second,
+    /// then insert the new row with the original `created_at`. this guarantees
+    /// correct ordering regardless of id or timestamp collisions.
+    pub fn insert_message_after(
+        &self,
+        session_id: i64,
+        after_message_id: i64,
+        role: &str,
+        content: &[MessageContent],
+    ) -> Result<(), Error> {
+        let content_json = serde_json::to_string(content)
+            .map_err(|e| Error::Provider(format!("failed to serialize message: {e}")))?;
+
+        let conn = self.conn.lock().unwrap();
+
+        let created_at: String = conn.query_row(
+            "SELECT created_at FROM messages WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![after_message_id, session_id],
+            |row| row.get(0),
+        )?;
+
+        // bump all messages after the target so the new row sorts between them
+        conn.execute(
+            "UPDATE messages
+             SET created_at = datetime(created_at, '+1 second')
+             WHERE session_id = ?1 AND id > ?2",
+            rusqlite::params![session_id, after_message_id],
+        )?;
+
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![session_id, role, content_json, created_at],
+        )?;
+
+        conn.execute(
+            "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
+            [session_id],
+        )?;
+
+        Ok(())
+    }
+
     /// count messages in a session
     pub fn session_message_count(&self, session_id: i64) -> Result<u32, Error> {
         let conn = self.conn.lock().unwrap();
@@ -250,6 +330,61 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let sid = db.active_session().unwrap();
         assert_eq!(db.session_model(sid).unwrap(), None);
+    }
+
+    #[test]
+    fn test_insert_message_after() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        // seed: user, assistant(tool_use), user("next message")
+        db.append_message(sid, "user", &[MessageContent::text("hello")], Some("cli"))
+            .unwrap();
+        db.append_message(
+            sid,
+            "assistant",
+            &[
+                MessageContent::text("let me run that"),
+                MessageContent::tool_use(
+                    "call_1",
+                    "exec",
+                    serde_json::json!({"command": "echo hi"}),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+        db.append_message(
+            sid,
+            "user",
+            &[MessageContent::text("next message")],
+            Some("cli"),
+        )
+        .unwrap();
+
+        // find the assistant message ID
+        let msgs_with_ids = db.load_messages_with_ids(sid).unwrap();
+        assert_eq!(msgs_with_ids.len(), 3);
+        let assistant_id = msgs_with_ids[1].0;
+
+        // insert a synthetic tool_result after the assistant message
+        let synthetic = vec![MessageContent::tool_result("call_1", "interrupted")];
+        db.insert_message_after(sid, assistant_id, "user", &synthetic)
+            .unwrap();
+
+        // reload and verify ordering
+        let msgs = db.load_messages(sid).unwrap();
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0].role, Role::User); // "hello"
+        assert_eq!(msgs[1].role, Role::Assistant); // tool_use
+        assert_eq!(msgs[2].role, Role::User); // synthetic tool_result (inserted)
+        assert_eq!(msgs[3].role, Role::User); // "next message"
+
+        // verify the inserted message content
+        assert!(matches!(
+            &msgs[2].content[0],
+            MessageContent::ToolResult { tool_use_id, .. } if tool_use_id == "call_1"
+        ));
     }
 
     #[test]

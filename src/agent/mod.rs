@@ -304,98 +304,53 @@ impl Agent {
         tool::handle_tool_call(&self.client, &self.db, call).await
     }
 
-    /// scan the full message history for assistant messages with tool_use
-    /// blocks that aren't followed by matching tool_results. this happens when
-    /// a crash/OOM/kill interrupts the tool loop before results are persisted.
+    /// check if the last message is an assistant message with tool_use blocks
+    /// that lack matching tool_results. this happens when a crash/OOM/kill
+    /// interrupts the tool loop before results are persisted.
     ///
-    /// mid-history orphans are repaired in-memory only (the DB is append-only).
-    /// tail orphans are also persisted so they don't reappear on next load.
+    /// for mid-history orphans, use `ava doctor` instead.
     fn repair_orphaned_tool_calls(
         &self,
         session_id: i64,
         messages: &mut Vec<Message>,
     ) -> Result<(), Error> {
-        let len = messages.len();
-        if len == 0 {
-            return Ok(());
-        }
+        let last = match messages.last() {
+            Some(msg) if msg.role == Role::Assistant => msg,
+            _ => return Ok(()),
+        };
 
-        // collect insertion points (index after the orphan) and their synthetic results
-        let mut inserts: Vec<(usize, Vec<MessageContent>)> = Vec::new();
+        let tool_use_ids: Vec<String> = last
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                MessageContent::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
 
-        for i in 0..len {
-            if messages[i].role != Role::Assistant {
-                continue;
-            }
-
-            let tool_use_ids: Vec<String> = messages[i]
-                .content
-                .iter()
-                .filter_map(|c| match c {
-                    MessageContent::ToolUse { id, .. } => Some(id.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            if tool_use_ids.is_empty() {
-                continue;
-            }
-
-            // check if the next message has tool_results for these IDs
-            let has_results = messages.get(i + 1).is_some_and(|next| {
-                next.role == Role::User
-                    && tool_use_ids.iter().all(|id| {
-                        next.content.iter().any(|c| {
-                            matches!(c, MessageContent::ToolResult { tool_use_id, .. } if tool_use_id == id)
-                        })
-                    })
-            });
-
-            if !has_results {
-                let synthetic: Vec<MessageContent> = tool_use_ids
-                    .iter()
-                    .map(|id| {
-                        MessageContent::tool_result(
-                            id,
-                            "tool call was interrupted and never completed \
-                             (session crashed or approval timed out)",
-                        )
-                    })
-                    .collect();
-                inserts.push((i + 1, synthetic));
-            }
-        }
-
-        if inserts.is_empty() {
+        if tool_use_ids.is_empty() {
             return Ok(());
         }
 
         tracing::warn!(
-            count = inserts.len(),
+            count = tool_use_ids.len(),
             "repairing orphaned tool_use blocks from interrupted session"
         );
 
-        // insert in reverse order so indices stay valid
-        let is_tail = inserts.last().is_some_and(|(idx, _)| *idx == len);
-        for (idx, synthetic) in inserts.into_iter().rev() {
-            let msg = Message::user_with_content(synthetic.clone());
-            if idx == len {
-                // tail orphan: also persist so it doesn't reappear
-                self.db
-                    .append_message(session_id, "user", &synthetic, None)?;
-                messages.push(msg);
-            } else {
-                // mid-history orphan: in-memory only
-                messages.insert(idx, msg);
-            }
-        }
+        let synthetic: Vec<MessageContent> = tool_use_ids
+            .iter()
+            .map(|id| {
+                MessageContent::tool_result(
+                    id,
+                    "tool call was interrupted and never completed \
+                     (session crashed or approval timed out)",
+                )
+            })
+            .collect();
 
-        if !is_tail {
-            tracing::info!(
-                "mid-history orphans repaired in-memory only; \
-                 they will be re-repaired on each load until compacted away"
-            );
-        }
+        self.db
+            .append_message(session_id, "user", &synthetic, None)?;
+        messages.push(Message::user_with_content(synthetic));
 
         Ok(())
     }
@@ -1317,83 +1272,6 @@ mod tests {
                 tool_use_id,
                 content,
             } if tool_use_id == "orphan_1" && content.contains("interrupted")
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_agent_repairs_mid_history_orphaned_tool_use() {
-        use std::sync::{Arc as StdArc, Mutex};
-
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        let sid = db.active_session().unwrap();
-
-        // simulate: crash left an orphaned tool_use, then the user sent
-        // another message which got appended without a tool_result first.
-        let orphaned_assistant = vec![
-            MessageContent::text("let me run that"),
-            MessageContent::tool_use(
-                "orphan_mid",
-                "exec",
-                serde_json::json!({"command": "echo hi"}),
-            ),
-        ];
-        db.append_message(sid, "assistant", &orphaned_assistant, None)
-            .unwrap();
-        // user message appended after crash (no tool_result between)
-        db.append_message(
-            sid,
-            "user",
-            &[MessageContent::text("are you there?")],
-            Some("cli"),
-        )
-        .unwrap();
-        db.append_message(sid, "assistant", &[MessageContent::text("yes")], None)
-            .unwrap();
-
-        let seen_msgs = StdArc::new(Mutex::new(Vec::new()));
-        let seen_clone = seen_msgs.clone();
-
-        let provider = AnyProvider::Test(TestProvider {
-            handler: Box::new(move |_system, msgs| {
-                *seen_clone.lock().unwrap() = msgs.to_vec();
-                Ok(ProviderResponse {
-                    content: "all good now".into(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: vec![],
-                    usage: Usage::default(),
-                })
-            }),
-        });
-
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            Arc::clone(&db),
-            reqwest::Client::new(),
-        );
-
-        let inbound = InboundMessage {
-            channel: ChannelKind::Cli,
-            content: "hello again".into(),
-        };
-
-        let result = agent.process(&inbound).await;
-        assert!(result.is_ok(), "should not error on mid-history orphan");
-
-        let msgs = seen_msgs.lock().unwrap();
-        // expected: assistant(tool_use) + user(synthetic) + user("are you there?")
-        //           + assistant("yes") + user("hello again")
-        assert_eq!(msgs.len(), 5);
-
-        // the synthetic repair should be at index 1
-        let repair_msg = &msgs[1];
-        assert_eq!(repair_msg.role, Role::User);
-        assert!(matches!(
-            &repair_msg.content[0],
-            MessageContent::ToolResult {
-                tool_use_id,
-                content,
-            } if tool_use_id == "orphan_mid" && content.contains("interrupted")
         ));
     }
 
