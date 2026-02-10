@@ -1,7 +1,17 @@
+use serde::Serialize;
+
 use crate::error::Error;
 use crate::message::{Message, MessageContent, Role};
 
 use super::Database;
+
+/// a message with its timestamp, for history display
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryMessage {
+    pub role: Role,
+    pub content: Vec<MessageContent>,
+    pub created_at: String,
+}
 
 impl Database {
     /// get the active session id, creating one if none exists
@@ -56,6 +66,50 @@ impl Database {
             result.push(Message { role, content });
         }
 
+        Ok(result)
+    }
+
+    /// load the most recent messages for a session, oldest first
+    pub fn load_recent_messages(
+        &self,
+        session_id: i64,
+        limit: u32,
+    ) -> Result<Vec<HistoryMessage>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT role, content, created_at FROM messages
+             WHERE session_id = ?1
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![session_id, limit], |row| {
+                let role_str: String = row.get(0)?;
+                let content_json: String = row.get(1)?;
+                let created_at: String = row.get(2)?;
+                Ok((role_str, content_json, created_at))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for (role_str, content_json, created_at) in rows {
+            let role = match role_str.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                _ => continue,
+            };
+            let content: Vec<MessageContent> = serde_json::from_str(&content_json)
+                .map_err(|e| Error::Provider(format!("failed to deserialize message: {e}")))?;
+            result.push(HistoryMessage {
+                role,
+                content,
+                created_at,
+            });
+        }
+
+        // reverse so oldest is first
+        result.reverse();
         Ok(result)
     }
 
@@ -385,6 +439,31 @@ mod tests {
             &msgs[2].content[0],
             MessageContent::ToolResult { tool_use_id, .. } if tool_use_id == "call_1"
         ));
+    }
+
+    #[test]
+    fn test_load_recent_messages() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        db.append_message(sid, "user", &[MessageContent::text("first")], Some("cli"))
+            .unwrap();
+        db.append_message(sid, "assistant", &[MessageContent::text("second")], None)
+            .unwrap();
+        db.append_message(sid, "user", &[MessageContent::text("third")], Some("cli"))
+            .unwrap();
+
+        // limit to 2 — should get the two most recent, oldest first
+        let msgs = db.load_recent_messages(sid, 2).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::Assistant);
+        assert_eq!(msgs[1].role, Role::User);
+        assert!(!msgs[0].created_at.is_empty());
+
+        match &msgs[1].content[0] {
+            MessageContent::Text { text } => assert_eq!(text, "third"),
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
