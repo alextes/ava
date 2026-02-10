@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-j06f
 title: add scheduler-driven task board check
 priority: P3
-status: open
+status: done
 deps:
 - ava-g3o2
 tags:
@@ -11,6 +11,8 @@ tags:
 - scheduler
 owner: null
 created_at: 2026-02-09T17:43:27.897935Z
+started_at: 2026-02-09T17:45:52.885537Z
+completed_at: 2026-02-09T17:46:40.577186Z
 ---
 
 bake a pending-tasks check into the existing scheduler loop (src/scheduler.rs). when the agent is idle and has pending tasks, push a synthetic message into the queue prompting it to review its backlog.
