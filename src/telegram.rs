@@ -20,8 +20,8 @@ impl TelegramBot {
     }
 
     pub fn from_env() -> Result<Self, Error> {
-        let token =
-            std::env::var("TELOXIDE_TOKEN").map_err(|_| Error::MissingEnvVar("TELOXIDE_TOKEN"))?;
+        let token = std::env::var("TELEGRAM_BOT_TOKEN")
+            .map_err(|_| Error::MissingEnvVar("TELEGRAM_BOT_TOKEN"))?;
         Ok(Self::new(token))
     }
 

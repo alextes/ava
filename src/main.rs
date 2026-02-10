@@ -534,7 +534,7 @@ async fn run_start() -> Result<(), error::Error> {
     });
 
     // start telegram if configured
-    if std::env::var("TELOXIDE_TOKEN").is_ok() {
+    if std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
         let bot = Arc::new(TelegramBot::from_env()?);
         let allowed_ids = allowed_telegram_ids();
 
@@ -560,7 +560,7 @@ async fn run_start() -> Result<(), error::Error> {
             allowed_ids,
         ));
     } else {
-        tracing::info!("TELOXIDE_TOKEN not set, skipping telegram");
+        tracing::info!("TELEGRAM_BOT_TOKEN not set, skipping telegram");
     }
 
     // drop our copy of tx so agent_loop can exit when all producers stop
