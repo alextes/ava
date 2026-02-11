@@ -164,6 +164,13 @@ impl Agent {
                     cache_read = read,
                     "provider usage"
                 );
+            } else if let Some(reasoning) = usage.reasoning_tokens {
+                tracing::info!(
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    reasoning_tokens = reasoning,
+                    "provider usage"
+                );
             } else {
                 tracing::info!(
                     input_tokens = usage.input_tokens,
@@ -1322,7 +1329,7 @@ mod tests {
             MessageContent::ToolResult {
                 tool_use_id,
                 content,
-            } if tool_use_id == "orphan_1" && content.contains("interrupted")
+            } if tool_use_id == "orphan_1" && content.as_display_str().contains("interrupted")
         ));
     }
 

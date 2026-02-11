@@ -98,6 +98,14 @@ struct ApiResponse {
 struct ApiUsage {
     input_tokens: u32,
     output_tokens: u32,
+    #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,10 +370,14 @@ impl Provider for OpenAiProvider {
 
         let usage = api_response
             .usage
-            .map(|u| Usage {
-                input_tokens: u.input_tokens,
-                output_tokens: u.output_tokens,
-                ..Default::default()
+            .map(|u| {
+                let reasoning_tokens = u.output_tokens_details.and_then(|d| d.reasoning_tokens);
+                Usage {
+                    input_tokens: u.input_tokens,
+                    output_tokens: u.output_tokens,
+                    reasoning_tokens,
+                    ..Default::default()
+                }
             })
             .unwrap_or_default();
 

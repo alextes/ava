@@ -215,6 +215,7 @@ impl Provider for AnthropicProvider {
                 output_tokens: api_response.usage.output_tokens,
                 cache_creation_tokens: api_response.usage.cache_creation_input_tokens,
                 cache_read_tokens: api_response.usage.cache_read_input_tokens,
+                ..Default::default()
             },
         })
     }

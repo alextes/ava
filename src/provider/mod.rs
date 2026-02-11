@@ -31,6 +31,8 @@ pub struct Usage {
     pub cache_creation_tokens: Option<u32>,
     /// anthropic: tokens read from cache this request
     pub cache_read_tokens: Option<u32>,
+    /// openai: reasoning tokens used by reasoning models (subset of output_tokens)
+    pub reasoning_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
