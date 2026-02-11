@@ -2,6 +2,7 @@ mod complete;
 mod cron;
 mod exec;
 mod filesystem;
+mod search;
 mod tasks;
 mod web;
 
@@ -19,6 +20,7 @@ pub use complete::COMPLETE_TOOL_NAME;
 pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
+pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
 pub use tasks::TASKS_TOOL_NAME;
 pub use web::{WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME};
 
@@ -119,6 +121,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         cron::cron_definition(),
         tasks::tasks_definition(),
         complete::complete_definition(),
+        search::grep_definition(),
+        search::glob_definition(),
         ToolDefinition::BuiltIn {
             tool_type: "text_editor_20250728",
             name: TEXT_EDITOR_TOOL_NAME,
@@ -314,6 +318,22 @@ pub async fn handle_tool_call(
         }
         WEB_FETCH_TOOL_NAME => {
             let result = web::handle_web_fetch(client, call).await;
+            Ok(ToolCallResult {
+                content: MessageContent::tool_result(&call.id, result),
+                switch_provider: None,
+                complete: false,
+            })
+        }
+        GREP_TOOL_NAME => {
+            let result = search::handle_grep(call).await;
+            Ok(ToolCallResult {
+                content: MessageContent::tool_result(&call.id, result),
+                switch_provider: None,
+                complete: false,
+            })
+        }
+        GLOB_TOOL_NAME => {
+            let result = search::handle_glob(call);
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
