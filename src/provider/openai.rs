@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Error;
-use crate::message::{Message, MessageContent, Role};
+use crate::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
 use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
 use crate::tool::{ToolDefinition, tool_definitions};
 
-const API_URL: &str = "https://api.openai.com/v1/chat/completions";
+const API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.2";
 pub const ALLOWED_MODELS: &[&str] = &["gpt-5.2", "gpt-5-mini"];
 const DEFAULT_MAX_TOKENS: u32 = 8192;
@@ -53,56 +53,32 @@ impl OpenAiProvider {
 #[derive(Debug, Serialize)]
 struct ApiRequest<'a> {
     model: &'a str,
-    max_completion_tokens: u32,
-    messages: Vec<ChatMessage>,
+    max_output_tokens: u32,
+    instructions: &'a str,
+    input: Vec<InputItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<ChatTool>,
+    tools: Vec<FunctionTool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "role")]
-enum ChatMessage {
-    #[serde(rename = "system")]
-    System { content: String },
-    #[serde(rename = "user")]
-    User { content: String },
-    #[serde(rename = "assistant")]
-    Assistant {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<String>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        tool_calls: Vec<ChatToolCall>,
+#[serde(tag = "type")]
+enum InputItem {
+    #[serde(rename = "message")]
+    Message { role: String, content: Value },
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
     },
-    #[serde(rename = "tool")]
-    Tool {
-        content: String,
-        tool_call_id: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChatToolCall {
-    id: String,
-    #[serde(rename = "type")]
-    call_type: String,
-    function: ChatFunctionCall,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChatFunctionCall {
-    name: String,
-    arguments: String,
+    #[serde(rename = "function_call_output")]
+    FunctionCallOutput { call_id: String, output: Value },
 }
 
 #[derive(Debug, Serialize)]
-struct ChatTool {
+struct FunctionTool {
     #[serde(rename = "type")]
     tool_type: String,
-    function: ChatFunction,
-}
-
-#[derive(Debug, Serialize)]
-struct ChatFunction {
     name: &'static str,
     description: &'static str,
     parameters: Value,
@@ -112,28 +88,40 @@ struct ChatFunction {
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
-    choices: Vec<Choice>,
+    output: Vec<OutputItem>,
     #[serde(default)]
     usage: Option<ApiUsage>,
+    status: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct ApiUsage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
+    input_tokens: u32,
+    output_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
-struct Choice {
-    message: ResponseMessage,
-    finish_reason: String,
+#[serde(tag = "type")]
+enum OutputItem {
+    #[serde(rename = "message")]
+    Message { content: Vec<OutputContent> },
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseMessage {
-    content: Option<String>,
-    #[serde(default)]
-    tool_calls: Vec<ChatToolCall>,
+#[serde(tag = "type")]
+enum OutputContent {
+    #[serde(rename = "output_text")]
+    Text { text: String },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,16 +138,12 @@ struct ApiErrorDetail {
 
 // -- conversion helpers --
 
-fn convert_messages(system_prompt: &str, messages: &[Message]) -> Vec<ChatMessage> {
-    let mut out = vec![ChatMessage::System {
-        content: system_prompt.to_string(),
-    }];
+fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
+    let mut out = Vec::new();
 
     for msg in messages {
         match msg.role {
             Role::User => {
-                // user messages can contain text and tool results
-                // tool results become separate "tool" messages in openai format
                 let mut text_parts = Vec::new();
                 for block in &msg.content {
                     match block {
@@ -170,52 +154,61 @@ fn convert_messages(system_prompt: &str, messages: &[Message]) -> Vec<ChatMessag
                         } => {
                             // flush any accumulated text first
                             if !text_parts.is_empty() {
-                                out.push(ChatMessage::User {
-                                    content: text_parts.join("\n"),
+                                out.push(InputItem::Message {
+                                    role: "user".to_string(),
+                                    content: Value::String(text_parts.join("\n")),
                                 });
                                 text_parts.clear();
                             }
-                            out.push(ChatMessage::Tool {
-                                content: content.clone(),
-                                tool_call_id: tool_use_id.clone(),
+                            let output = tool_result_content_to_value(content);
+                            out.push(InputItem::FunctionCallOutput {
+                                call_id: tool_use_id.clone(),
+                                output,
                             });
                         }
                         _ => {}
                     }
                 }
                 if !text_parts.is_empty() {
-                    out.push(ChatMessage::User {
-                        content: text_parts.join("\n"),
+                    out.push(InputItem::Message {
+                        role: "user".to_string(),
+                        content: Value::String(text_parts.join("\n")),
                     });
                 }
             }
             Role::Assistant => {
-                let mut text_content = None;
-                let mut tool_calls = Vec::new();
+                let mut text_parts = Vec::new();
 
                 for block in &msg.content {
                     match block {
                         MessageContent::Text { text } => {
-                            text_content = Some(text.clone());
+                            text_parts.push(text.clone());
                         }
                         MessageContent::ToolUse { id, name, input } => {
-                            tool_calls.push(ChatToolCall {
-                                id: id.clone(),
-                                call_type: "function".to_string(),
-                                function: ChatFunctionCall {
-                                    name: name.clone(),
-                                    arguments: serde_json::to_string(input).unwrap_or_default(),
-                                },
+                            // flush any accumulated text first
+                            if !text_parts.is_empty() {
+                                out.push(InputItem::Message {
+                                    role: "assistant".to_string(),
+                                    content: Value::String(text_parts.join("\n")),
+                                });
+                                text_parts.clear();
+                            }
+                            out.push(InputItem::FunctionCall {
+                                call_id: id.clone(),
+                                name: name.clone(),
+                                arguments: serde_json::to_string(input).unwrap_or_default(),
                             });
                         }
                         _ => {}
                     }
                 }
 
-                out.push(ChatMessage::Assistant {
-                    content: text_content,
-                    tool_calls,
-                });
+                if !text_parts.is_empty() {
+                    out.push(InputItem::Message {
+                        role: "assistant".to_string(),
+                        content: Value::String(text_parts.join("\n")),
+                    });
+                }
             }
         }
     }
@@ -223,7 +216,31 @@ fn convert_messages(system_prompt: &str, messages: &[Message]) -> Vec<ChatMessag
     out
 }
 
-fn convert_tools(definitions: &[ToolDefinition]) -> Vec<ChatTool> {
+fn tool_result_content_to_value(content: &ToolResultContent) -> Value {
+    match content {
+        ToolResultContent::Text(s) => Value::String(s.clone()),
+        ToolResultContent::Blocks(blocks) => {
+            let parts: Vec<Value> = blocks
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } => {
+                        serde_json::json!({"type": "input_text", "text": text})
+                    }
+                    ContentBlock::Image { source } => {
+                        let data_uri = format!("data:{};base64,{}", source.media_type, source.data);
+                        serde_json::json!({
+                            "type": "input_image",
+                            "image_url": data_uri
+                        })
+                    }
+                })
+                .collect();
+            Value::Array(parts)
+        }
+    }
+}
+
+fn convert_tools(definitions: &[ToolDefinition]) -> Vec<FunctionTool> {
     definitions
         .iter()
         .filter_map(|def| match def {
@@ -231,24 +248,21 @@ fn convert_tools(definitions: &[ToolDefinition]) -> Vec<ChatTool> {
                 name,
                 description,
                 input_schema,
-            } => Some(ChatTool {
+            } => Some(FunctionTool {
                 tool_type: "function".to_string(),
-                function: ChatFunction {
-                    name,
-                    description,
-                    parameters: input_schema.clone(),
-                },
+                name,
+                description,
+                parameters: input_schema.clone(),
             }),
             ToolDefinition::BuiltIn { .. } => None,
         })
         .collect()
 }
 
-fn parse_finish_reason(reason: &str) -> StopReason {
-    match reason {
-        "stop" => StopReason::EndTurn,
-        "length" => StopReason::MaxTokens,
-        "tool_calls" => StopReason::ToolUse,
+fn parse_status(status: &str) -> StopReason {
+    match status {
+        "completed" => StopReason::EndTurn,
+        "incomplete" => StopReason::MaxTokens,
         _ => StopReason::EndTurn,
     }
 }
@@ -261,19 +275,20 @@ impl Provider for OpenAiProvider {
         messages: &[Message],
         include_tools: bool,
     ) -> Result<ProviderResponse, Error> {
-        let chat_messages = convert_messages(system_prompt, messages);
-        let chat_tools = if include_tools {
-            let tools = tool_definitions();
-            convert_tools(&tools)
+        let input = convert_messages(messages);
+        let tools = if include_tools {
+            let defs = tool_definitions();
+            convert_tools(&defs)
         } else {
             Vec::new()
         };
 
         let request = ApiRequest {
             model: &self.model,
-            max_completion_tokens: self.max_tokens,
-            messages: chat_messages,
-            tools: chat_tools,
+            max_output_tokens: self.max_tokens,
+            instructions: system_prompt,
+            input,
+            tools,
         };
 
         let response = self
@@ -308,37 +323,54 @@ impl Provider for OpenAiProvider {
 
         let api_response: ApiResponse = response.json().await?;
 
-        let choice = api_response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::Provider("empty response from openai".into()))?;
-
-        let content = choice.message.content.unwrap_or_default();
-        let stop_reason = parse_finish_reason(&choice.finish_reason);
-
+        let mut content_parts = Vec::new();
         let mut tool_calls = Vec::new();
-        for tc in choice.message.tool_calls {
-            let input: Value = serde_json::from_str(&tc.function.arguments)
-                .unwrap_or(Value::Object(serde_json::Map::new()));
-            tool_calls.push(ToolCall {
-                id: tc.id,
-                name: tc.function.name,
-                input,
-            });
+
+        for item in api_response.output {
+            match item {
+                OutputItem::Message {
+                    content: contents, ..
+                } => {
+                    for c in contents {
+                        if let OutputContent::Text { text } = c {
+                            content_parts.push(text);
+                        }
+                    }
+                }
+                OutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
+                    let input: Value = serde_json::from_str(&arguments)
+                        .unwrap_or(Value::Object(serde_json::Map::new()));
+                    tool_calls.push(ToolCall {
+                        id: call_id,
+                        name,
+                        input,
+                    });
+                }
+                OutputItem::Other => {}
+            }
         }
+
+        let stop_reason = if !tool_calls.is_empty() {
+            StopReason::ToolUse
+        } else {
+            parse_status(&api_response.status)
+        };
 
         let usage = api_response
             .usage
             .map(|u| Usage {
-                input_tokens: u.prompt_tokens,
-                output_tokens: u.completion_tokens,
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
                 ..Default::default()
             })
             .unwrap_or_default();
 
         Ok(ProviderResponse {
-            content,
+            content: content_parts.join(""),
             stop_reason,
             tool_calls,
             usage,
@@ -353,14 +385,11 @@ mod tests {
     #[test]
     fn test_convert_user_message() {
         let messages = vec![Message::user("hello")];
-        let result = convert_messages("system", &messages);
+        let result = convert_messages(&messages);
 
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 1);
         let json = serde_json::to_value(&result[0]).unwrap();
-        assert_eq!(json["role"], "system");
-        assert_eq!(json["content"], "system");
-
-        let json = serde_json::to_value(&result[1]).unwrap();
+        assert_eq!(json["type"], "message");
         assert_eq!(json["role"], "user");
         assert_eq!(json["content"], "hello");
     }
@@ -372,15 +401,18 @@ mod tests {
             MessageContent::tool_use("call_123", "remember_fact", serde_json::json!({"key": "v"})),
         ])];
 
-        let result = convert_messages("sys", &messages);
-        assert_eq!(result.len(), 2); // system + assistant
+        let result = convert_messages(&messages);
+        assert_eq!(result.len(), 2); // assistant message + function_call
 
-        let json = serde_json::to_value(&result[1]).unwrap();
-        assert_eq!(json["role"], "assistant");
-        assert_eq!(json["content"], "thinking...");
-        assert_eq!(json["tool_calls"][0]["id"], "call_123");
-        assert_eq!(json["tool_calls"][0]["type"], "function");
-        assert_eq!(json["tool_calls"][0]["function"]["name"], "remember_fact");
+        let msg_json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(msg_json["type"], "message");
+        assert_eq!(msg_json["role"], "assistant");
+        assert_eq!(msg_json["content"], "thinking...");
+
+        let call_json = serde_json::to_value(&result[1]).unwrap();
+        assert_eq!(call_json["type"], "function_call");
+        assert_eq!(call_json["call_id"], "call_123");
+        assert_eq!(call_json["name"], "remember_fact");
     }
 
     #[test]
@@ -389,13 +421,50 @@ mod tests {
             MessageContent::tool_result("call_123", "ok"),
         ])];
 
-        let result = convert_messages("sys", &messages);
-        assert_eq!(result.len(), 2); // system + tool
+        let result = convert_messages(&messages);
+        assert_eq!(result.len(), 1);
 
-        let json = serde_json::to_value(&result[1]).unwrap();
-        assert_eq!(json["role"], "tool");
-        assert_eq!(json["content"], "ok");
-        assert_eq!(json["tool_call_id"], "call_123");
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(json["type"], "function_call_output");
+        assert_eq!(json["call_id"], "call_123");
+        assert_eq!(json["output"], "ok");
+    }
+
+    #[test]
+    fn test_convert_tool_result_with_image() {
+        use crate::message::ImageSource;
+
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "screenshot".into(),
+            },
+            ContentBlock::Image {
+                source: ImageSource {
+                    source_type: "base64".into(),
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+            },
+        ];
+        let messages = vec![Message::user_with_content(vec![
+            MessageContent::tool_result_with_blocks("call_456", blocks),
+        ])];
+
+        let result = convert_messages(&messages);
+        assert_eq!(result.len(), 1);
+
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(json["type"], "function_call_output");
+        assert_eq!(json["call_id"], "call_456");
+
+        let output = &json["output"];
+        assert!(output.is_array());
+        let arr = output.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[0]["text"], "screenshot");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["image_url"], "data:image/png;base64,iVBORw0KGgo=");
     }
 
     #[test]
@@ -413,70 +482,76 @@ mod tests {
 
         let json = serde_json::to_value(&tools[0]).unwrap();
         assert_eq!(json["type"], "function");
-        assert!(json["function"]["name"].is_string());
-        assert!(json["function"]["parameters"].is_object());
+        assert!(json["name"].is_string());
+        assert!(json["parameters"].is_object());
 
         // verify no tool is named after the built-in text editor
         for tool in &tools {
-            assert_ne!(tool.function.name, "str_replace_based_edit_tool");
+            assert_ne!(tool.name, "str_replace_based_edit_tool");
         }
     }
 
     #[test]
     fn test_parse_response() {
         let json = r#"{
-            "choices": [{
-                "message": {
-                    "content": "hello there",
-                    "tool_calls": []
-                },
-                "finish_reason": "stop"
-            }]
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": "hello there"
+                }]
+            }],
+            "status": "completed"
         }"#;
 
         let response: ApiResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.choices.len(), 1);
-        assert_eq!(
-            response.choices[0].message.content.as_deref(),
-            Some("hello there")
-        );
-        assert_eq!(response.choices[0].finish_reason, "stop");
+        assert_eq!(response.output.len(), 1);
+        if let OutputItem::Message { content, .. } = &response.output[0] {
+            assert_eq!(content.len(), 1);
+            if let OutputContent::Text { text } = &content[0] {
+                assert_eq!(text, "hello there");
+            } else {
+                panic!("expected Text content");
+            }
+        } else {
+            panic!("expected Message output");
+        }
+        assert_eq!(response.status, "completed");
     }
 
     #[test]
     fn test_parse_tool_call_response() {
         let json = r#"{
-            "choices": [{
-                "message": {
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_abc",
-                        "type": "function",
-                        "function": {
-                            "name": "remember_fact",
-                            "arguments": "{\"category\":\"user\",\"key\":\"name\",\"value\":\"alex\"}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }]
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_abc",
+                "name": "remember_fact",
+                "arguments": "{\"category\":\"user\",\"key\":\"name\",\"value\":\"alex\"}"
+            }],
+            "status": "completed"
         }"#;
 
         let response: ApiResponse = serde_json::from_str(json).unwrap();
-        let tc = &response.choices[0].message.tool_calls[0];
-        assert_eq!(tc.id, "call_abc");
-        assert_eq!(tc.function.name, "remember_fact");
-
-        let args: Value = serde_json::from_str(&tc.function.arguments).unwrap();
-        assert_eq!(args["category"], "user");
+        if let OutputItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+        } = &response.output[0]
+        {
+            assert_eq!(call_id, "call_abc");
+            assert_eq!(name, "remember_fact");
+            let args: Value = serde_json::from_str(arguments).unwrap();
+            assert_eq!(args["category"], "user");
+        } else {
+            panic!("expected FunctionCall output");
+        }
     }
 
     #[test]
-    fn test_parse_finish_reasons() {
-        assert_eq!(parse_finish_reason("stop"), StopReason::EndTurn);
-        assert_eq!(parse_finish_reason("length"), StopReason::MaxTokens);
-        assert_eq!(parse_finish_reason("tool_calls"), StopReason::ToolUse);
-        assert_eq!(parse_finish_reason("unknown"), StopReason::EndTurn);
+    fn test_parse_status() {
+        assert_eq!(parse_status("completed"), StopReason::EndTurn);
+        assert_eq!(parse_status("incomplete"), StopReason::MaxTokens);
+        assert_eq!(parse_status("unknown"), StopReason::EndTurn);
     }
 
     #[test]
