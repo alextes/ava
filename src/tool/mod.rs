@@ -685,9 +685,9 @@ mod tests {
         }
     }
 
-    fn extract_tool_result_text(content: &MessageContent) -> &str {
+    fn extract_tool_result_text(content: &MessageContent) -> String {
         match content {
-            MessageContent::ToolResult { content, .. } => content.as_str(),
+            MessageContent::ToolResult { content, .. } => content.as_display_str(),
             _ => panic!("expected ToolResult"),
         }
     }

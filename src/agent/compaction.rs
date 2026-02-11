@@ -29,7 +29,7 @@ pub fn needs_compaction(
                 .map(|c| match c {
                     MessageContent::Text { text } => text.len(),
                     MessageContent::ToolUse { input, .. } => input.to_string().len(),
-                    MessageContent::ToolResult { content, .. } => content.len(),
+                    MessageContent::ToolResult { content, .. } => content.estimated_len(),
                 })
                 .sum();
             (total_chars / 4) as u32
@@ -103,11 +103,12 @@ pub async fn compact_messages(
                 MessageContent::ToolResult { content, .. } => {
                     summarize_content.push_str("tool result: ");
                     // truncate long tool results to save tokens
-                    if content.len() > 500 {
-                        summarize_content.push_str(&content[..500]);
+                    let display = content.as_display_str();
+                    if display.len() > 500 {
+                        summarize_content.push_str(&display[..500]);
                         summarize_content.push_str("...");
                     } else {
-                        summarize_content.push_str(content);
+                        summarize_content.push_str(&display);
                     }
                     summarize_content.push('\n');
                 }

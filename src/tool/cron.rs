@@ -273,9 +273,9 @@ mod tests {
 
     use super::handle_cron;
 
-    fn extract_text(content: &MessageContent) -> &str {
+    fn extract_text(content: &MessageContent) -> String {
         match content {
-            MessageContent::ToolResult { content, .. } => content.as_str(),
+            MessageContent::ToolResult { content, .. } => content.as_display_str(),
             _ => panic!("expected ToolResult"),
         }
     }

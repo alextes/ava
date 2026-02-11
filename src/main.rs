@@ -255,21 +255,26 @@ fn run_history(limit: u32, json: bool, compact: bool, full: bool) -> Result<(), 
                 MessageContent::ToolResult {
                     tool_use_id,
                     content,
-                } => match &mode {
-                    HistoryMode::Compact => {
-                        let display = truncate_str(content, 200);
-                        println!("{MAGENTA}[result: {tool_use_id}]{RESET} {DIM}{display}{RESET}");
+                } => {
+                    let display_str = content.as_display_str();
+                    match &mode {
+                        HistoryMode::Compact => {
+                            let display = truncate_str(&display_str, 200);
+                            println!(
+                                "{MAGENTA}[result: {tool_use_id}]{RESET} {DIM}{display}{RESET}"
+                            );
+                        }
+                        HistoryMode::Pretty => {
+                            let display = truncate_str(&display_str, 500);
+                            println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
+                            println!("{DIM}{display}{RESET}");
+                        }
+                        HistoryMode::Full => {
+                            println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
+                            println!("{display_str}");
+                        }
                     }
-                    HistoryMode::Pretty => {
-                        let display = truncate_str(content, 500);
-                        println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
-                        println!("{DIM}{display}{RESET}");
-                    }
-                    HistoryMode::Full => {
-                        println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
-                        println!("{content}");
-                    }
-                },
+                }
             }
         }
     }
