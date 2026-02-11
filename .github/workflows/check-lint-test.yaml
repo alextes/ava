@@ -31,4 +31,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: install ripgrep
+        run: cargo install ripgrep --locked 2>/dev/null || true
       - run: cargo test
