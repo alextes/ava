@@ -103,9 +103,12 @@ impl TelegramApprover {
 
         let Some(approval) = entry else {
             // stale button press
-            let _ = bot
+            if let Err(e) = bot
                 .answer_callback_query(callback_query_id, Some("this approval request has expired"))
-                .await;
+                .await
+            {
+                tracing::warn!("failed to answer stale callback query: {e}");
+            }
             return true;
         };
 
@@ -120,9 +123,12 @@ impl TelegramApprover {
             }
             "deny" => ApprovalDecision::Deny,
             _ => {
-                let _ = bot
+                if let Err(e) = bot
                     .answer_callback_query(callback_query_id, Some("unknown action"))
-                    .await;
+                    .await
+                {
+                    tracing::warn!("failed to answer unknown-action callback query: {e}");
+                }
                 return true;
             }
         };
@@ -136,12 +142,19 @@ impl TelegramApprover {
         };
 
         // edit the message to show the decision
-        let _ = bot
+        if let Err(e) = bot
             .edit_message_text(chat_id, approval.message_id, &format!("-> {decision_text}"))
-            .await;
+            .await
+        {
+            tracing::warn!("failed to edit approval message: {e}");
+        }
 
-        let _ = bot.answer_callback_query(callback_query_id, None).await;
-        let _ = approval.sender.send(decision);
+        if let Err(e) = bot.answer_callback_query(callback_query_id, None).await {
+            tracing::warn!("failed to answer callback query: {e}");
+        }
+        if approval.sender.send(decision).is_err() {
+            tracing::debug!("approval receiver dropped (agent likely timed out)");
+        }
 
         true
     }
