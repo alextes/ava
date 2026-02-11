@@ -3,18 +3,19 @@ schema_version: 9
 id: ava-61em
 title: add browser tool
 priority: P2
-status: done
+status: open
 type: meta
 deps:
 - ava-b13x
 - ava-a5d8
 - ava-i727
+- ava-0p2x
+- ava-n06u
 tags:
 - tool
 owner: null
 created_at: 2026-02-01T21:37:34.076221Z
 started_at: 2026-02-08T19:21:31.106785Z
-completed_at: 2026-02-08T19:50:09.369699Z
 ---
 
 browser automation tool for the agent loop:
