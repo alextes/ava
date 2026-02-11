@@ -3,12 +3,13 @@ schema_version: 9
 id: ava-a5d8
 title: add image content support to message and provider layer
 priority: P2
-status: open
+status: done
 deps: []
 tags:
 - tool
 owner: null
 created_at: 2026-02-08T19:41:54.559095Z
+completed_at: 2026-02-11T11:24:00.990911Z
 ---
 
 add an Image variant to MessageContent so tools can return images (e.g. browser screenshots).
