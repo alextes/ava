@@ -40,6 +40,7 @@ const APPROVAL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 struct PendingApproval {
     sender: oneshot::Sender<ApprovalDecision>,
     message_id: i64,
+    original_text: String,
 }
 
 /// shared state for pending approval requests.
@@ -86,6 +87,7 @@ impl TelegramApprover {
         callback_query_id: &str,
         data: &str,
         chat_id: i64,
+        message_id: Option<i64>,
     ) -> bool {
         // format: exec:{nonce}:{action}
         let parts: Vec<&str> = data.splitn(3, ':').collect();
@@ -102,7 +104,12 @@ impl TelegramApprover {
         };
 
         let Some(approval) = entry else {
-            // stale button press
+            // stale button press — edit message to show expired and remove buttons
+            if let Some(mid) = message_id
+                && let Err(e) = bot.edit_message_text(chat_id, mid, "-> expired").await
+            {
+                tracing::warn!("failed to edit stale approval message: {e}");
+            }
             if let Err(e) = bot
                 .answer_callback_query(callback_query_id, Some("this approval request has expired"))
                 .await
@@ -141,9 +148,10 @@ impl TelegramApprover {
             _ => "unknown",
         };
 
-        // edit the message to show the decision
+        // edit the message to show the decision, preserving original context
+        let edited_text = format!("{}\n-> {decision_text}", approval.original_text);
         if let Err(e) = bot
-            .edit_message_text(chat_id, approval.message_id, &format!("-> {decision_text}"))
+            .edit_message_text(chat_id, approval.message_id, &edited_text)
             .await
         {
             tracing::warn!("failed to edit approval message: {e}");
@@ -270,6 +278,7 @@ impl Approver for TelegramApprover {
                 PendingApproval {
                     sender: tx,
                     message_id,
+                    original_text: text,
                 },
             );
         }
@@ -290,9 +299,18 @@ impl Approver for TelegramApprover {
                 Err(Error::ApprovalTimeout)
             }
             Err(_) => {
-                // timeout
+                // timeout — edit message to show expired and remove buttons
                 let mut map = self.pending.map.lock().await;
-                map.remove(&nonce);
+                if let Some(expired) = map.remove(&nonce) {
+                    let text = format!("{}\n-> expired", expired.original_text);
+                    if let Err(e) = self
+                        .bot
+                        .edit_message_text(self.chat_id, expired.message_id, &text)
+                        .await
+                    {
+                        tracing::warn!("failed to edit expired approval message: {e}");
+                    }
+                }
                 Err(Error::ApprovalTimeout)
             }
         }
@@ -351,6 +369,7 @@ mod tests {
                 PendingApproval {
                     sender: tx,
                     message_id: 42,
+                    original_text: "command: ls".into(),
                 },
             );
         }
@@ -390,6 +409,7 @@ mod tests {
                 PendingApproval {
                     sender: tx,
                     message_id: 99,
+                    original_text: "command: rm stuff".into(),
                 },
             );
         }
@@ -415,6 +435,7 @@ mod tests {
                 PendingApproval {
                     sender: tx,
                     message_id: 100,
+                    original_text: "command: ls *".into(),
                 },
             );
         }

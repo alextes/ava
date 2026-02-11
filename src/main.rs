@@ -726,8 +726,16 @@ async fn telegram_producer(
                         .map(|m| m.chat.id)
                         .unwrap_or_default();
 
-                    TelegramApprover::handle_callback(&pending, &bot, &callback.id, data, chat_id)
-                        .await;
+                    let message_id = callback.message.as_ref().map(|m| m.message_id);
+                    TelegramApprover::handle_callback(
+                        &pending,
+                        &bot,
+                        &callback.id,
+                        data,
+                        chat_id,
+                        message_id,
+                    )
+                    .await;
                 }
                 continue;
             }
