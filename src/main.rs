@@ -670,10 +670,14 @@ async fn agent_loop(
         match agent.process(&inbound).await {
             Ok(Some(outbound)) => send_response(queued.sink, outbound).await,
             Ok(None) => tracing::debug!("agent completed silently"),
+            Err(error::Error::RateLimited(ref msg)) => {
+                tracing::warn!(%msg, "rate limited");
+                send_error(queued.sink, &format!("rate limited: {msg}")).await;
+            }
             Err(error::Error::BudgetExhausted(ref msg)) => {
                 tracing::error!(%msg, "budget exhausted, fallback also failed");
                 let help = format!(
-                    "rate limit / budget exhausted: {msg}\n\n\
+                    "budget exhausted: {msg}\n\n\
                      automatic fallback failed. use `/switch <provider>` to \
                      switch manually (e.g. `/switch openai` or `/switch anthropic`)."
                 );

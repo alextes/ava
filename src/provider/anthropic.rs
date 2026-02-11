@@ -177,6 +177,11 @@ impl Provider for AnthropicProvider {
                 return Err(Error::ContextOverflow);
             }
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(Error::RateLimited(error.error.message));
+            }
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && msg.to_lowercase().contains("credit balance")
+            {
                 return Err(Error::BudgetExhausted(error.error.message));
             }
             return Err(Error::Provider(error.error.message));

@@ -20,8 +20,11 @@ pub enum Error {
     #[error("provider error: {0}")]
     Provider(String),
 
-    #[error("rate limit / budget exhausted: {0}")]
+    #[error("budget exhausted: {0}")]
     BudgetExhausted(String),
+
+    #[error("rate limited: {0}")]
+    RateLimited(String),
 
     #[error("telegram error: {0}")]
     Telegram(String),

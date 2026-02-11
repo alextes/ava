@@ -98,6 +98,16 @@ impl Agent {
                             .into(),
                     }));
                 }
+                Err(Error::RateLimited(ref msg)) => {
+                    let provider_name = active_provider.provider_name();
+                    tracing::warn!(provider = provider_name, "rate limited");
+                    return Ok(Some(OutboundMessage {
+                        content: format!(
+                            "rate limited by {provider_name}. please try again in a moment.\n\n\
+                             details: {msg}"
+                        ),
+                    }));
+                }
                 Err(Error::BudgetExhausted(ref msg)) => {
                     let current_name = active_provider.provider_name();
                     let fallback_name = match current_name {
@@ -117,7 +127,7 @@ impl Agent {
                                 tracing::warn!(%e, "failed to persist fallback model");
                             }
                             let note = format!(
-                                "the {current_name} provider returned a rate-limit error. \
+                                "the {current_name} provider's budget is exhausted. \
                                  automatically switched to {fallback_name}. \
                                  send `/switch {current_name}` to switch back."
                             );

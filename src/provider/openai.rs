@@ -144,6 +144,8 @@ struct ApiError {
 #[derive(Debug, Deserialize)]
 struct ApiErrorDetail {
     message: String,
+    #[serde(rename = "type")]
+    error_type: Option<String>,
 }
 
 // -- conversion helpers --
@@ -291,6 +293,14 @@ impl Provider for OpenAiProvider {
                 return Err(Error::ContextOverflow);
             }
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let is_quota = error.error.error_type.as_deref() == Some("insufficient_quota");
+                return if is_quota {
+                    Err(Error::BudgetExhausted(error.error.message))
+                } else {
+                    Err(Error::RateLimited(error.error.message))
+                };
+            }
+            if status == reqwest::StatusCode::PAYMENT_REQUIRED {
                 return Err(Error::BudgetExhausted(error.error.message));
             }
             return Err(Error::Provider(error.error.message));
