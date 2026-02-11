@@ -35,6 +35,12 @@ ava-oh2z (context compaction design) — the legibility layer should reflect wha
 - clear warning when approaching limits (e.g. >80% capacity)
 - show compaction state (how much was compacted, when, how)
 
+## notes
+
+### cached tokens from OpenAI Responses API
+
+as of the migration to OpenAI's Responses API (replacing Chat Completions), cached token counts are available in the response at `usage.input_tokens_details.cached_tokens`. this is analogous to anthropic's `cache_read_tokens`. currently we don't extract this, but it would let us show cache hit rates for OpenAI alongside anthropic — useful for understanding actual cost and whether the conversation prefix is being reused effectively.
+
 ## output
 
 design doc specifying what to show, where, and how it integrates with the compaction system.
