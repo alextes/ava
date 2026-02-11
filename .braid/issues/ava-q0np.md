@@ -3,15 +3,16 @@ schema_version: 9
 id: ava-q0np
 title: design grep and glob tools for codebase navigation
 priority: P2
-status: doing
+status: done
 type: design
 deps: []
 tags:
 - tool
 - search
-owner: agent-two
+owner: null
 created_at: 2026-02-11T09:09:16.126353Z
 started_at: 2026-02-11T09:09:25.026589Z
+completed_at: 2026-02-11T10:27:05.587203Z
 ---
 
 design grep and glob search tools so the agent can efficiently navigate and search codebases it works on.
