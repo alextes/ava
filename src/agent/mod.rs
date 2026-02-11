@@ -98,6 +98,48 @@ impl Agent {
                             .into(),
                     }));
                 }
+                Err(Error::BudgetExhausted(ref msg)) => {
+                    let current_name = active_provider.provider_name();
+                    let fallback_name = match current_name {
+                        "anthropic" => "openai",
+                        "openai" => "anthropic",
+                        _ => return Err(Error::BudgetExhausted(msg.clone())),
+                    };
+                    tracing::warn!(
+                        provider = current_name,
+                        fallback = fallback_name,
+                        "budget exhausted, attempting fallback"
+                    );
+                    match AnyProvider::from_name(self.client.clone(), fallback_name, None) {
+                        Ok(new_provider) => {
+                            let model_id = new_provider.model_id();
+                            if let Err(e) = self.db.set_session_model(session_id, &model_id) {
+                                tracing::warn!(%e, "failed to persist fallback model");
+                            }
+                            let note = format!(
+                                "the {current_name} provider returned a rate-limit error. \
+                                 automatically switched to {fallback_name}. \
+                                 send `/switch {current_name}` to switch back."
+                            );
+                            messages.push(Message::user(&note));
+                            self.db.append_message(
+                                session_id,
+                                "user",
+                                &[MessageContent::text(&note)],
+                                None,
+                            )?;
+                            switched_provider = Some(new_provider);
+                            continue;
+                        }
+                        Err(fallback_err) => {
+                            tracing::error!(
+                                %fallback_err,
+                                "fallback provider also failed"
+                            );
+                            return Err(Error::BudgetExhausted(msg.clone()));
+                        }
+                    }
+                }
                 Err(e) => return Err(e),
             };
 

@@ -346,6 +346,51 @@ fn print_expanded_json(value: &serde_json::Value) {
     }
 }
 
+/// parse a `/command args` from user input. returns `Some(("command", "args"))` or `None`.
+fn parse_slash_command(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let without_slash = &trimmed[1..];
+    let (cmd, args) = match without_slash.split_once(char::is_whitespace) {
+        Some((c, a)) => (c, a.trim()),
+        None => (without_slash, ""),
+    };
+    Some((cmd, args))
+}
+
+/// handle the `/switch` command: parse provider/model, construct the provider, persist it.
+/// returns a user-facing confirmation or error message.
+fn handle_switch_command(args: &str, client: reqwest::Client, db: &Database) -> String {
+    if args.is_empty() {
+        return "usage: /switch <provider> [model]\n\
+                providers: anthropic, openai\n\
+                examples:\n  /switch openai\n  /switch anthropic claude-sonnet-4-5"
+            .to_string();
+    }
+
+    let mut parts = args.split_whitespace();
+    let provider_name = parts.next().unwrap();
+    let model = parts.next();
+
+    let session_id = match db.active_session() {
+        Ok(id) => id,
+        Err(e) => return format!("error: failed to get session: {e}"),
+    };
+
+    match AnyProvider::from_name(client, provider_name, model) {
+        Ok(new_provider) => {
+            let model_id = new_provider.model_id();
+            if let Err(e) = db.set_session_model(session_id, &model_id) {
+                return format!("error: failed to persist model: {e}");
+            }
+            format!("switched to {model_id}")
+        }
+        Err(e) => format!("error: {e}"),
+    }
+}
+
 /// load the persisted provider/model for the active session, falling back to default
 fn provider_for_session(
     client: reqwest::Client,
@@ -373,6 +418,13 @@ fn provider_for_session(
 async fn run_message(content: String) -> Result<(), error::Error> {
     let client = reqwest::Client::new();
     let db = Arc::new(Database::open()?);
+
+    if let Some(("switch", args)) = parse_slash_command(&content) {
+        let msg = handle_switch_command(args, client, &db);
+        println!("{msg}");
+        return Ok(());
+    }
+
     let provider = provider_for_session(client.clone(), &db)?;
     let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, client);
 
@@ -579,6 +631,16 @@ async fn agent_loop(
     client: reqwest::Client,
 ) {
     while let Some(queued) = rx.recv().await {
+        if let Some(("switch", args)) = parse_slash_command(&queued.content) {
+            let msg = handle_switch_command(args, client.clone(), &db);
+            send_response(
+                queued.sink,
+                crate::message::OutboundMessage { content: msg },
+            )
+            .await;
+            continue;
+        }
+
         let provider = match provider_for_session(client.clone(), &db) {
             Ok(p) => p,
             Err(e) => {
@@ -608,6 +670,15 @@ async fn agent_loop(
         match agent.process(&inbound).await {
             Ok(Some(outbound)) => send_response(queued.sink, outbound).await,
             Ok(None) => tracing::debug!("agent completed silently"),
+            Err(error::Error::BudgetExhausted(ref msg)) => {
+                tracing::error!(%msg, "budget exhausted, fallback also failed");
+                let help = format!(
+                    "rate limit / budget exhausted: {msg}\n\n\
+                     automatic fallback failed. use `/switch <provider>` to \
+                     switch manually (e.g. `/switch openai` or `/switch anthropic`)."
+                );
+                send_error(queued.sink, &help).await;
+            }
             Err(e) => {
                 tracing::error!(%e, "agent processing failed");
                 send_error(queued.sink, &format!("error: {e}")).await;

@@ -169,11 +169,15 @@ impl Provider for AnthropicProvider {
             .send()
             .await?;
 
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
             let error: ApiError = response.json().await?;
             let msg = &error.error.message;
             if msg.contains("prompt is too long") || msg.contains("too many tokens") {
                 return Err(Error::ContextOverflow);
+            }
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(Error::BudgetExhausted(error.error.message));
             }
             return Err(Error::Provider(error.error.message));
         }

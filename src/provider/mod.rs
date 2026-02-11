@@ -114,6 +114,15 @@ impl AnyProvider {
         }
     }
 
+    pub fn provider_name(&self) -> &str {
+        match self {
+            Self::Anthropic(_) => "anthropic",
+            Self::OpenAi(_) => "openai",
+            #[cfg(test)]
+            Self::Test(_) => "test",
+        }
+    }
+
     pub fn context_window(&self) -> u32 {
         match self {
             Self::Anthropic(p) => p.context_window(),
