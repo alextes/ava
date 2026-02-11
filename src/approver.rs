@@ -110,7 +110,7 @@ impl TelegramApprover {
         };
 
         let decision = match action {
-            "allow_once" => ApprovalDecision::AllowOnce,
+            "allow_once" | "allow_rule" => ApprovalDecision::AllowOnce,
             "allow_always" => {
                 // the actual pattern will be generated from the tool call input
                 // on the approver side when the decision is received
@@ -127,11 +127,12 @@ impl TelegramApprover {
             }
         };
 
-        let decision_text = match &decision {
-            ApprovalDecision::AllowOnce => "approved (once)",
-            ApprovalDecision::AllowAlways { .. } => "approved (always)",
-            ApprovalDecision::Deny => "denied",
-            ApprovalDecision::AutoApproved => "auto-approved",
+        let decision_text = match action {
+            "allow_once" => "approved (once)",
+            "allow_rule" => "approved",
+            "allow_always" => "approved (always)",
+            "deny" => "denied",
+            _ => "unknown",
         };
 
         // edit the message to show the decision
@@ -215,9 +216,14 @@ impl Approver for TelegramApprover {
             (text, !has_sensitive)
         };
 
+        let approve_action = if is_rule_add {
+            "allow_rule"
+        } else {
+            "allow_once"
+        };
         let mut buttons = vec![InlineKeyboardButton {
             text: "approve".into(),
-            callback_data: format!("exec:{nonce}:allow_once"),
+            callback_data: format!("exec:{nonce}:{approve_action}"),
         }];
 
         if show_allow_always {
