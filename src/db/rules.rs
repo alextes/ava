@@ -119,7 +119,8 @@ fn split_subcommands(command: &str) -> Vec<&str> {
 #[allow(dead_code)]
 fn matches_single(pattern: &str, command: &str) -> bool {
     let pattern_tokens: Vec<&str> = pattern.split_whitespace().collect();
-    let command_tokens: Vec<&str> = command.split_whitespace().collect();
+    let stripped = strip_env_prefix(command);
+    let command_tokens: Vec<&str> = stripped.split_whitespace().collect();
 
     if pattern_tokens.is_empty() {
         return command_tokens.is_empty();
@@ -154,10 +155,40 @@ fn matches_single(pattern: &str, command: &str) -> bool {
     command_tokens.len() == pattern_tokens.len()
 }
 
+/// strips leading `KEY=VALUE` env var assignments from a command string.
+/// a token is an env var if it matches `^[A-Z_][A-Z0-9_]*=`.
+fn strip_env_prefix(command: &str) -> &str {
+    let mut rest = command;
+    loop {
+        let trimmed = rest.trim_start();
+        if let Some((token, after)) = trimmed.split_once(char::is_whitespace)
+            && is_env_assignment(token)
+        {
+            rest = after;
+            continue;
+        }
+        return trimmed;
+    }
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    if let Some(eq_pos) = token.find('=') {
+        let name = &token[..eq_pos];
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            && (name.as_bytes()[0].is_ascii_uppercase() || name.as_bytes()[0] == b'_')
+    } else {
+        false
+    }
+}
+
 /// generates an "allow always" pattern from a command:
-/// first token (executable) + `*`
+/// first token (executable) + `*`, after stripping env var prefixes.
 pub fn generate_pattern(command: &str) -> String {
-    let first = command.split_whitespace().next().unwrap_or(command);
+    let stripped = strip_env_prefix(command);
+    let first = stripped.split_whitespace().next().unwrap_or(stripped);
     format!("{first} *")
 }
 
@@ -245,5 +276,33 @@ mod tests {
     fn test_generate_pattern() {
         assert_eq!(generate_pattern("ls -la /tmp"), "ls *");
         assert_eq!(generate_pattern("cargo test -- --nocapture"), "cargo *");
+    }
+
+    #[test]
+    fn test_generate_pattern_strips_env() {
+        assert_eq!(generate_pattern("RUST_LOG=debug cargo test"), "cargo *");
+        assert_eq!(generate_pattern("A=1 B=2 ls -la"), "ls *");
+        assert_eq!(generate_pattern("CC=gcc make"), "make *");
+    }
+
+    #[test]
+    fn test_matches_rule_with_env_prefix() {
+        assert!(matches_rule("cargo *", "RUST_LOG=debug cargo test"));
+        assert!(matches_rule("cargo *", "A=1 B=2 cargo build"));
+        assert!(matches_rule(
+            "cargo test *",
+            "RUST_LOG=debug cargo test -- --nocapture"
+        ));
+        assert!(!matches_rule("cargo *", "RUST_LOG=debug ls -la"));
+    }
+
+    #[test]
+    fn test_strip_env_prefix() {
+        assert_eq!(strip_env_prefix("RUST_LOG=debug cargo test"), "cargo test");
+        assert_eq!(strip_env_prefix("A=1 B=2 ls -la"), "ls -la");
+        assert_eq!(strip_env_prefix("cargo test"), "cargo test");
+        assert_eq!(strip_env_prefix("ls"), "ls");
+        // lowercase is not an env var
+        assert_eq!(strip_env_prefix("foo=bar baz"), "foo=bar baz");
     }
 }
