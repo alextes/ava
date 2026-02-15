@@ -89,9 +89,9 @@ impl TelegramApprover {
         chat_id: i64,
         message_id: Option<i64>,
     ) -> bool {
-        // format: exec:{nonce}:{action}
-        let parts: Vec<&str> = data.splitn(3, ':').collect();
-        if parts.len() != 3 || parts[0] != "exec" {
+        // format: exec:{nonce}:{action} or exec:{nonce}:allow_always:{pattern}
+        let parts: Vec<&str> = data.splitn(4, ':').collect();
+        if parts.len() < 3 || parts[0] != "exec" {
             return false;
         }
 
@@ -122,11 +122,8 @@ impl TelegramApprover {
         let decision = match action {
             "allow_once" | "allow_rule" => ApprovalDecision::AllowOnce,
             "allow_always" => {
-                // the actual pattern will be generated from the tool call input
-                // on the approver side when the decision is received
-                ApprovalDecision::AllowAlways {
-                    pattern: String::new(),
-                }
+                let pattern = parts.get(3).unwrap_or(&"").to_string();
+                ApprovalDecision::AllowAlways { pattern }
             }
             "deny" => ApprovalDecision::Deny,
             _ => {
@@ -141,11 +138,14 @@ impl TelegramApprover {
         };
 
         let decision_text = match action {
-            "allow_once" => "approved (once)",
-            "allow_rule" => "approved",
-            "allow_always" => "approved (always)",
-            "deny" => "denied",
-            _ => "unknown",
+            "allow_once" => "approved (once)".to_string(),
+            "allow_rule" => "approved".to_string(),
+            "allow_always" => {
+                let pattern = parts.get(3).unwrap_or(&"");
+                format!("approved (always: {pattern})")
+            }
+            "deny" => "denied".to_string(),
+            _ => "unknown".to_string(),
         };
 
         // edit the message to show the decision, preserving original context
@@ -248,9 +248,10 @@ impl Approver for TelegramApprover {
         }];
 
         if show_allow_always {
+            let pattern = generate_pattern(command);
             buttons.push(InlineKeyboardButton {
-                text: "allow always".into(),
-                callback_data: format!("exec:{nonce}:allow_always"),
+                text: format!("always: {pattern}"),
+                callback_data: format!("exec:{nonce}:allow_always:{pattern}"),
             });
         }
 
@@ -286,14 +287,7 @@ impl Approver for TelegramApprover {
         // await response with timeout
         match tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await
         {
-            Ok(Ok(mut decision)) => {
-                // if allow_always, generate the actual pattern from the command
-                if matches!(decision, ApprovalDecision::AllowAlways { .. }) {
-                    let pattern = generate_pattern(command);
-                    decision = ApprovalDecision::AllowAlways { pattern };
-                }
-                Ok(decision)
-            }
+            Ok(Ok(decision)) => Ok(decision),
             Ok(Err(_)) => {
                 // sender dropped (e.g. bot restart)
                 Err(Error::ApprovalTimeout)
