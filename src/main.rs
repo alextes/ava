@@ -396,6 +396,58 @@ fn handle_switch_command(args: &str, client: reqwest::Client, db: &Database) -> 
     }
 }
 
+/// handle the `/rules` command: list or delete approval rules.
+/// returns a user-facing message.
+fn handle_rules_command(args: &str, db: &Database) -> String {
+    let args = args.trim();
+
+    if args.is_empty() {
+        return match db.list_approval_rules() {
+            Ok(rules) if rules.is_empty() => "no approval rules saved.".to_string(),
+            Ok(rules) => {
+                let mut out = "approval rules:".to_string();
+                for (i, rule) in rules.iter().enumerate() {
+                    out.push_str(&format!("\n{}. {}", i + 1, rule.pattern));
+                }
+                out
+            }
+            Err(e) => format!("error: {e}"),
+        };
+    }
+
+    let mut parts = args.split_whitespace();
+    let sub = parts.next().unwrap();
+
+    if sub != "delete" {
+        return format!("unknown subcommand: {sub}\nusage: /rules [delete <number>]");
+    }
+
+    let Some(num_str) = parts.next() else {
+        return "usage: /rules delete <number>".to_string();
+    };
+
+    let num: usize = match num_str.parse() {
+        Ok(n) if n >= 1 => n,
+        _ => return format!("invalid rule number: {num_str}"),
+    };
+
+    let rules = match db.list_approval_rules() {
+        Ok(r) => r,
+        Err(e) => return format!("error: {e}"),
+    };
+
+    if num > rules.len() {
+        return format!("rule {num} not found (have {} rules)", rules.len());
+    }
+
+    let rule = &rules[num - 1];
+    match db.delete_approval_rule(rule.id) {
+        Ok(true) => format!("deleted rule: {}", rule.pattern),
+        Ok(false) => format!("rule {num} not found"),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
 /// load the persisted provider/model for the active session, falling back to default
 fn provider_for_session(
     client: reqwest::Client,
@@ -426,6 +478,12 @@ async fn run_message(content: String) -> Result<(), error::Error> {
 
     if let Some(("switch", args)) = parse_slash_command(&content) {
         let msg = handle_switch_command(args, client, &db);
+        println!("{msg}");
+        return Ok(());
+    }
+
+    if let Some(("rules", args)) = parse_slash_command(&content) {
+        let msg = handle_rules_command(args, &db);
         println!("{msg}");
         return Ok(());
     }
@@ -638,6 +696,16 @@ async fn agent_loop(
     while let Some(queued) = rx.recv().await {
         if let Some(("switch", args)) = parse_slash_command(&queued.content) {
             let msg = handle_switch_command(args, client.clone(), &db);
+            send_response(
+                queued.sink,
+                crate::message::OutboundMessage { content: msg },
+            )
+            .await;
+            continue;
+        }
+
+        if let Some(("rules", args)) = parse_slash_command(&queued.content) {
+            let msg = handle_rules_command(args, &db);
             send_response(
                 queued.sink,
                 crate::message::OutboundMessage { content: msg },
