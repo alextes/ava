@@ -61,10 +61,25 @@ this starts the agent loop and enables any configured channels (telegram, etc.).
 ```bash
 ava version    # show version
 ava status     # show version, db path, session info
+ava upgrade    # rebuild from source and hot-swap
 ava history    # show recent conversation history
 ava schedules  # list active scheduled tasks
 ava doctor     # diagnose and repair session issues
 ```
+
+## upgrading
+
+if you cloned the source and built locally, upgrade with:
+
+```bash
+ava upgrade
+```
+
+this rebuilds from source and hot-swaps the running process — no downtime, no lost state. ava finishes whatever it's working on, then exec's into the new binary.
+
+> **tip:** cloning the source repo is the preferred setup if you want ava to be able to modify its own code on top of upstream releases. `ava upgrade` works with local changes too — it builds whatever's in your checkout.
+
+for installed binaries (via `install.sh`), re-run the install script to pull the latest release, then restart ava.
 
 ## what i can do
 
