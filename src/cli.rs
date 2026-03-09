@@ -33,6 +33,11 @@ pub(crate) enum Commands {
     },
     /// rebuild from source and hot-swap the running process
     Upgrade,
+    /// manage approval rules
+    Rules {
+        #[command(subcommand)]
+        action: Option<RulesAction>,
+    },
     /// show recent conversation history
     History {
         /// number of messages to show (default: 20)
@@ -54,6 +59,20 @@ pub(crate) enum Commands {
 pub(crate) enum DoctorAction {
     /// repair orphaned tool_use blocks in the session history
     RepairOrphans,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RulesAction {
+    /// add a new approval rule (e.g. "cargo *" or "edit:src/**")
+    Add {
+        /// the pattern to add
+        pattern: String,
+    },
+    /// remove a rule by its number (from `ava rules`)
+    Rm {
+        /// rule number to remove
+        number: usize,
+    },
 }
 
 /// parse a `/command args` from user input. returns `Some(("command", "args"))` or `None`.

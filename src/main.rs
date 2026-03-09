@@ -19,8 +19,8 @@ use clap::Parser;
 
 use crate::cli::{Cli, Commands, DoctorAction};
 use crate::commands::{
-    run_doctor_diagnose, run_doctor_fix, run_history, run_message, run_schedules, run_start,
-    run_upgrade,
+    run_doctor_diagnose, run_doctor_fix, run_history, run_message, run_rules, run_schedules,
+    run_start, run_upgrade,
 };
 use crate::db::Database;
 
@@ -88,6 +88,12 @@ async fn main() {
         Commands::Upgrade => {
             if let Err(e) = run_upgrade() {
                 tracing::error!(%e, "upgrade failed");
+                std::process::exit(1);
+            }
+        }
+        Commands::Rules { action } => {
+            if let Err(e) = run_rules(action) {
+                tracing::error!(%e, "rules command failed");
                 std::process::exit(1);
             }
         }
