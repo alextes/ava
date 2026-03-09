@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-deyc
 title: add /rules command for listing and deleting approval rules
 priority: P2
-status: open
+status: done
 deps:
 - ava-obhq
 tags:
@@ -11,6 +11,7 @@ tags:
 - approval
 owner: null
 created_at: 2026-02-07T19:08:15.904949Z
+completed_at: 2026-02-20T16:12:30.855738Z
 ---
 
 there's no user-facing way to view or manage saved approval rules. add a \`/rules\` command to the telegram bot.

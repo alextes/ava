@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-pc16
 title: strip env var prefixes in pattern generation and matching
 priority: P2
-status: open
+status: done
 deps:
 - ava-obhq
 tags:
@@ -11,6 +11,8 @@ tags:
 - approval
 owner: null
 created_at: 2026-02-07T19:07:54.294201Z
+started_at: 2026-02-12T14:50:17.879606Z
+completed_at: 2026-02-12T15:04:59.537409Z
 ---
 
 \`generate_pattern()\` and \`matches_single()\` break when commands have leading env var assignments like \`RUST_LOG=debug cargo test\`. the first token is \`RUST_LOG=debug\`, producing the useless pattern \`RUST_LOG=debug *\`.

@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-3yg5
 title: show saved pattern in approval confirmation message
 priority: P2
-status: open
+status: done
 deps:
 - ava-obhq
 tags:
@@ -11,6 +11,8 @@ tags:
 - approval
 owner: null
 created_at: 2026-02-07T19:08:04.204156Z
+started_at: 2026-02-15T14:05:52.5392Z
+completed_at: 2026-02-15T14:30:39.407188Z
 ---
 
 after pressing "allow always", the telegram message is edited to \`-> approved (always)\` with no mention of what pattern was saved. users have no idea what they just approved.
