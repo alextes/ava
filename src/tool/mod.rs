@@ -2,6 +2,7 @@ mod complete;
 mod cron;
 mod exec;
 mod filesystem;
+mod memory;
 mod search;
 mod tasks;
 mod web;
@@ -11,7 +12,7 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::db::{Database, MemoryKind};
+use crate::db::Database;
 use crate::error::Error;
 use crate::message::MessageContent;
 use crate::provider::AnyProvider;
@@ -24,9 +25,8 @@ pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
 pub use tasks::TASKS_TOOL_NAME;
 pub use web::{WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME};
 
-pub const REMEMBER_TOOL_NAME: &str = "remember";
-pub const FORGET_TOOL_NAME: &str = "forget";
-pub const RECALL_TOOL_NAME: &str = "recall";
+pub(crate) use memory::{FORGET_TOOL_NAME, RECALL_TOOL_NAME, REMEMBER_TOOL_NAME};
+
 pub const SWITCH_MODEL_TOOL_NAME: &str = "switch_model";
 pub const MANAGE_RULES_TOOL_NAME: &str = "manage_rules";
 
@@ -110,9 +110,9 @@ pub fn requires_approval(tool_call: &ToolCall) -> bool {
 
 pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
-        remember_definition(),
-        forget_definition(),
-        recall_definition(),
+        memory::remember_definition(),
+        memory::forget_definition(),
+        memory::recall_definition(),
         exec::exec_definition(),
         web::web_search_definition(),
         web::web_fetch_definition(),
@@ -131,28 +131,6 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
 }
 
 // --- tool dispatch ---
-
-#[derive(Debug, Deserialize)]
-struct RememberInput {
-    content: String,
-    kind: String,
-    category: Option<String>,
-    key: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ForgetInput {
-    kind: String,
-    category: Option<String>,
-    key: Option<String>,
-    id: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RecallInput {
-    query: String,
-    limit: Option<u32>,
-}
 
 #[derive(Debug, Deserialize)]
 struct SwitchModelInput {
@@ -174,132 +152,9 @@ pub async fn handle_tool_call(
 ) -> Result<ToolCallResult, Error> {
     tracing::info!(tool = %call.name, input = %call.input, "handling tool call");
     match call.name.as_str() {
-        REMEMBER_TOOL_NAME => match serde_json::from_value::<RememberInput>(call.input.clone()) {
-            Ok(input) => {
-                let kind = match MemoryKind::from_str(&input.kind) {
-                    Some(k) => k,
-                    None => {
-                        return Ok(ToolCallResult {
-                            content: MessageContent::tool_result(
-                                &call.id,
-                                format!("invalid kind: {}", input.kind),
-                            ),
-                            switch_provider: None,
-                            complete: false,
-                        });
-                    }
-                };
-                let id = db.remember(
-                    kind,
-                    &input.content,
-                    input.category.as_deref(),
-                    input.key.as_deref(),
-                )?;
-                Ok(ToolCallResult {
-                    content: MessageContent::tool_result(&call.id, format!("ok (id={id})")),
-                    switch_provider: None,
-                    complete: false,
-                })
-            }
-            Err(err) => Ok(ToolCallResult {
-                content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
-                switch_provider: None,
-                complete: false,
-            }),
-        },
-        FORGET_TOOL_NAME => match serde_json::from_value::<ForgetInput>(call.input.clone()) {
-            Ok(input) => {
-                let deleted = match input.kind.as_str() {
-                    "fact" => {
-                        let cat = input.category.as_deref().unwrap_or("");
-                        let key = input.key.as_deref().unwrap_or("");
-                        db.forget_fact(cat, key)?
-                    }
-                    "character" => {
-                        let key = input.key.as_deref().unwrap_or("");
-                        db.forget_character(key)?
-                    }
-                    "episode" => match input.id {
-                        Some(id) => db.forget_memory(id)?,
-                        None => {
-                            return Ok(ToolCallResult {
-                                content: MessageContent::tool_result(
-                                    &call.id,
-                                    "episode forget requires id",
-                                ),
-                                switch_provider: None,
-                                complete: false,
-                            });
-                        }
-                    },
-                    other => {
-                        return Ok(ToolCallResult {
-                            content: MessageContent::tool_result(
-                                &call.id,
-                                format!("invalid kind: {other}"),
-                            ),
-                            switch_provider: None,
-                            complete: false,
-                        });
-                    }
-                };
-                let msg = if deleted { "deleted" } else { "not found" };
-                Ok(ToolCallResult {
-                    content: MessageContent::tool_result(&call.id, msg),
-                    switch_provider: None,
-                    complete: false,
-                })
-            }
-            Err(err) => Ok(ToolCallResult {
-                content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
-                switch_provider: None,
-                complete: false,
-            }),
-        },
-        RECALL_TOOL_NAME => match serde_json::from_value::<RecallInput>(call.input.clone()) {
-            Ok(input) => {
-                let limit = input.limit.unwrap_or(10).min(50);
-                let memories = db.search_memories(&input.query, limit)?;
-                if memories.is_empty() {
-                    return Ok(ToolCallResult {
-                        content: MessageContent::tool_result(&call.id, "no memories found"),
-                        switch_provider: None,
-                        complete: false,
-                    });
-                }
-                let mut output = String::new();
-                for (i, m) in memories.iter().enumerate() {
-                    if i > 0 {
-                        output.push('\n');
-                    }
-                    match m.kind {
-                        MemoryKind::Fact => {
-                            let cat = m.category.as_deref().unwrap_or("?");
-                            let key = m.key.as_deref().unwrap_or("?");
-                            output.push_str(&format!("[fact] {cat}/{key}: {}", m.content));
-                        }
-                        MemoryKind::Episode => {
-                            let date = m.created_at.split(' ').next().unwrap_or(&m.created_at);
-                            output.push_str(&format!("[episode] {date}: {}", m.content));
-                        }
-                        MemoryKind::Character => {
-                            let key = m.key.as_deref().unwrap_or("?");
-                            output.push_str(&format!("[character] {key}: {}", m.content));
-                        }
-                    }
-                }
-                Ok(ToolCallResult {
-                    content: MessageContent::tool_result(&call.id, output),
-                    switch_provider: None,
-                    complete: false,
-                })
-            }
-            Err(err) => Ok(ToolCallResult {
-                content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
-                switch_provider: None,
-                complete: false,
-            }),
-        },
+        REMEMBER_TOOL_NAME => memory::handle_remember(db, call).await,
+        FORGET_TOOL_NAME => memory::handle_forget(db, call).await,
+        RECALL_TOOL_NAME => memory::handle_recall(db, call).await,
         EXEC_TOOL_NAME => {
             let result = exec::handle_exec(call).await;
             Ok(ToolCallResult {
@@ -487,87 +342,6 @@ pub async fn handle_tool_call(
 
 // --- tool definition builders ---
 
-fn remember_definition() -> ToolDefinition {
-    ToolDefinition::Custom {
-        name: REMEMBER_TOOL_NAME,
-        description: "store something in long-term memory. kind=fact: structured knowledge (requires category + key, e.g. user/name: alex). kind=episode: events, decisions, context worth preserving. kind=character: persona traits that shape behavior (requires key).",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "the value or text to remember"
-                },
-                "kind": {
-                    "type": "string",
-                    "enum": ["fact", "episode", "character"],
-                    "description": "memory type"
-                },
-                "category": {
-                    "type": "string",
-                    "description": "fact namespace (required for kind=fact)"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "key within category (required for kind=fact and kind=character)"
-                }
-            },
-            "required": ["content", "kind"]
-        }),
-    }
-}
-
-fn forget_definition() -> ToolDefinition {
-    ToolDefinition::Custom {
-        name: FORGET_TOOL_NAME,
-        description: "delete a memory. for facts: provide kind+category+key. for character traits: provide kind+key. for episodes: provide kind+id.",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "kind": {
-                    "type": "string",
-                    "enum": ["fact", "episode", "character"],
-                    "description": "memory type to delete"
-                },
-                "category": {
-                    "type": "string",
-                    "description": "fact category (for kind=fact)"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "key (for kind=fact or kind=character)"
-                },
-                "id": {
-                    "type": "integer",
-                    "description": "memory id (for kind=episode)"
-                }
-            },
-            "required": ["kind"]
-        }),
-    }
-}
-
-fn recall_definition() -> ToolDefinition {
-    ToolDefinition::Custom {
-        name: RECALL_TOOL_NAME,
-        description: "search stored memories by keyword or phrase. use this proactively to look up past context when relevant.",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "search query"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "max results to return (default 10, max 50)"
-                }
-            },
-            "required": ["query"]
-        }),
-    }
-}
-
 fn switch_model_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: SWITCH_MODEL_TOOL_NAME,
@@ -621,7 +395,7 @@ fn manage_rules_definition() -> ToolDefinition {
 mod tests {
     use super::*;
     use crate::approver::CliApprover;
-    use crate::db::Database;
+    use crate::db::{Database, MemoryKind};
 
     #[test]
     fn test_requires_approval_exec() {

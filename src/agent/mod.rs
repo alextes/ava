@@ -1,17 +1,17 @@
 mod compaction;
+mod prompt;
 
 use std::sync::Arc;
 
 use chrono::Utc;
 
 use crate::approver::AnyApprover;
-use crate::db::{Database, Memory};
+use crate::db::Database;
 use crate::error::Error;
 use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage, Role};
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall};
 
-const MAX_FACT_VALUE_CHARS: usize = 500;
 const MAX_TOOL_ROUNDS: u32 = 40;
 const WARNING_ROUND: u32 = 32;
 
@@ -428,22 +428,22 @@ impl Agent {
 
         if !traits.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&format_character_traits(&traits));
+            prompt.push_str(&prompt::format_character_traits(&traits));
         }
 
         if !facts.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&format_known_facts(&facts));
+            prompt.push_str(&prompt::format_known_facts(&facts));
         }
 
         if !episodes.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&format_recent_episodes(&episodes));
+            prompt.push_str(&prompt::format_recent_episodes(&episodes));
         }
 
         if !pending_tasks.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&format_pending_tasks(&pending_tasks));
+            prompt.push_str(&prompt::format_pending_tasks(&pending_tasks));
         }
 
         prompt.push_str(&format!(
@@ -460,82 +460,12 @@ fn tool_use_content(call: &ToolCall) -> MessageContent {
     MessageContent::tool_use(call.id.clone(), call.name.clone(), call.input.clone())
 }
 
-fn format_character_traits(traits: &[Memory]) -> String {
-    let mut output = String::from("## character");
-    for t in traits {
-        let key = t.key.as_deref().unwrap_or("?");
-        let value = truncate_chars(&t.content, MAX_FACT_VALUE_CHARS);
-        output.push_str("\n- ");
-        output.push_str(key);
-        output.push_str(": ");
-        output.push_str(&value);
-    }
-    output
-}
-
-fn format_known_facts(facts: &[Memory]) -> String {
-    let mut grouped: Vec<(String, Vec<(String, String)>)> = Vec::new();
-
-    for fact in facts {
-        let category = fact.category.as_deref().unwrap_or("general").to_string();
-        let key = fact.key.as_deref().unwrap_or("?").to_string();
-        let value = truncate_chars(&fact.content, MAX_FACT_VALUE_CHARS);
-
-        if let Some((_, entries)) = grouped.iter_mut().find(|(cat, _)| cat == &category) {
-            entries.push((key, value));
-        } else {
-            grouped.push((category, vec![(key, value)]));
-        }
-    }
-
-    let mut output = String::from("## known facts");
-    for (category, entries) in grouped {
-        output.push_str("\n\n### ");
-        output.push_str(&category);
-        for (key, value) in entries {
-            output.push_str("\n- ");
-            output.push_str(&key);
-            output.push_str(": ");
-            output.push_str(&value);
-        }
-    }
-
-    output
-}
-
-fn format_recent_episodes(episodes: &[Memory]) -> String {
-    let mut output = String::from("## recent memories");
-    for ep in episodes {
-        let date = ep.created_at.split(' ').next().unwrap_or(&ep.created_at);
-        output.push_str("\n- [");
-        output.push_str(date);
-        output.push_str("] ");
-        output.push_str(&truncate_chars(&ep.content, MAX_FACT_VALUE_CHARS));
-    }
-    output
-}
-
-fn format_pending_tasks(tasks: &[(i64, String)]) -> String {
-    let mut output = String::from("## pending tasks");
-    for (id, title) in tasks {
-        output.push_str(&format!("\n- [id:{id}] {title}"));
-    }
-    output
-}
-
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-
-    value.chars().take(max_chars).collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use super::prompt::*;
     use super::*;
     use crate::approver::CliApprover;
-    use crate::db::MemoryKind;
+    use crate::db::{Memory, MemoryKind};
     use crate::message::ChannelKind;
     use crate::provider::{ProviderResponse, StopReason, TestProvider, Usage};
 
