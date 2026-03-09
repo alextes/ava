@@ -186,7 +186,7 @@ mod tests {
     fn test_model_id_format_openai() {
         let p = OpenAiProvider::new(reqwest::Client::new(), "test-key".into());
         let any = AnyProvider::OpenAi(p);
-        assert_eq!(any.model_id(), "openai/gpt-5.2");
+        assert_eq!(any.model_id(), "openai/gpt-5.4");
     }
 
     #[test]

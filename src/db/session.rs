@@ -372,10 +372,10 @@ mod tests {
         );
 
         // update to a different model
-        db.set_session_model(sid, "openai/gpt-5.2").unwrap();
+        db.set_session_model(sid, "openai/gpt-5.4").unwrap();
         assert_eq!(
             db.session_model(sid).unwrap().as_deref(),
-            Some("openai/gpt-5.2")
+            Some("openai/gpt-5.4")
         );
     }
 

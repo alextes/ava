@@ -8,8 +8,8 @@ use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
 use crate::tool::{ToolDefinition, tool_definitions};
 
 const API_URL: &str = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL: &str = "gpt-5.2";
-pub const ALLOWED_MODELS: &[&str] = &["gpt-5.2", "gpt-5-mini"];
+const DEFAULT_MODEL: &str = "gpt-5.4";
+pub const ALLOWED_MODELS: &[&str] = &["gpt-5.4", "gpt-5-mini"];
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct OpenAiProvider {
