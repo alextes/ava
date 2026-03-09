@@ -371,7 +371,7 @@ fn handle_switch_command(args: &str, client: reqwest::Client, db: &Database) -> 
     if args.is_empty() {
         return "usage: /switch <provider> [model]\n\
                 providers: anthropic, openai\n\
-                examples:\n  /switch openai\n  /switch anthropic claude-sonnet-4-5"
+                examples:\n  /switch openai\n  /switch anthropic claude-sonnet-4-6"
             .to_string();
     }
 

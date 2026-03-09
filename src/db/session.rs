@@ -364,11 +364,11 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let sid = db.active_session().unwrap();
 
-        db.set_session_model(sid, "anthropic/claude-sonnet-4-5")
+        db.set_session_model(sid, "anthropic/claude-sonnet-4-6")
             .unwrap();
         assert_eq!(
             db.session_model(sid).unwrap().as_deref(),
-            Some("anthropic/claude-sonnet-4-5")
+            Some("anthropic/claude-sonnet-4-6")
         );
 
         // update to a different model

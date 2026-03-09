@@ -68,7 +68,7 @@ impl AnyProvider {
         Ok(Self::Anthropic(AnthropicProvider::from_env(client)?))
     }
 
-    /// returns a `"provider/model"` identifier string (e.g. `"anthropic/claude-sonnet-4-5"`)
+    /// returns a `"provider/model"` identifier string (e.g. `"anthropic/claude-sonnet-4-6"`)
     pub fn model_id(&self) -> String {
         match self {
             Self::Anthropic(p) => format!("anthropic/{}", p.model_name()),
@@ -179,7 +179,7 @@ mod tests {
     fn test_model_id_format_anthropic() {
         let p = AnthropicProvider::new(reqwest::Client::new(), "test-key".into());
         let any = AnyProvider::Anthropic(p);
-        assert_eq!(any.model_id(), "anthropic/claude-sonnet-4-5");
+        assert_eq!(any.model_id(), "anthropic/claude-sonnet-4-6");
     }
 
     #[test]
