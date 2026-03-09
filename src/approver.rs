@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, oneshot};
 
-use crate::db::{Database, generate_pattern};
+use crate::db::{Database, generate_edit_pattern, generate_pattern};
 use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
 use crate::tool::{
@@ -188,6 +188,21 @@ impl Approver for TelegramApprover {
             return Ok(ApprovalDecision::AutoApproved);
         }
 
+        // for text editor commands, check edit rules by path
+        if is_text_editor {
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !path.is_empty()
+                && let Ok(Some(_rule_id)) = self.db.find_matching_edit_rule(path)
+            {
+                tracing::debug!(path, "auto-approved by edit rule");
+                return Ok(ApprovalDecision::AutoApproved);
+            }
+        }
+
         // generate nonce
         let nonce = format!("{:08x}", rand_u32());
 
@@ -227,7 +242,7 @@ impl Approver for TelegramApprover {
                 }
                 _ => {}
             }
-            (text, false)
+            (text, true)
         } else {
             let has_sensitive = references_sensitive_env(command);
             let mut text = format!("command: {command}");
@@ -248,7 +263,16 @@ impl Approver for TelegramApprover {
         }];
 
         if show_allow_always {
-            let pattern = generate_pattern(command);
+            let pattern = if is_text_editor {
+                let path = tool_call
+                    .input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                generate_edit_pattern(path)
+            } else {
+                generate_pattern(command)
+            };
             buttons.push(InlineKeyboardButton {
                 text: format!("always: {pattern}"),
                 callback_data: format!("exec:{nonce}:allow_always:{pattern}"),

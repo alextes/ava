@@ -31,6 +31,19 @@ impl Database {
         Ok(None)
     }
 
+    /// find an `edit:<path-pattern>` rule that matches the given file path.
+    pub fn find_matching_edit_rule(&self, path: &str) -> Result<Option<i64>, Error> {
+        let rules = self.list_approval_rules()?;
+        for rule in rules {
+            if let Some(pattern) = rule.pattern.strip_prefix("edit:")
+                && matches_edit_pattern(pattern, path)
+            {
+                return Ok(Some(rule.id));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn list_approval_rules(&self) -> Result<Vec<ApprovalRule>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, pattern FROM approval_rules ORDER BY id")?;
@@ -192,6 +205,33 @@ pub fn generate_pattern(command: &str) -> String {
     format!("{first} *")
 }
 
+/// matches an edit pattern against a file path.
+/// `dir/**` matches any path under `dir/` (recursive).
+/// an exact path matches only that file.
+fn matches_edit_pattern(pattern: &str, path: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        // dir/** — path must start with dir/
+        let dir = if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{prefix}/")
+        };
+        path.starts_with(&dir)
+    } else {
+        // exact path match
+        pattern == path
+    }
+}
+
+/// generates an edit rule pattern from a file path: `edit:<parent-dir>/**`
+pub fn generate_edit_pattern(path: &str) -> String {
+    let parent = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+    format!("edit:{parent}/**")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +344,48 @@ mod tests {
         assert_eq!(strip_env_prefix("ls"), "ls");
         // lowercase is not an env var
         assert_eq!(strip_env_prefix("foo=bar baz"), "foo=bar baz");
+    }
+
+    #[test]
+    fn test_matches_edit_pattern_recursive() {
+        assert!(matches_edit_pattern("src/**", "src/main.rs"));
+        assert!(matches_edit_pattern("src/**", "src/commands/start.rs"));
+        assert!(!matches_edit_pattern("src/**", "tests/integration.rs"));
+    }
+
+    #[test]
+    fn test_matches_edit_pattern_exact() {
+        assert!(matches_edit_pattern("src/main.rs", "src/main.rs"));
+        assert!(!matches_edit_pattern("src/main.rs", "src/lib.rs"));
+    }
+
+    #[test]
+    fn test_find_matching_edit_rule() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule("edit:src/**").unwrap();
+
+        assert!(db.find_matching_edit_rule("src/main.rs").unwrap().is_some());
+        assert!(
+            db.find_matching_edit_rule("src/commands/start.rs")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db.find_matching_edit_rule("tests/foo.rs")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_generate_edit_pattern() {
+        assert_eq!(
+            generate_edit_pattern("/home/user/code/src/main.rs"),
+            "edit:/home/user/code/src/**"
+        );
+        assert_eq!(
+            generate_edit_pattern("src/commands/start.rs"),
+            "edit:src/commands/**"
+        );
     }
 }
