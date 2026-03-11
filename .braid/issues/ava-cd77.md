@@ -3,13 +3,14 @@ schema_version: 9
 id: ava-cd77
 title: 'close pattern matching gaps: &, newlines, command substitution'
 priority: P2
-status: open
+status: done
 deps: []
 tags:
 - approval
 - security
 owner: null
 created_at: 2026-03-11T11:11:22.192258Z
+completed_at: 2026-03-11T11:19:30.304908Z
 ---
 
 close three known gaps in split_subcommands and approval matching:
