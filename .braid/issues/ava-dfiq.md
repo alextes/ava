@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-dfiq
 title: offer narrow/broad pattern choices in approval keyboard
 priority: P2
-status: open
+status: done
 deps:
 - ava-pc16
 - ava-3yg5
@@ -13,6 +13,7 @@ tags:
 - approval
 owner: null
 created_at: 2026-02-07T19:08:29.10242Z
+completed_at: 2026-03-11T10:44:42.398934Z
 ---
 
 replace the single "allow always" button with two scope options when a subcommand is detectable.
