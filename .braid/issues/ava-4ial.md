@@ -3,14 +3,15 @@ schema_version: 9
 id: ava-4ial
 title: write logs to file from startup
 priority: P2
-status: doing
+status: done
 deps: []
 tags:
 - daemon
 - observability
-owner: alextes
+owner: null
 created_at: 2026-03-09T21:12:27.302115Z
 started_at: 2026-03-09T21:12:30.698986Z
+completed_at: 2026-03-11T11:25:30.413256Z
 ---
 
 write tracing output to a log file in addition to stdout, from the very start (not gated on daemonization).

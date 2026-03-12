@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-kogf
 title: comprehensive test suite for command approval pattern matching
 priority: P2
-status: open
+status: done
 deps:
 - ava-cd77
 tags:
@@ -11,6 +11,8 @@ tags:
 - testing
 owner: null
 created_at: 2026-03-11T11:10:15.908207Z
+started_at: 2026-03-11T12:15:36.516174Z
+completed_at: 2026-03-11T12:17:26.580984Z
 ---
 
 the approval pattern matching system is one of the trickiest parts of the harness. it needs to balance two competing goals:
