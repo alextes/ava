@@ -22,6 +22,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "si
 chrono = "0.4"
 croner = "3"
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["alloc"] }
