@@ -347,8 +347,13 @@ impl Agent {
                     // proceed with execution
                 }
                 ApprovalDecision::AllowAlways { ref pattern } => {
-                    tracing::info!(pattern, "saving approval rule");
-                    self.db.save_approval_rule(pattern)?;
+                    for p in pattern.split('\n') {
+                        let p = p.trim();
+                        if !p.is_empty() {
+                            tracing::info!(p, "saving approval rule");
+                            self.db.save_approval_rule(p)?;
+                        }
+                    }
                 }
                 ApprovalDecision::Deny => {
                     return Ok(tool::ToolCallResult {

