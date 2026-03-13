@@ -27,6 +27,9 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     let (tx, rx) = message_queue(64);
     let pending = Arc::new(PendingApprovals::new());
 
+    crate::config::write_pid_file();
+    tracing::info!(pid = std::process::id(), "wrote PID file");
+
     crate::signal::install_signal_handler();
 
     // start agent loop
@@ -75,6 +78,8 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     agent_handle
         .await
         .map_err(|e| error::Error::Provider(format!("agent loop panicked: {e}")))?;
+
+    crate::config::remove_pid_file();
     Ok(())
 }
 
