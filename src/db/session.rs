@@ -241,6 +241,16 @@ impl Database {
         Ok(())
     }
 
+    /// clear the persisted model for a session (e.g. when it becomes invalid)
+    pub fn clear_session_model(&self, session_id: i64) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET model = NULL WHERE id = ?1",
+            [session_id],
+        )?;
+        Ok(())
+    }
+
     /// load the persisted model for a session
     pub fn session_model(&self, session_id: i64) -> Result<Option<String>, Error> {
         let conn = self.conn.lock().unwrap();

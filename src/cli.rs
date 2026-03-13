@@ -186,11 +186,13 @@ pub(crate) fn provider_for_session(
                     return Ok(p);
                 }
                 Err(e) => {
-                    tracing::warn!(%e, %model_id, "failed to load persisted model, using default");
+                    tracing::warn!(%e, %model_id, "failed to load persisted model, clearing and using default");
+                    let _ = db.clear_session_model(session_id);
                 }
             }
         } else {
-            tracing::warn!(%model_id, "invalid model id format, using default");
+            tracing::warn!(%model_id, "invalid model id format, clearing and using default");
+            let _ = db.clear_session_model(session_id);
         }
     }
     AnyProvider::default_from_env(client)
