@@ -5,6 +5,7 @@ mod filesystem;
 mod memory;
 mod search;
 mod tasks;
+mod upgrade;
 mod web;
 
 use std::future::Future;
@@ -23,6 +24,7 @@ pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
 pub use tasks::TASKS_TOOL_NAME;
+pub use upgrade::UPGRADE_TOOL_NAME;
 pub use web::{WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME};
 
 pub(crate) use memory::{FORGET_TOOL_NAME, RECALL_TOOL_NAME, REMEMBER_TOOL_NAME};
@@ -121,6 +123,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         cron::cron_definition(),
         tasks::tasks_definition(),
         complete::complete_definition(),
+        upgrade::upgrade_definition(),
         search::grep_definition(),
         search::glob_definition(),
         ToolDefinition::BuiltIn {
@@ -206,6 +209,7 @@ pub async fn handle_tool_call(
         CRON_TOOL_NAME => Ok(cron::handle_cron(db, &call.id, &call.input)),
         TASKS_TOOL_NAME => Ok(tasks::handle_tasks(db, &call.id, &call.input)),
         COMPLETE_TOOL_NAME => Ok(complete::handle_complete(&call.id, &call.input)),
+        UPGRADE_TOOL_NAME => Ok(upgrade::handle_upgrade(&call.id)),
         SWITCH_MODEL_TOOL_NAME => {
             match serde_json::from_value::<SwitchModelInput>(call.input.clone()) {
                 Ok(input) => {
