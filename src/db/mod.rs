@@ -14,7 +14,9 @@ use crate::config::default_db_path;
 use crate::error::Error;
 
 pub use memory::{Memory, MemoryKind};
-pub use rules::{generate_edit_pattern, generate_pattern};
+pub use rules::{
+    contains_command_substitution, generate_edit_pattern, generate_narrow_pattern, generate_pattern,
+};
 
 pub struct Database {
     pub(crate) conn: Mutex<Connection>,
