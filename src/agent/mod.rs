@@ -166,35 +166,37 @@ impl Agent {
             };
 
             let usage = &response.usage;
-            if let (Some(created), Some(read)) =
-                (usage.cache_creation_tokens, usage.cache_read_tokens)
-            {
-                tracing::info!(
-                    input_tokens = usage.input_tokens,
-                    output_tokens = usage.output_tokens,
-                    cache_created = created,
-                    cache_read = read,
-                    "provider usage"
-                );
-            } else if let Some(reasoning) = usage.reasoning_tokens {
-                tracing::info!(
-                    input_tokens = usage.input_tokens,
-                    output_tokens = usage.output_tokens,
-                    reasoning_tokens = reasoning,
-                    "provider usage"
+            last_input_tokens = Some(usage.input_tokens);
+
+            let ctx = context::ContextUsage::compute(usage, context_window, compaction_count);
+            let context_pct = format!("{:.0}%", ctx.usage_percent);
+            let context_tokens = format!("{}/{}", ctx.input_tokens, ctx.context_window);
+
+            // unified context-aware log line. WARN when above 60% to surface
+            // approaching limits before compaction kicks in at 80%.
+            if ctx.usage_percent > 60.0 {
+                tracing::warn!(
+                    context = %context_pct,
+                    tokens = %context_tokens,
+                    output = ctx.output_tokens,
+                    cache_created = usage.cache_creation_tokens,
+                    cache_read = usage.cache_read_tokens,
+                    reasoning = usage.reasoning_tokens,
+                    compactions = ctx.compaction_count,
+                    "context usage"
                 );
             } else {
                 tracing::info!(
-                    input_tokens = usage.input_tokens,
-                    output_tokens = usage.output_tokens,
-                    "provider usage"
+                    context = %context_pct,
+                    tokens = %context_tokens,
+                    output = ctx.output_tokens,
+                    cache_created = usage.cache_creation_tokens,
+                    cache_read = usage.cache_read_tokens,
+                    reasoning = usage.reasoning_tokens,
+                    compactions = ctx.compaction_count,
+                    "context usage"
                 );
             }
-
-            last_input_tokens = Some(usage.input_tokens);
-
-            let _context_usage =
-                context::ContextUsage::compute(usage, context_window, compaction_count);
 
             if response.tool_calls.is_empty() {
                 // persist the final assistant response

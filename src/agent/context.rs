@@ -1,6 +1,7 @@
 use crate::provider::Usage;
 
 /// snapshot of context window usage after a provider call.
+#[allow(dead_code)]
 pub struct ContextUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
