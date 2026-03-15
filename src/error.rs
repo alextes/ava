@@ -42,4 +42,8 @@ pub enum Error {
 
     #[error("context overflow")]
     ContextOverflow,
+
+    #[allow(dead_code)]
+    #[error("mcp error: {0}")]
+    Mcp(String),
 }

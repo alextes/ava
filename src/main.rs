@@ -6,6 +6,8 @@ mod commands;
 mod config;
 mod db;
 mod error;
+#[allow(dead_code)]
+mod mcp;
 mod message;
 mod provider;
 mod queue;
