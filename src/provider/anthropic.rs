@@ -44,7 +44,10 @@ impl AnthropicProvider {
     }
 
     pub fn context_window(&self) -> u32 {
-        200_000
+        match self.model.as_str() {
+            "claude-opus-4-6" | "claude-sonnet-4-6" => 1_000_000,
+            _ => 200_000,
+        }
     }
 }
 

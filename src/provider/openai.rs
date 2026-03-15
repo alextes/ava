@@ -44,7 +44,10 @@ impl OpenAiProvider {
     }
 
     pub fn context_window(&self) -> u32 {
-        400_000
+        match self.model.as_str() {
+            "gpt-5.4" => 1_050_000,
+            _ => 400_000,
+        }
     }
 }
 
