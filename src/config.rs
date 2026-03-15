@@ -38,6 +38,20 @@ pub fn remove_pid_file() {
     let _ = std::fs::remove_file(pid_file_path());
 }
 
+/// check whether a process with the given PID is alive.
+/// uses kill(pid, 0) on unix — sends no signal, just checks existence.
+#[cfg(unix)]
+pub fn check_process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 doesn't actually send a signal, just checks if the process exists.
+    // returns 0 on success (process exists), -1 on error.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn check_process_alive(_pid: u32) -> bool {
+    todo!("process liveness check not implemented for this platform")
+}
+
 /// returns path to the sqlite database.
 /// defaults to ./ava.db in the current directory.
 /// override with AVA_DB_PATH env var.
