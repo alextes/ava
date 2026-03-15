@@ -41,6 +41,7 @@ pub fn remove_pid_file() {
 /// check whether a process with the given PID is alive.
 /// uses kill(pid, 0) on unix — sends no signal, just checks existence.
 #[cfg(unix)]
+#[allow(dead_code)]
 pub fn check_process_alive(pid: u32) -> bool {
     // SAFETY: signal 0 doesn't actually send a signal, just checks if the process exists.
     // returns 0 on success (process exists), -1 on error.
