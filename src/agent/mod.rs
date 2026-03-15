@@ -1,4 +1,5 @@
 mod compaction;
+pub(crate) mod context;
 mod prompt;
 
 use std::sync::Arc;
@@ -70,6 +71,7 @@ impl Agent {
         let mut tool_rounds = 0;
         let mut switched_provider: Option<AnyProvider> = None;
         let mut last_input_tokens: Option<u32> = None;
+        let mut compaction_count: u32 = 0;
 
         loop {
             // compact context if approaching the model's limit
@@ -86,7 +88,8 @@ impl Agent {
                     Ok((compacted, summary)) => {
                         messages = compacted;
                         self.db.set_session_summary(session_id, &summary)?;
-                        tracing::info!("compacted context");
+                        compaction_count += 1;
+                        tracing::info!(compaction_count, "compacted context");
                     }
                     Err(e) => {
                         tracing::warn!(%e, "compaction failed, continuing with full context");
@@ -189,6 +192,9 @@ impl Agent {
             }
 
             last_input_tokens = Some(usage.input_tokens);
+
+            let _context_usage =
+                context::ContextUsage::compute(usage, context_window, compaction_count);
 
             if response.tool_calls.is_empty() {
                 // persist the final assistant response
