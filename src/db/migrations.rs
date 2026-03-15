@@ -130,6 +130,11 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     "#,
+    // v9: context usage tracking on sessions
+    r#"
+    ALTER TABLE sessions ADD COLUMN last_input_tokens INTEGER;
+    ALTER TABLE sessions ADD COLUMN last_context_window INTEGER;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

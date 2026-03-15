@@ -251,6 +251,36 @@ impl Database {
         Ok(())
     }
 
+    /// persist context usage snapshot for a session
+    pub fn set_session_usage(
+        &self,
+        session_id: i64,
+        input_tokens: u32,
+        context_window: u32,
+    ) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET last_input_tokens = ?1, last_context_window = ?2 WHERE id = ?3",
+            rusqlite::params![input_tokens, context_window, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// load the last context usage snapshot for a session
+    pub fn session_usage(&self, session_id: i64) -> Result<Option<(u32, u32)>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT last_input_tokens, last_context_window FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| {
+                let input: Option<u32> = row.get(0)?;
+                let window: Option<u32> = row.get(1)?;
+                Ok(input.zip(window))
+            },
+        )?;
+        Ok(result)
+    }
+
     /// load the persisted model for a session
     pub fn session_model(&self, session_id: i64) -> Result<Option<String>, Error> {
         let conn = self.conn.lock().unwrap();

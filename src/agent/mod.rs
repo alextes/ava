@@ -198,6 +198,13 @@ impl Agent {
                 );
             }
 
+            if let Err(e) =
+                self.db
+                    .set_session_usage(session_id, ctx.input_tokens, ctx.context_window)
+            {
+                tracing::warn!(%e, "failed to persist context usage");
+            }
+
             if response.tool_calls.is_empty() {
                 // persist the final assistant response
                 let assistant_content = vec![MessageContent::text(&response.content)];
