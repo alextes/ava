@@ -30,6 +30,8 @@ futures = { version = "0.3.31", default-features = false, features = ["alloc"] }
 ignore = "0.4.25"
 globset = "0.4.18"
 libc = "0.2.183"
+chromiumoxide = "0.9.1"
+base64 = "0.22"
 
 [dev-dependencies]
 base64 = "0.22"

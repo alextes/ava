@@ -1,3 +1,4 @@
+mod browser;
 mod complete;
 mod cron;
 mod exec;
@@ -20,6 +21,7 @@ use crate::mcp::manager::McpManager;
 use crate::message::MessageContent;
 use crate::provider::AnyProvider;
 
+pub use browser::BROWSER_TOOL_NAME;
 pub use complete::COMPLETE_TOOL_NAME;
 pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
@@ -153,6 +155,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         upgrade::upgrade_definition(),
         search::grep_definition(),
         search::glob_definition(),
+        browser::browser_definition(),
         ToolDefinition::BuiltIn {
             tool_type: "text_editor_20250728",
             name: TEXT_EDITOR_TOOL_NAME,
@@ -236,6 +239,14 @@ pub async fn handle_tool_call(
             let result = filesystem::handle_text_editor(call).await;
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
+                switch_provider: None,
+                complete: false,
+            })
+        }
+        BROWSER_TOOL_NAME => {
+            let content = browser::handle_browser(call).await;
+            Ok(ToolCallResult {
+                content,
                 switch_provider: None,
                 complete: false,
             })
