@@ -27,6 +27,7 @@ use crate::commands::{
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+    config::init_workspace_root();
 
     let env_filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive(tracing::Level::INFO.into());

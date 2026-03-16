@@ -1,4 +1,26 @@
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// initialize the workspace root from `AVA_WORKSPACE` env var or cwd.
+/// must be called once at startup before any workspace checks.
+pub fn init_workspace_root() {
+    let raw = if let Ok(path) = std::env::var("AVA_WORKSPACE") {
+        PathBuf::from(path)
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    };
+    let canonical = raw.canonicalize().unwrap_or(raw);
+    WORKSPACE_ROOT.set(canonical).ok();
+}
+
+/// returns the workspace root. panics if `init_workspace_root()` was not called.
+pub fn workspace_root() -> &'static PathBuf {
+    WORKSPACE_ROOT
+        .get()
+        .expect("workspace root not initialized — call init_workspace_root() first")
+}
 
 /// returns path to the ava home directory (~/.ava/).
 /// override with AVA_HOME env var.

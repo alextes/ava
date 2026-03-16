@@ -81,6 +81,19 @@ impl Database {
         Ok(None)
     }
 
+    /// find a `read:<path-pattern>` rule that matches the given file path.
+    pub fn find_matching_read_rule(&self, path: &str) -> Result<Option<i64>, Error> {
+        let rules = self.list_approval_rules()?;
+        for rule in rules {
+            if let Some(pattern) = rule.pattern.strip_prefix("read:")
+                && matches_edit_pattern(pattern, path)
+            {
+                return Ok(Some(rule.id));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn list_approval_rules(&self) -> Result<Vec<ApprovalRule>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, pattern FROM approval_rules ORDER BY id")?;
@@ -335,6 +348,15 @@ fn matches_edit_pattern(pattern: &str, path: &str) -> bool {
 /// because the substituted content executes unchecked.
 pub fn contains_command_substitution(command: &str) -> bool {
     command.contains("$(") || command.contains('`')
+}
+
+/// generates a read rule pattern from a file path: `read:<parent-dir>/**`
+pub fn generate_read_pattern(path: &str) -> String {
+    let parent = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+    format!("read:{parent}/**")
 }
 
 /// generates an edit rule pattern from a file path: `edit:<parent-dir>/**`
@@ -1196,5 +1218,54 @@ mod tests {
     fn test_matches_single_no_wildcard_length_mismatch() {
         assert!(!matches_single("git push", "git push origin"));
         assert!(!matches_single("git push origin", "git push"));
+    }
+
+    // =========================================================================
+    // read: rule tests
+    // =========================================================================
+
+    #[test]
+    fn test_find_matching_read_rule() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule("read:/etc/**").unwrap();
+
+        assert!(db.find_matching_read_rule("/etc/passwd").unwrap().is_some());
+        assert!(
+            db.find_matching_read_rule("/etc/nginx/nginx.conf")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db.find_matching_read_rule("/home/user/file.txt")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_generate_read_pattern() {
+        assert_eq!(
+            generate_read_pattern("/etc/nginx/nginx.conf"),
+            "read:/etc/nginx/**"
+        );
+        assert_eq!(generate_read_pattern("src/main.rs"), "read:src/**");
+    }
+
+    #[test]
+    fn test_read_rule_does_not_match_edit_rule() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule("read:/etc/**").unwrap();
+
+        // read: rule should not be found by find_matching_edit_rule
+        assert!(db.find_matching_edit_rule("/etc/passwd").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_edit_rule_does_not_match_read_rule() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule("edit:/etc/**").unwrap();
+
+        // edit: rule should not be found by find_matching_read_rule
+        assert!(db.find_matching_read_rule("/etc/passwd").unwrap().is_none());
     }
 }

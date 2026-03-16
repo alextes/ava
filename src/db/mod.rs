@@ -15,7 +15,8 @@ use crate::error::Error;
 
 pub use memory::{Memory, MemoryKind};
 pub use rules::{
-    contains_command_substitution, generate_edit_pattern, generate_narrow_pattern, generate_pattern,
+    contains_command_substitution, generate_edit_pattern, generate_narrow_pattern,
+    generate_pattern, generate_read_pattern,
 };
 
 pub struct Database {

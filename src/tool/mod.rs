@@ -7,6 +7,7 @@ mod search;
 mod tasks;
 mod upgrade;
 mod web;
+pub(crate) mod workspace;
 
 use std::future::Future;
 
@@ -109,7 +110,26 @@ pub fn requires_approval(tool_call: &ToolCall) -> bool {
                 .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            matches!(cmd, "str_replace" | "create" | "insert")
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if matches!(cmd, "str_replace" | "create" | "insert") {
+                // writes always require approval
+                true
+            } else {
+                // view requires approval if outside workspace
+                !workspace::is_inside_workspace(path)
+            }
+        }
+        GREP_TOOL_NAME | GLOB_TOOL_NAME => {
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            !workspace::is_inside_workspace(path)
         }
         _ => false,
     }
@@ -1007,5 +1027,75 @@ mod tests {
     fn test_requires_approval_complete() {
         let call = make_call("complete", json!({}));
         assert!(!requires_approval(&call));
+    }
+
+    // --- workspace boundary tests ---
+
+    #[test]
+    fn test_requires_approval_view_inside_workspace() {
+        crate::config::init_workspace_root();
+        let call = make_call(
+            TEXT_EDITOR_TOOL_NAME,
+            json!({"command": "view", "path": "src/main.rs"}),
+        );
+        assert!(!requires_approval(&call));
+    }
+
+    #[test]
+    fn test_requires_approval_view_outside_workspace() {
+        crate::config::init_workspace_root();
+        let call = make_call(
+            TEXT_EDITOR_TOOL_NAME,
+            json!({"command": "view", "path": "/etc/passwd"}),
+        );
+        assert!(requires_approval(&call));
+    }
+
+    #[test]
+    fn test_requires_approval_write_inside_workspace() {
+        crate::config::init_workspace_root();
+        let call = make_call(
+            TEXT_EDITOR_TOOL_NAME,
+            json!({"command": "str_replace", "path": "src/main.rs", "old_str": "a", "new_str": "b"}),
+        );
+        assert!(requires_approval(&call));
+    }
+
+    #[test]
+    fn test_requires_approval_grep_no_path() {
+        crate::config::init_workspace_root();
+        let call = make_call(GREP_TOOL_NAME, json!({"pattern": "foo"}));
+        assert!(!requires_approval(&call));
+    }
+
+    #[test]
+    fn test_requires_approval_grep_inside_workspace() {
+        crate::config::init_workspace_root();
+        let call = make_call(GREP_TOOL_NAME, json!({"pattern": "foo", "path": "src/"}));
+        assert!(!requires_approval(&call));
+    }
+
+    #[test]
+    fn test_requires_approval_grep_outside_workspace() {
+        crate::config::init_workspace_root();
+        let call = make_call(GREP_TOOL_NAME, json!({"pattern": "foo", "path": "/etc/"}));
+        assert!(requires_approval(&call));
+    }
+
+    #[test]
+    fn test_requires_approval_glob_no_path() {
+        crate::config::init_workspace_root();
+        let call = make_call(GLOB_TOOL_NAME, json!({"pattern": "**/*.rs"}));
+        assert!(!requires_approval(&call));
+    }
+
+    #[test]
+    fn test_requires_approval_glob_outside_workspace() {
+        crate::config::init_workspace_root();
+        let call = make_call(
+            GLOB_TOOL_NAME,
+            json!({"pattern": "**/*.conf", "path": "/etc/"}),
+        );
+        assert!(requires_approval(&call));
     }
 }

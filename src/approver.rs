@@ -5,13 +5,13 @@ use tokio::sync::{Mutex, oneshot};
 
 use crate::db::{
     Database, contains_command_substitution, generate_edit_pattern, generate_narrow_pattern,
-    generate_pattern,
+    generate_pattern, generate_read_pattern,
 };
 use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
 use crate::tool::{
-    ApprovalDecision, Approver, MANAGE_RULES_TOOL_NAME, TEXT_EDITOR_TOOL_NAME, ToolCall,
-    references_sensitive_env,
+    ApprovalDecision, Approver, GLOB_TOOL_NAME, GREP_TOOL_NAME, MANAGE_RULES_TOOL_NAME,
+    TEXT_EDITOR_TOOL_NAME, ToolCall, references_sensitive_env,
 };
 
 /// auto-approves all tool calls (used for CLI)
@@ -180,6 +180,15 @@ impl Approver for TelegramApprover {
     async fn request_approval(&self, tool_call: &ToolCall) -> Result<ApprovalDecision, Error> {
         let is_rule_add = tool_call.name == MANAGE_RULES_TOOL_NAME;
         let is_text_editor = tool_call.name == TEXT_EDITOR_TOOL_NAME;
+        let is_read_tool = tool_call.name == GREP_TOOL_NAME
+            || tool_call.name == GLOB_TOOL_NAME
+            || (is_text_editor
+                && tool_call
+                    .input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    == "view");
 
         let command = tool_call
             .input
@@ -187,12 +196,30 @@ impl Approver for TelegramApprover {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        // for out-of-workspace reads (view, grep, glob), check read: and edit: rules
+        if is_read_tool {
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !path.is_empty() {
+                // edit: rule implies read access
+                if self.db.find_matching_read_rule(path)?.is_some()
+                    || self.db.find_matching_edit_rule(path)?.is_some()
+                {
+                    tracing::debug!(path, "auto-approved by read/edit rule");
+                    return Ok(ApprovalDecision::AutoApproved);
+                }
+            }
+        }
+
         // for exec commands, check stored approval rules before prompting (per-segment).
         // never auto-approve commands with command substitution ($() or backticks) —
         // the substituted content executes unchecked by pattern matching.
         let has_substitution = contains_command_substitution(command);
         let mut uncovered_segments: Vec<String> = Vec::new();
-        if !is_rule_add && !is_text_editor && !has_substitution {
+        if !is_rule_add && !is_text_editor && !is_read_tool && !has_substitution {
             let coverage = self.db.check_command_coverage(command)?;
             if coverage.fully_covered {
                 tracing::debug!(command, "auto-approved by stored rules");
@@ -201,8 +228,8 @@ impl Approver for TelegramApprover {
             uncovered_segments = coverage.uncovered_segments;
         }
 
-        // for text editor commands, check edit rules by path
-        if is_text_editor {
+        // for text editor write commands, check edit rules by path
+        if is_text_editor && !is_read_tool {
             let path = tool_call
                 .input
                 .get("path")
@@ -227,6 +254,18 @@ impl Approver for TelegramApprover {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<unknown pattern>");
             (format!("proposed rule: {pattern}"), false)
+        } else if is_read_tool {
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            let tool_label = match tool_call.name.as_str() {
+                GREP_TOOL_NAME => "grep",
+                GLOB_TOOL_NAME => "glob",
+                _ => "read",
+            };
+            (format!("ava wants to {tool_label}: {path}"), true)
         } else if is_text_editor {
             let path = tool_call
                 .input
@@ -298,7 +337,20 @@ impl Approver for TelegramApprover {
         let mut patterns = Vec::new();
         let mut row2 = Vec::new();
         if show_allow_always {
-            if is_text_editor {
+            if is_read_tool {
+                let path = tool_call
+                    .input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let pattern = generate_read_pattern(path);
+                let idx = patterns.len();
+                patterns.push(pattern.clone());
+                row2.push(InlineKeyboardButton {
+                    text: format!("always: {pattern}"),
+                    callback_data: format!("exec:{nonce}:always:{idx}"),
+                });
+            } else if is_text_editor {
                 let path = tool_call
                     .input
                     .get("path")
@@ -664,6 +716,82 @@ mod tests {
         let call = make_call(
             EXEC_TOOL_NAME,
             json!({"command": "cargo fmt && cargo clippy && cargo test"}),
+        );
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_auto_approves_read_with_read_rule() {
+        crate::config::init_workspace_root();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("read:/etc/**").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        // grep outside workspace with matching read rule
+        let call = make_call(
+            GREP_TOOL_NAME,
+            json!({"pattern": "root", "path": "/etc/passwd"}),
+        );
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_auto_approves_read_with_edit_rule() {
+        crate::config::init_workspace_root();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("edit:/etc/**").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        // edit rule grants read access
+        let call = make_call(
+            GREP_TOOL_NAME,
+            json!({"pattern": "root", "path": "/etc/passwd"}),
+        );
+        let decision = approver.request_approval(&call).await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_read_rule_does_not_grant_write() {
+        crate::config::init_workspace_root();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("read:/etc/**").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        // read rule should NOT auto-approve writes
+        let call = make_call(
+            TEXT_EDITOR_TOOL_NAME,
+            json!({"command": "str_replace", "path": "/etc/hosts", "old_str": "a", "new_str": "b"}),
+        );
+        let result = approver.request_approval(&call).await;
+        // not auto-approved, tries telegram which fails with fake token
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_telegram_approver_view_outside_workspace_with_read_rule() {
+        crate::config::init_workspace_root();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_approval_rule("read:/tmp/**").unwrap();
+
+        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let pending = Arc::new(PendingApprovals::new());
+        let approver = TelegramApprover::new(bot, 123, pending, db);
+
+        let call = make_call(
+            TEXT_EDITOR_TOOL_NAME,
+            json!({"command": "view", "path": "/tmp/some_file.txt"}),
         );
         let decision = approver.request_approval(&call).await.unwrap();
         assert_eq!(decision, ApprovalDecision::AutoApproved);
