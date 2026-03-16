@@ -12,7 +12,7 @@ you are summarizing a conversation for context compaction. produce a concise sum
 4. important context needed to continue naturally
 keep the summary under 2000 words. use plain text, no markdown headers.";
 
-/// returns true when input tokens exceed 80% of the context window.
+/// returns true when input tokens exceed 90% of the context window.
 /// uses `last_input_tokens` from the previous API call if available,
 /// otherwise falls back to a char-based heuristic (total_chars / 4).
 pub fn needs_compaction(

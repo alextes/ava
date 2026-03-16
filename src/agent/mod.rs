@@ -72,7 +72,12 @@ impl Agent {
         let mut switched_provider: Option<AnyProvider> = None;
         let mut last_input_tokens: Option<u32> = None;
         let mut compaction_count: u32 = 0;
-        let mut crossed_40pct = false;
+        let mut crossed_60pct = match self.db.session_usage(session_id)? {
+            Some((input_tokens, context_window)) if context_window > 0 => {
+                (input_tokens as f64 / context_window as f64 * 100.0) >= 60.0
+            }
+            _ => false,
+        };
 
         loop {
             // compact context if approaching the model's limit
@@ -173,9 +178,9 @@ impl Agent {
             let context_pct = format!("{:.0}%", ctx.usage_percent);
             let context_tokens = format!("{}/{}", ctx.input_tokens, ctx.context_window);
 
-            // unified context-aware log line. WARN when above 60% to surface
+            // unified context-aware log line. WARN when above 80% to surface
             // approaching limits before compaction kicks in at 90%.
-            if ctx.usage_percent > 60.0 {
+            if ctx.usage_percent > 80.0 {
                 tracing::warn!(
                     context = %context_pct,
                     tokens = %context_tokens,
@@ -341,12 +346,12 @@ impl Agent {
             }
 
             // inject context usage at key thresholds: first round (baseline),
-            // when crossing 40% (heads up), and every round at 80%+ (approaching compaction at 90%).
+            // once when crossing 60% (heads up), and every round at 80%+ (approaching compaction at 90%).
             let should_inject_context = tool_rounds == 1
-                || (ctx.usage_percent >= 40.0 && !crossed_40pct)
+                || (ctx.usage_percent >= 60.0 && !crossed_60pct)
                 || ctx.usage_percent >= 80.0;
-            if ctx.usage_percent >= 40.0 {
-                crossed_40pct = true;
+            if ctx.usage_percent >= 60.0 {
+                crossed_60pct = true;
             }
             if should_inject_context {
                 tool_results.push(MessageContent::text(format!(
