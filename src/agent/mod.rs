@@ -72,6 +72,7 @@ impl Agent {
         let mut switched_provider: Option<AnyProvider> = None;
         let mut last_input_tokens: Option<u32> = None;
         let mut compaction_count: u32 = 0;
+        let mut crossed_40pct = false;
 
         loop {
             // compact context if approaching the model's limit
@@ -339,12 +340,20 @@ impl Agent {
                 )));
             }
 
-            // inject context usage so the agent knows its budget without
-            // polluting the (cached) system prompt.
-            tool_results.push(MessageContent::text(format!(
-                "[context: {:.0}% of window used ({}/{} tokens)]",
-                ctx.usage_percent, ctx.input_tokens, ctx.context_window
-            )));
+            // inject context usage at key thresholds: first round (baseline),
+            // when crossing 40% (heads up), and every round at 80%+ (compaction zone).
+            let should_inject_context = tool_rounds == 1
+                || (ctx.usage_percent >= 40.0 && !crossed_40pct)
+                || ctx.usage_percent >= 80.0;
+            if ctx.usage_percent >= 40.0 {
+                crossed_40pct = true;
+            }
+            if should_inject_context {
+                tool_results.push(MessageContent::text(format!(
+                    "[context: {:.0}% of window used ({}/{} tokens)]",
+                    ctx.usage_percent, ctx.input_tokens, ctx.context_window
+                )));
+            }
 
             // persist tool results
             self.db
