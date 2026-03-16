@@ -36,7 +36,9 @@ pub fn do_exec_restart() -> Result<std::convert::Infallible, std::io::Error> {
     let exe = std::env::current_exe()?;
     tracing::info!(?exe, "exec'ing into new binary");
 
-    let err = std::process::Command::new(&exe).arg("start").exec();
+    let err = std::process::Command::new(&exe)
+        .args(["start", "--foreground"])
+        .exec();
 
     // exec() only returns on error
     RESTART_REQUESTED.store(false, Ordering::Relaxed);

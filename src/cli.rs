@@ -22,8 +22,12 @@ pub(crate) enum Commands {
         /// the message to send
         content: String,
     },
-    /// start all configured channels
-    Start,
+    /// start all configured channels (daemonizes by default)
+    Start {
+        /// run in foreground instead of daemonizing
+        #[arg(long)]
+        foreground: bool,
+    },
     /// list active schedules
     Schedules,
     /// diagnose and repair session issues
