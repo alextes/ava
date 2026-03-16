@@ -1,3 +1,5 @@
+pub mod config;
+pub mod manager;
 mod transport;
 pub mod types;
 
