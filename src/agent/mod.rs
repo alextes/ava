@@ -174,7 +174,7 @@ impl Agent {
             let context_tokens = format!("{}/{}", ctx.input_tokens, ctx.context_window);
 
             // unified context-aware log line. WARN when above 60% to surface
-            // approaching limits before compaction kicks in at 80%.
+            // approaching limits before compaction kicks in at 90%.
             if ctx.usage_percent > 60.0 {
                 tracing::warn!(
                     context = %context_pct,
@@ -341,7 +341,7 @@ impl Agent {
             }
 
             // inject context usage at key thresholds: first round (baseline),
-            // when crossing 40% (heads up), and every round at 80%+ (compaction zone).
+            // when crossing 40% (heads up), and every round at 80%+ (approaching compaction at 90%).
             let should_inject_context = tool_rounds == 1
                 || (ctx.usage_percent >= 40.0 && !crossed_40pct)
                 || ctx.usage_percent >= 80.0;

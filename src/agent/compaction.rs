@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::message::{Message, MessageContent, Role};
 use crate::provider::{AnyProvider, Provider};
 
-const COMPACTION_THRESHOLD: f64 = 0.8;
+const COMPACTION_THRESHOLD: f64 = 0.9;
 
 const SUMMARIZATION_PROMPT: &str = "\
 you are summarizing a conversation for context compaction. produce a concise summary preserving:
@@ -155,17 +155,19 @@ mod tests {
     #[test]
     fn test_needs_compaction_with_token_count() {
         let messages = vec![Message::user("hello")];
-        // 160k tokens with 200k window = 80% = should trigger
-        assert!(needs_compaction(&messages, Some(160_001), 200_000));
+        // 180k tokens with 200k window = 90% = should trigger
+        assert!(needs_compaction(&messages, Some(180_001), 200_000));
         // 100k tokens with 200k window = 50% = should not trigger
         assert!(!needs_compaction(&messages, Some(100_000), 200_000));
         // exactly at threshold
+        assert!(!needs_compaction(&messages, Some(180_000), 200_000));
+        // 80% should not trigger (below 90% threshold)
         assert!(!needs_compaction(&messages, Some(160_000), 200_000));
     }
 
     #[test]
     fn test_needs_compaction_char_fallback() {
-        // 800_000 chars / 4 = 200_000 tokens, with 200k window = 100% > 80%
+        // 800_000 chars / 4 = 200_000 tokens, with 200k window = 100% > 90%
         let big_text = "x".repeat(800_000);
         let messages = vec![Message::user(big_text)];
         assert!(needs_compaction(&messages, None, 200_000));
