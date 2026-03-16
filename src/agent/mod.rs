@@ -66,12 +66,12 @@ impl Agent {
             .append_message(session_id, "user", &user_content, Some(channel_str))?;
         messages.push(Message::user(&inbound.content));
 
+        let system_prompt = self.system_prompt()?;
         let tools = self.all_tool_definitions().await;
         let mut tool_rounds = 0;
         let mut switched_provider: Option<AnyProvider> = None;
         let mut last_input_tokens: Option<u32> = None;
         let mut compaction_count: u32 = 0;
-        let mut last_context_usage: Option<context::ContextUsage> = None;
 
         loop {
             // compact context if approaching the model's limit
@@ -97,7 +97,6 @@ impl Agent {
                 }
             }
 
-            let system_prompt = self.system_prompt(last_context_usage.as_ref())?;
             let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
             let response = match active_provider
                 .complete(&system_prompt, &messages, &tools)
@@ -205,8 +204,6 @@ impl Agent {
             {
                 tracing::warn!(%e, "failed to persist context usage");
             }
-
-            last_context_usage = Some(ctx);
 
             if response.tool_calls.is_empty() {
                 // persist the final assistant response
@@ -342,6 +339,13 @@ impl Agent {
                 )));
             }
 
+            // inject context usage so the agent knows its budget without
+            // polluting the (cached) system prompt.
+            tool_results.push(MessageContent::text(format!(
+                "[context: {:.0}% of window used ({}/{} tokens)]",
+                ctx.usage_percent, ctx.input_tokens, ctx.context_window
+            )));
+
             // persist tool results
             self.db
                 .append_message(session_id, "user", &tool_results, None)?;
@@ -473,10 +477,7 @@ impl Agent {
         Ok(())
     }
 
-    fn system_prompt(
-        &self,
-        context_usage: Option<&context::ContextUsage>,
-    ) -> Result<String, Error> {
+    fn system_prompt(&self) -> Result<String, Error> {
         let traits = self.db.character_traits()?;
         let facts = self.db.recent_facts()?;
         let episodes = self.db.recent_episodes()?;
@@ -514,15 +515,6 @@ impl Agent {
              message. after exhausting the budget you get one final text-only turn. if you need \
              more rounds, tell the user to send a follow-up message."
         ));
-
-        if let Some(ctx) = context_usage {
-            prompt.push_str(&format!(
-                "\n\n## context usage\nyou are currently using approximately {:.0}% of your \
-                 context window ({}/{} tokens). compaction will trigger at 80%. if context is \
-                 full, suggest starting a new session.",
-                ctx.usage_percent, ctx.input_tokens, ctx.context_window
-            ));
-        }
 
         Ok(prompt)
     }
@@ -946,13 +938,12 @@ mod tests {
         let episodes = db.recent_episodes().unwrap();
         assert_eq!(episodes.len(), 1);
 
-        // tool results message should contain 3 tool_result blocks
+        // tool results message should contain 3 tool_result blocks + 1 context usage note
         let sid = db.active_session().unwrap();
         let msgs = db.load_messages(sid).unwrap();
-        // user + assistant[3 tool_use] + user[3 tool_result] + assistant[final]
+        // user + assistant[3 tool_use] + user[3 tool_result + context] + assistant[final]
         assert_eq!(msgs.len(), 4);
-        // the tool results message (index 2) should have 3 blocks
-        assert_eq!(msgs[2].content.len(), 3);
+        assert_eq!(msgs[2].content.len(), 4);
     }
 
     #[tokio::test]
@@ -1217,7 +1208,7 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt(None).unwrap();
+        let prompt = agent.system_prompt().unwrap();
 
         assert!(prompt.contains("current date and time:"));
         assert!(prompt.contains("## character"));
@@ -1243,7 +1234,7 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt(None).unwrap();
+        let prompt = agent.system_prompt().unwrap();
 
         assert!(prompt.contains("## pending tasks"));
         assert!(prompt.contains("fix CI failure"));
@@ -1261,7 +1252,7 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt(None).unwrap();
+        let prompt = agent.system_prompt().unwrap();
 
         assert!(!prompt.contains("## pending tasks"));
     }
@@ -1336,7 +1327,9 @@ mod tests {
     }
 
     #[test]
-    fn test_system_prompt_includes_context_usage() {
+    fn test_system_prompt_excludes_context_usage() {
+        // context usage is injected as a message, not in the system prompt,
+        // to avoid busting the prompt cache on every tool round.
         let db = Arc::new(Database::open_in_memory().unwrap());
         let provider = make_test_provider("hi");
         let agent = Agent::new(
@@ -1346,34 +1339,8 @@ mod tests {
             reqwest::Client::new(),
         );
 
-        let usage = Usage {
-            input_tokens: 84_000,
-            output_tokens: 1_200,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
-            reasoning_tokens: None,
-        };
-        let ctx = context::ContextUsage::compute(&usage, 200_000, 0);
-        let prompt = agent.system_prompt(Some(&ctx)).unwrap();
-
-        assert!(prompt.contains("## context usage"));
-        assert!(prompt.contains("42%"));
-        assert!(prompt.contains("84000/200000 tokens"));
-    }
-
-    #[test]
-    fn test_system_prompt_omits_context_when_none() {
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        let provider = make_test_provider("hi");
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
-
-        let prompt = agent.system_prompt(None).unwrap();
-        assert!(!prompt.contains("## context usage"));
+        let prompt = agent.system_prompt().unwrap();
+        assert!(!prompt.contains("context usage"));
     }
 
     #[test]
@@ -1390,7 +1357,7 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt(None).unwrap();
+        let prompt = agent.system_prompt().unwrap();
 
         assert!(prompt.contains("## pending tasks"));
         assert!(prompt.contains("pending task"));
