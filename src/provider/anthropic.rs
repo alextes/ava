@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::error::Error;
 use crate::message::Message;
 use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
-use crate::tool::{ToolDefinition, tool_definitions};
+use crate::tool::ToolDefinition;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
@@ -104,10 +104,8 @@ impl Provider for AnthropicProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
-        include_tools: bool,
+        tools: &[ToolDefinition],
     ) -> Result<ProviderResponse, Error> {
-        let tools = tool_definitions();
-
         // system prompt as array with cache_control breakpoint
         let system = json!([{
             "type": "text",
@@ -128,28 +126,33 @@ impl Provider for AnthropicProvider {
             last_block["cache_control"] = json!({"type": "ephemeral"});
         }
 
-        let tools_json: Vec<serde_json::Value> = if include_tools {
-            tools
-                .iter()
-                .map(|t| match t {
-                    ToolDefinition::Custom {
-                        name,
-                        description,
-                        input_schema,
-                    } => json!({
-                        "name": name,
-                        "description": description,
-                        "input_schema": input_schema,
-                    }),
-                    ToolDefinition::BuiltIn { tool_type, name } => json!({
-                        "type": tool_type,
-                        "name": name,
-                    }),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let tools_json: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| match t {
+                ToolDefinition::Custom {
+                    name,
+                    description,
+                    input_schema,
+                } => json!({
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
+                }),
+                ToolDefinition::BuiltIn { tool_type, name } => json!({
+                    "type": tool_type,
+                    "name": name,
+                }),
+                ToolDefinition::Dynamic {
+                    name,
+                    description,
+                    input_schema,
+                } => json!({
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
+                }),
+            })
+            .collect();
 
         let request = ApiRequest {
             model: &self.model,
@@ -299,7 +302,7 @@ mod tests {
     #[test]
     fn test_request_serialization() {
         let messages = vec![Message::user("hello")];
-        let tools = tool_definitions();
+        let tools = crate::tool::tool_definitions();
 
         let system = json!([{
             "type": "text",
@@ -332,6 +335,15 @@ mod tests {
                 ToolDefinition::BuiltIn { tool_type, name } => json!({
                     "type": tool_type,
                     "name": name,
+                }),
+                ToolDefinition::Dynamic {
+                    name,
+                    description,
+                    input_schema,
+                } => json!({
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
                 }),
             })
             .collect();

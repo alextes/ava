@@ -32,12 +32,28 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
 
     crate::signal::install_signal_handler();
 
+    // start MCP servers (if configured)
+    let mcp = match crate::mcp::manager::McpManager::start().await {
+        Ok(m) => {
+            if m.has_servers().await {
+                Some(m)
+            } else {
+                None
+            }
+        }
+        Err(e) => {
+            tracing::warn!(%e, "failed to start MCP manager, continuing without MCP");
+            None
+        }
+    };
+
     // start agent loop
     let db_clone = Arc::clone(&db);
     let pending_clone = Arc::clone(&pending);
     let client_clone = client.clone();
+    let mcp_clone = mcp.clone();
     let agent_handle = tokio::spawn(async move {
-        agent_loop(rx, db_clone, pending_clone, client_clone).await;
+        agent_loop(rx, db_clone, pending_clone, client_clone, mcp_clone).await;
     });
 
     // start telegram if configured
@@ -79,6 +95,11 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         .await
         .map_err(|e| error::Error::Provider(format!("agent loop panicked: {e}")))?;
 
+    // shut down MCP servers
+    if let Some(ref mcp) = mcp {
+        mcp.shutdown().await;
+    }
+
     crate::config::remove_pid_file();
     Ok(())
 }
@@ -88,6 +109,7 @@ async fn agent_loop(
     db: Arc<Database>,
     pending: Arc<PendingApprovals>,
     client: reqwest::Client,
+    mcp: Option<Arc<crate::mcp::manager::McpManager>>,
 ) {
     while let Some(queued) = rx.recv().await {
         if let Some(("switch", args)) = parse_slash_command(&queued.content) {
@@ -130,7 +152,10 @@ async fn agent_loop(
             }
         };
 
-        let agent = Agent::new(provider, approver, Arc::clone(&db), client.clone());
+        let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone());
+        if let Some(ref mcp) = mcp {
+            agent = agent.with_mcp(Arc::clone(mcp));
+        }
         let inbound = InboundMessage {
             channel: queued.channel,
             content: queued.content,

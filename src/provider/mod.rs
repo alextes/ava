@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::message::Message;
+use crate::tool::ToolDefinition;
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "you are ava, a personal ai assistant. be helpful, concise, and friendly. avoid unnecessary verbosity.";
 
@@ -49,7 +50,7 @@ pub trait Provider: Send + Sync {
         &self,
         system_prompt: &str,
         messages: &[Message],
-        include_tools: bool,
+        tools: &[ToolDefinition],
     ) -> impl Future<Output = Result<ProviderResponse, Error>> + Send;
 }
 
@@ -140,13 +141,13 @@ impl Provider for AnyProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
-        include_tools: bool,
+        tools: &[ToolDefinition],
     ) -> Result<ProviderResponse, Error> {
         match self {
-            Self::Anthropic(p) => p.complete(system_prompt, messages, include_tools).await,
-            Self::OpenAi(p) => p.complete(system_prompt, messages, include_tools).await,
+            Self::Anthropic(p) => p.complete(system_prompt, messages, tools).await,
+            Self::OpenAi(p) => p.complete(system_prompt, messages, tools).await,
             #[cfg(test)]
-            Self::Test(p) => p.complete(system_prompt, messages, include_tools).await,
+            Self::Test(p) => p.complete(system_prompt, messages, tools).await,
         }
     }
 }
@@ -165,7 +166,7 @@ impl Provider for TestProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
-        _include_tools: bool,
+        _tools: &[ToolDefinition],
     ) -> Result<ProviderResponse, Error> {
         (self.handler)(system_prompt, messages)
     }

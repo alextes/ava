@@ -81,6 +81,7 @@ pub struct Implementation {
 pub struct InitializeResult {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
+    #[allow(dead_code)]
     pub capabilities: ServerCapabilities,
     #[serde(rename = "serverInfo")]
     pub server_info: ServerInfo,
@@ -88,6 +89,7 @@ pub struct InitializeResult {
 
 #[derive(Debug, Deserialize)]
 pub struct ServerCapabilities {
+    #[allow(dead_code)]
     pub tools: Option<ToolsCapability>,
 }
 
@@ -134,6 +136,7 @@ pub struct CallToolResult {
 #[derive(Debug, Deserialize)]
 pub struct ToolContent {
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub content_type: String,
     pub text: Option<String>,
 }

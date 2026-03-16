@@ -15,6 +15,7 @@ use serde_json::json;
 
 use crate::db::Database;
 use crate::error::Error;
+use crate::mcp::manager::McpManager;
 use crate::message::MessageContent;
 use crate::provider::AnyProvider;
 
@@ -52,14 +53,20 @@ pub enum ToolDefinition {
         tool_type: &'static str,
         name: &'static str,
     },
+    /// dynamically defined tool (e.g. from an MCP server).
+    Dynamic {
+        name: String,
+        description: String,
+        input_schema: serde_json::Value,
+    },
 }
 
 impl ToolDefinition {
-    #[allow(dead_code)]
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Self::Custom { name, .. } => name,
             Self::BuiltIn { name, .. } => name,
+            Self::Dynamic { name, .. } => name,
         }
     }
 }
@@ -151,9 +158,16 @@ struct ManageRulesInput {
 pub async fn handle_tool_call(
     client: &reqwest::Client,
     db: &Database,
+    mcp: Option<&McpManager>,
     call: &ToolCall,
 ) -> Result<ToolCallResult, Error> {
     tracing::info!(tool = %call.name, input = %call.input, "handling tool call");
+
+    // route MCP tool calls (prefixed with "mcp__")
+    if call.name.starts_with("mcp__") {
+        return handle_mcp_tool_call(mcp, call).await;
+    }
+
     match call.name.as_str() {
         REMEMBER_TOOL_NAME => memory::handle_remember(db, call).await,
         FORGET_TOOL_NAME => memory::handle_forget(db, call).await,
@@ -395,6 +409,64 @@ fn manage_rules_definition() -> ToolDefinition {
     }
 }
 
+/// handle a tool call for an MCP-namespaced tool (mcp__<server>_<tool>).
+async fn handle_mcp_tool_call(
+    mcp: Option<&McpManager>,
+    call: &ToolCall,
+) -> Result<ToolCallResult, Error> {
+    let Some(mcp) = mcp else {
+        return Ok(ToolCallResult {
+            content: MessageContent::tool_result(&call.id, "MCP not available"),
+            switch_provider: None,
+            complete: false,
+        });
+    };
+
+    // parse "mcp__<server>_<tool>" — first underscore after "mcp__" separates server from tool
+    let rest = &call.name["mcp__".len()..];
+    let Some((server_name, tool_name)) = rest.split_once('_') else {
+        return Ok(ToolCallResult {
+            content: MessageContent::tool_result(
+                &call.id,
+                format!("invalid MCP tool name: {}", call.name),
+            ),
+            switch_provider: None,
+            complete: false,
+        });
+    };
+
+    match mcp
+        .call_tool(server_name, tool_name, call.input.clone())
+        .await
+    {
+        Ok(result) => {
+            let text = result
+                .content
+                .iter()
+                .filter_map(|c| c.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let text = if result.is_error == Some(true) {
+                format!("[MCP error] {text}")
+            } else {
+                text
+            };
+
+            Ok(ToolCallResult {
+                content: MessageContent::tool_result(&call.id, text),
+                switch_provider: None,
+                complete: false,
+            })
+        }
+        Err(e) => Ok(ToolCallResult {
+            content: MessageContent::tool_result(&call.id, format!("MCP tool call failed: {e}")),
+            switch_provider: None,
+            complete: false,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,7 +551,7 @@ mod tests {
             "remember",
             json!({"content": "alex", "kind": "fact", "category": "user", "key": "name"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -499,7 +571,7 @@ mod tests {
             "remember",
             json!({"content": "discussed migration plan", "kind": "episode"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert!(extract_tool_result_text(&result.content).starts_with("ok (id="));
@@ -516,7 +588,7 @@ mod tests {
             "remember",
             json!({"content": "formal and precise", "kind": "character", "key": "tone"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert!(extract_tool_result_text(&result.content).starts_with("ok (id="));
@@ -530,7 +602,7 @@ mod tests {
     async fn test_handle_remember_invalid_kind() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("remember", json!({"content": "test", "kind": "bogus"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -543,7 +615,7 @@ mod tests {
     async fn test_handle_remember_missing_fields() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("remember", json!({"kind": "fact"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -561,10 +633,10 @@ mod tests {
             "remember",
             json!({"content": "v2", "kind": "fact", "category": "user", "key": "name"}),
         );
-        handle_tool_call(&reqwest::Client::new(), &db, &call1)
+        handle_tool_call(&reqwest::Client::new(), &db, None, &call1)
             .await
             .unwrap();
-        handle_tool_call(&reqwest::Client::new(), &db, &call2)
+        handle_tool_call(&reqwest::Client::new(), &db, None, &call2)
             .await
             .unwrap();
 
@@ -585,7 +657,7 @@ mod tests {
             "forget",
             json!({"kind": "fact", "category": "user", "key": "name"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -599,7 +671,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("forget", json!({"kind": "character", "key": "tone"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -614,7 +686,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("forget", json!({"kind": "episode", "id": id}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -624,7 +696,7 @@ mod tests {
     async fn test_handle_forget_episode_missing_id() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("forget", json!({"kind": "episode"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -640,7 +712,7 @@ mod tests {
             "forget",
             json!({"kind": "fact", "category": "user", "key": "nonexistent"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "not found");
@@ -650,7 +722,7 @@ mod tests {
     async fn test_handle_forget_invalid_kind() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("forget", json!({"kind": "bogus"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -682,7 +754,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("recall", json!({"query": "rust"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -693,7 +765,7 @@ mod tests {
     async fn test_handle_recall_no_results() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("recall", json!({"query": "nonexistent"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -723,7 +795,7 @@ mod tests {
         .unwrap();
 
         let call = make_call("recall", json!({"query": "rust"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -738,7 +810,7 @@ mod tests {
     async fn test_handle_manage_rules_list_empty() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "list"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -754,7 +826,7 @@ mod tests {
         db.save_approval_rule("cargo *").unwrap();
 
         let call = make_call("manage_rules", json!({"action": "list"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -772,7 +844,7 @@ mod tests {
             "manage_rules",
             json!({"action": "delete", "id": rules[0].id}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -783,7 +855,7 @@ mod tests {
     async fn test_handle_manage_rules_delete_not_found() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "delete", "id": 999}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "not found");
@@ -793,7 +865,7 @@ mod tests {
     async fn test_handle_manage_rules_delete_missing_id() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "delete"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -806,7 +878,7 @@ mod tests {
     async fn test_handle_manage_rules_invalid_action() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "update"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -822,7 +894,7 @@ mod tests {
             "manage_rules",
             json!({"action": "add", "pattern": "cargo *"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -839,7 +911,7 @@ mod tests {
     async fn test_handle_manage_rules_add_missing_pattern() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "add"}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -852,7 +924,7 @@ mod tests {
     async fn test_handle_manage_rules_add_empty_pattern() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "add", "pattern": "  "}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         assert_eq!(
@@ -891,7 +963,7 @@ mod tests {
             "str_replace_based_edit_tool",
             json!({"command": "view", "path": "/tmp/nonexistent_ava_test_12345.txt"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -908,7 +980,7 @@ mod tests {
             "str_replace_based_edit_tool",
             json!({"command": "bogus", "path": "/tmp/whatever"}),
         );
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -924,7 +996,7 @@ mod tests {
     async fn test_handle_unknown_tool() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("nonexistent_tool", json!({}));
-        let result = handle_tool_call(&reqwest::Client::new(), &db, &call)
+        let result = handle_tool_call(&reqwest::Client::new(), &db, None, &call)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);

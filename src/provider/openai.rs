@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::error::Error;
 use crate::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
 use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
-use crate::tool::{ToolDefinition, tool_definitions};
+use crate::tool::ToolDefinition;
 
 const API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.4";
@@ -79,8 +79,8 @@ enum InputItem {
 struct FunctionTool {
     #[serde(rename = "type")]
     tool_type: String,
-    name: &'static str,
-    description: &'static str,
+    name: String,
+    description: String,
     parameters: Value,
 }
 
@@ -258,8 +258,18 @@ fn convert_tools(definitions: &[ToolDefinition]) -> Vec<FunctionTool> {
                 input_schema,
             } => Some(FunctionTool {
                 tool_type: "function".to_string(),
+                name: (*name).to_string(),
+                description: (*description).to_string(),
+                parameters: input_schema.clone(),
+            }),
+            ToolDefinition::Dynamic {
                 name,
                 description,
+                input_schema,
+            } => Some(FunctionTool {
+                tool_type: "function".to_string(),
+                name: name.clone(),
+                description: description.clone(),
                 parameters: input_schema.clone(),
             }),
             ToolDefinition::BuiltIn { .. } => None,
@@ -281,15 +291,10 @@ impl Provider for OpenAiProvider {
         &self,
         system_prompt: &str,
         messages: &[Message],
-        include_tools: bool,
+        tools: &[ToolDefinition],
     ) -> Result<ProviderResponse, Error> {
         let input = convert_messages(messages);
-        let tools = if include_tools {
-            let defs = tool_definitions();
-            convert_tools(&defs)
-        } else {
-            Vec::new()
-        };
+        let tools = convert_tools(tools);
 
         let request = ApiRequest {
             model: &self.model,
@@ -481,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_convert_tools() {
-        let definitions = tool_definitions();
+        let definitions = crate::tool::tool_definitions();
         let custom_count = definitions
             .iter()
             .filter(|d| matches!(d, ToolDefinition::Custom { .. }))

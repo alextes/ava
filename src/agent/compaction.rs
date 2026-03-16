@@ -118,7 +118,7 @@ pub async fn compact_messages(
 
     let summarize_messages = vec![Message::user(summarize_content)];
     let response = provider
-        .complete(SUMMARIZATION_PROMPT, &summarize_messages, false)
+        .complete(SUMMARIZATION_PROMPT, &summarize_messages, &[])
         .await?;
     let summary = response.content;
 

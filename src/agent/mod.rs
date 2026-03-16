@@ -8,9 +8,10 @@ use chrono::Utc;
 use crate::approver::AnyApprover;
 use crate::db::Database;
 use crate::error::Error;
+use crate::mcp::manager::McpManager;
 use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage, Role};
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
-use crate::tool::{self, ApprovalDecision, Approver, ToolCall};
+use crate::tool::{self, ApprovalDecision, Approver, ToolCall, ToolDefinition};
 
 const MAX_TOOL_ROUNDS: u32 = 40;
 const WARNING_ROUND: u32 = 32;
@@ -20,6 +21,7 @@ pub struct Agent {
     approver: AnyApprover,
     db: Arc<Database>,
     client: reqwest::Client,
+    mcp: Option<Arc<McpManager>>,
 }
 
 impl Agent {
@@ -34,7 +36,13 @@ impl Agent {
             approver,
             db,
             client,
+            mcp: None,
         }
+    }
+
+    pub fn with_mcp(mut self, mcp: Arc<McpManager>) -> Self {
+        self.mcp = Some(mcp);
+        self
     }
 
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
@@ -58,6 +66,7 @@ impl Agent {
         messages.push(Message::user(&inbound.content));
 
         let system_prompt = self.system_prompt()?;
+        let tools = self.all_tool_definitions().await;
         let mut tool_rounds = 0;
         let mut switched_provider: Option<AnyProvider> = None;
         let mut last_input_tokens: Option<u32> = None;
@@ -87,7 +96,7 @@ impl Agent {
 
             let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
             let response = match active_provider
-                .complete(&system_prompt, &messages, true)
+                .complete(&system_prompt, &messages, &tools)
                 .await
             {
                 Ok(r) => r,
@@ -238,7 +247,7 @@ impl Agent {
                 // final text-only turn (no tools)
                 let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
                 let final_content = match active_provider
-                    .complete(&system_prompt, &messages, false)
+                    .complete(&system_prompt, &messages, &[])
                     .await
                 {
                     Ok(r) => r.content,
@@ -365,7 +374,35 @@ impl Agent {
             }
         }
 
-        tool::handle_tool_call(&self.client, &self.db, call).await
+        tool::handle_tool_call(&self.client, &self.db, self.mcp.as_deref(), call).await
+    }
+
+    /// build the full list of tool definitions (built-in + MCP).
+    async fn all_tool_definitions(&self) -> Vec<ToolDefinition> {
+        let mut tools = tool::tool_definitions();
+
+        if let Some(ref mcp) = self.mcp {
+            let builtin_names: std::collections::HashSet<String> =
+                tools.iter().map(|t| t.name().to_string()).collect();
+
+            for entry in mcp.list_all_tools().await {
+                let namespaced = format!("mcp__{}_{}", entry.server_name, entry.tool.name);
+                if builtin_names.contains(&namespaced) {
+                    tracing::warn!(
+                        tool = %namespaced,
+                        "MCP tool name conflicts with built-in, skipping"
+                    );
+                    continue;
+                }
+                tools.push(ToolDefinition::Dynamic {
+                    name: namespaced,
+                    description: entry.tool.description.unwrap_or_default(),
+                    input_schema: entry.tool.input_schema,
+                });
+            }
+        }
+
+        tools
     }
 
     /// check if the last message is an assistant message with tool_use blocks
