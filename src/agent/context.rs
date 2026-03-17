@@ -17,13 +17,15 @@ pub struct ContextUsage {
 
 impl ContextUsage {
     pub fn compute(usage: &Usage, context_window: u32, compaction_count: u32) -> Self {
+        // total context = new input tokens + cached tokens read (which are also in the window)
+        let total_tokens = usage.input_tokens + usage.cache_read_tokens.unwrap_or(0);
         let usage_percent = if context_window > 0 {
-            usage.input_tokens as f64 / context_window as f64 * 100.0
+            total_tokens as f64 / context_window as f64 * 100.0
         } else {
             0.0
         };
         Self {
-            input_tokens: usage.input_tokens,
+            input_tokens: total_tokens,
             output_tokens: usage.output_tokens,
             context_window,
             usage_percent,
@@ -53,6 +55,21 @@ mod tests {
         assert!((cu.usage_percent - 42.0).abs() < 0.01);
         assert!(!cu.compacted);
         assert_eq!(cu.compaction_count, 0);
+    }
+
+    #[test]
+    fn test_context_usage_includes_cache_read() {
+        // input_tokens=1000 + cache_read=135000 = 136000 / 1_000_000 = 13.6%
+        let usage = Usage {
+            input_tokens: 1_000,
+            output_tokens: 50,
+            cache_creation_tokens: None,
+            cache_read_tokens: Some(135_000),
+            reasoning_tokens: None,
+        };
+        let cu = ContextUsage::compute(&usage, 1_000_000, 0);
+        assert_eq!(cu.input_tokens, 136_000);
+        assert!((cu.usage_percent - 13.6).abs() < 0.01);
     }
 
     #[test]
