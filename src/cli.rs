@@ -22,6 +22,8 @@ pub(crate) enum Commands {
         /// the message to send
         content: String,
     },
+    /// stop the running daemon
+    Stop,
     /// start all configured channels (daemonizes by default)
     Start {
         /// run in foreground instead of daemonizing

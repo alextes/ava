@@ -5,6 +5,7 @@ mod rules;
 mod schedules;
 mod start;
 mod status;
+mod stop;
 mod upgrade;
 
 pub(crate) use doctor::{run_doctor_diagnose, run_doctor_fix};
@@ -14,4 +15,5 @@ pub(crate) use rules::run_rules;
 pub(crate) use schedules::run_schedules;
 pub(crate) use start::run_start;
 pub(crate) use status::run_status;
+pub(crate) use stop::run_stop;
 pub(crate) use upgrade::run_upgrade;
