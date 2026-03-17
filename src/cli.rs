@@ -24,6 +24,15 @@ pub(crate) enum Commands {
     },
     /// stop the running daemon
     Stop,
+    /// tail the log file
+    Logs {
+        /// number of lines to show (default: 50)
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+        /// follow the log file (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// start all configured channels (daemonizes by default)
     Start {
         /// run in foreground instead of daemonizing

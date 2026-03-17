@@ -1,5 +1,6 @@
 mod doctor;
 mod history;
+mod logs;
 mod message;
 mod rules;
 mod schedules;
@@ -10,6 +11,7 @@ mod upgrade;
 
 pub(crate) use doctor::{run_doctor_diagnose, run_doctor_fix};
 pub(crate) use history::run_history;
+pub(crate) use logs::run_logs;
 pub(crate) use message::run_message;
 pub(crate) use rules::run_rules;
 pub(crate) use schedules::run_schedules;
