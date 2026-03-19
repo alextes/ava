@@ -13,7 +13,7 @@ use crate::error::Error;
 use crate::message::Message;
 use crate::tool::ToolDefinition;
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "you are ava, a personal ai assistant. be helpful, concise, and friendly. avoid unnecessary verbosity.";
+pub const DEFAULT_SYSTEM_PROMPT: &str = "you are ava, an ai assistant.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
