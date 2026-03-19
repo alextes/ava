@@ -260,12 +260,29 @@ impl Approver for TelegramApprover {
                 .get("path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("<unknown>");
-            let tool_label = match tool_call.name.as_str() {
-                GREP_TOOL_NAME => "grep",
-                GLOB_TOOL_NAME => "glob",
-                _ => "read",
+            let text = match tool_call.name.as_str() {
+                GREP_TOOL_NAME => {
+                    let pattern = tool_call
+                        .input
+                        .get("pattern")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    format!("grep: {path}\n  pattern: {pattern}")
+                }
+                GLOB_TOOL_NAME => {
+                    let pattern = tool_call
+                        .input
+                        .get("pattern")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    format!("glob: {path}\n  pattern: {pattern}")
+                }
+                _ => {
+                    // text_editor view
+                    format!("read: {path}")
+                }
             };
-            (format!("ava wants to {tool_label}: {path}"), true)
+            (text, true)
         } else if is_text_editor {
             let path = tool_call
                 .input
