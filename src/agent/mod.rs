@@ -12,6 +12,7 @@ use crate::error::Error;
 use crate::mcp::manager::McpManager;
 use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage, Role};
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
+use crate::skill::Skill;
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall, ToolDefinition};
 
 const MAX_TOOL_ROUNDS: u32 = 40;
@@ -23,6 +24,7 @@ pub struct Agent {
     db: Arc<Database>,
     client: reqwest::Client,
     mcp: Option<Arc<McpManager>>,
+    skills: Arc<Vec<Skill>>,
 }
 
 impl Agent {
@@ -38,12 +40,46 @@ impl Agent {
             db,
             client,
             mcp: None,
+            skills: Arc::new(Vec::new()),
         }
     }
 
     pub fn with_mcp(mut self, mcp: Arc<McpManager>) -> Self {
         self.mcp = Some(mcp);
         self
+    }
+
+    pub fn with_skills(mut self, skills: Arc<Vec<Skill>>) -> Self {
+        self.skills = skills;
+        self
+    }
+
+    /// if the message starts with /skill-name and a matching user-invocable skill exists,
+    /// prepend the skill body (with $ARGUMENTS substituted) wrapped in [skill: name] tags.
+    fn expand_skill(&self, content: &str) -> String {
+        let trimmed = content.trim();
+        if !trimmed.starts_with('/') {
+            return content.to_string();
+        }
+
+        let (cmd, args) = match trimmed[1..].split_once(char::is_whitespace) {
+            Some((c, a)) => (c, a.trim()),
+            None => (&trimmed[1..], ""),
+        };
+
+        let skill = self
+            .skills
+            .iter()
+            .find(|s| s.name == cmd && s.user_invocable);
+
+        let Some(skill) = skill else {
+            return content.to_string();
+        };
+
+        tracing::info!(skill = %skill.name, "expanding user-invoked skill");
+
+        let body = skill.body.replace("$ARGUMENTS", args);
+        format!("[skill: {}]\n{}\n[/skill]\n\n{}", skill.name, body, args)
     }
 
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
@@ -60,11 +96,14 @@ impl Agent {
         // fix orphaned tool_use blocks left by a previous crash/interruption
         self.repair_orphaned_tool_calls(session_id, &mut messages)?;
 
+        // expand /skill-name invocations before sending to the LLM
+        let content = self.expand_skill(&inbound.content);
+
         // append and persist the new user message
-        let user_content = vec![MessageContent::text(&inbound.content)];
+        let user_content = vec![MessageContent::text(&content)];
         self.db
             .append_message(session_id, "user", &user_content, Some(channel_str))?;
-        messages.push(Message::user(&inbound.content));
+        messages.push(Message::user(&content));
 
         let system_prompt = self.system_prompt()?;
         let tools = self.all_tool_definitions().await;
@@ -1437,5 +1476,91 @@ mod tests {
         let sid = db.active_session().unwrap();
         let count = db.session_message_count(sid).unwrap();
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_expand_skill_matches() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let skills = Arc::new(vec![Skill {
+            name: "summarize".into(),
+            description: "summarize text".into(),
+            user_invocable: true,
+            disable_model_invocation: false,
+            body: "please summarize: $ARGUMENTS".into(),
+        }]);
+        let agent = Agent::new(
+            make_test_provider("hi"),
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        )
+        .with_skills(skills);
+
+        let expanded = agent.expand_skill("/summarize this is my text");
+        assert!(expanded.contains("[skill: summarize]"));
+        assert!(expanded.contains("please summarize: this is my text"));
+        assert!(expanded.contains("[/skill]"));
+        // args are also appended after the skill block
+        assert!(expanded.ends_with("this is my text"));
+    }
+
+    #[test]
+    fn test_expand_skill_no_match() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            make_test_provider("hi"),
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        // no skills loaded — should pass through unchanged
+        assert_eq!(agent.expand_skill("/unknown foo"), "/unknown foo");
+        assert_eq!(agent.expand_skill("plain message"), "plain message");
+    }
+
+    #[test]
+    fn test_expand_skill_not_user_invocable() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let skills = Arc::new(vec![Skill {
+            name: "internal".into(),
+            description: "internal only".into(),
+            user_invocable: false,
+            disable_model_invocation: false,
+            body: "secret stuff".into(),
+        }]);
+        let agent = Agent::new(
+            make_test_provider("hi"),
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        )
+        .with_skills(skills);
+
+        // not user-invocable — should not expand
+        assert_eq!(agent.expand_skill("/internal test"), "/internal test");
+    }
+
+    #[test]
+    fn test_expand_skill_no_arguments() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let skills = Arc::new(vec![Skill {
+            name: "status".into(),
+            description: "check status".into(),
+            user_invocable: true,
+            disable_model_invocation: false,
+            body: "report the current status. args: $ARGUMENTS".into(),
+        }]);
+        let agent = Agent::new(
+            make_test_provider("hi"),
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        )
+        .with_skills(skills);
+
+        let expanded = agent.expand_skill("/status");
+        assert!(expanded.contains("[skill: status]"));
+        assert!(expanded.contains("report the current status. args: "));
     }
 }

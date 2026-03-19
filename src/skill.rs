@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::config;
 
 /// a skill loaded from ~/.ava/skills/<name>/SKILL.md.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,
