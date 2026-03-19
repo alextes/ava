@@ -46,6 +46,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: Option<DoctorAction>,
     },
+    /// stop and restart the daemon
+    Restart {
+        /// run in foreground instead of daemonizing
+        #[arg(long)]
+        foreground: bool,
+    },
     /// rebuild from source and hot-swap the running process
     Upgrade,
     /// manage approval rules
