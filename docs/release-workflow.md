@@ -22,7 +22,11 @@ read every commit title **and description** — titles alone miss important deta
 git log --format="%h %s%n%b---" $(git describe --tags --abbrev=0)..HEAD
 ```
 
-## 2. update changelog
+## 2. check if README needs updating
+
+review whether new features, changed install instructions, or removed capabilities require README updates. verify with the human before proceeding if unsure.
+
+## 3. update changelog
 
 edit `CHANGELOG.md`:
 
@@ -39,7 +43,7 @@ edit `CHANGELOG.md`:
 - ...
 ```
 
-## 3. bump version
+## 4. bump version
 
 update `version` in `Cargo.toml`:
 
@@ -47,7 +51,7 @@ update `version` in `Cargo.toml`:
 version = "0.2.0"
 ```
 
-## 4. update lockfile
+## 5. update lockfile
 
 run a build so `Cargo.lock` picks up the new version:
 
@@ -55,20 +59,20 @@ run a build so `Cargo.lock` picks up the new version:
 cargo build
 ```
 
-## 5. commit the release
+## 6. commit the release
 
 ```bash
 git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "release: v0.2.0"
 ```
 
-## 6. ship to main (if in agent worktree)
+## 7. ship to main (if in agent worktree)
 
 ```bash
 brd agent merge
 ```
 
-## 7. push and verify CI
+## 8. push and verify CI
 
 push commits to main and **wait for CI to pass** before tagging:
 
@@ -78,7 +82,7 @@ git push origin main
 
 check CI status with `hub ci-status -v` or at https://github.com/alextes/ava/actions — do not proceed until all checks pass.
 
-## 8. tag and push
+## 9. tag and push
 
 only after CI passes:
 
@@ -89,11 +93,6 @@ git push --tags
 
 this triggers cargo-dist CI which builds binaries for all platforms and creates the github release.
 
-## 9. publish to crates.io
+## 10. publish to crates.io (currently skipped)
 
-after cargo-dist CI passes:
-
-```bash
-git checkout v0.2.0
-cargo publish
-```
+cargo publish is disabled for now — the binary assumes a cloned repo (DB path, upgrade command). install via `git clone` + `cargo install --path .` instead.
