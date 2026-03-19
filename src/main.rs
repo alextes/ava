@@ -13,6 +13,7 @@ mod provider;
 mod queue;
 mod scheduler;
 mod signal;
+mod skill;
 mod telegram;
 mod telegram_fmt;
 mod tool;
