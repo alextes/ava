@@ -1,6 +1,8 @@
 use crate::db::Memory;
+use crate::skill::Skill;
 
 pub(crate) const MAX_FACT_VALUE_CHARS: usize = 500;
+const MAX_SKILLS_SECTION_CHARS: usize = 2000;
 
 pub(crate) fn format_character_traits(traits: &[Memory]) -> String {
     let mut output = String::from("## character");
@@ -62,6 +64,27 @@ pub(crate) fn format_pending_tasks(tasks: &[(i64, String)]) -> String {
     for (id, title) in tasks {
         output.push_str(&format!("\n- [id:{id}] {title}"));
     }
+    output
+}
+
+pub(crate) fn format_available_skills(skills: &[Skill]) -> String {
+    let mut output = String::from(
+        "## available skills\nuse the activate_skill tool to load a skill's full instructions.",
+    );
+
+    for skill in skills {
+        if skill.disable_model_invocation {
+            continue;
+        }
+
+        let line = format!("\n- **{}**: {}", skill.name, skill.description);
+        if output.len() + line.len() > MAX_SKILLS_SECTION_CHARS {
+            output.push_str("\n- ...(truncated)");
+            break;
+        }
+        output.push_str(&line);
+    }
+
     output
 }
 

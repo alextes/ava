@@ -563,6 +563,17 @@ impl Agent {
             prompt.push_str(&prompt::format_pending_tasks(&pending_tasks));
         }
 
+        let model_skills: Vec<_> = self
+            .skills
+            .iter()
+            .filter(|s| !s.disable_model_invocation)
+            .cloned()
+            .collect();
+        if !model_skills.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&prompt::format_available_skills(&model_skills));
+        }
+
         prompt.push_str(&format!(
             "\n\n## tool budget\nyou have a budget of {MAX_TOOL_ROUNDS} tool rounds per user \
              message. after exhausting the budget you get one final text-only turn. if you need \
@@ -1562,5 +1573,53 @@ mod tests {
         let expanded = agent.expand_skill("/status");
         assert!(expanded.contains("[skill: status]"));
         assert!(expanded.contains("report the current status. args: "));
+    }
+
+    #[test]
+    fn test_system_prompt_includes_skills() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let skills = Arc::new(vec![
+            Skill {
+                name: "summarize".into(),
+                description: "summarize text".into(),
+                user_invocable: true,
+                disable_model_invocation: false,
+                body: "summarize this".into(),
+            },
+            Skill {
+                name: "hidden".into(),
+                description: "hidden from model".into(),
+                user_invocable: true,
+                disable_model_invocation: true,
+                body: "secret".into(),
+            },
+        ]);
+        let agent = Agent::new(
+            make_test_provider("hi"),
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        )
+        .with_skills(skills);
+
+        let prompt = agent.system_prompt().unwrap();
+        assert!(prompt.contains("## available skills"));
+        assert!(prompt.contains("**summarize**: summarize text"));
+        // hidden skill should not appear
+        assert!(!prompt.contains("hidden from model"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_skills_when_none() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            make_test_provider("hi"),
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let prompt = agent.system_prompt().unwrap();
+        assert!(!prompt.contains("## available skills"));
     }
 }
