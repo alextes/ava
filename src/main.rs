@@ -23,7 +23,7 @@ use clap::Parser;
 use crate::cli::{Cli, Commands, DoctorAction};
 use crate::commands::{
     run_doctor_diagnose, run_doctor_fix, run_history, run_logs, run_message, run_restart,
-    run_rules, run_schedules, run_start, run_status, run_stop, run_upgrade,
+    run_rules, run_schedules, run_skills, run_start, run_status, run_stop, run_upgrade,
 };
 
 fn main() {
@@ -113,6 +113,9 @@ async fn async_main(cli: Cli) {
         }
         Commands::Status => {
             run_status();
+        }
+        Commands::Skills => {
+            run_skills();
         }
         Commands::Stop => {
             run_stop();

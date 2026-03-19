@@ -22,6 +22,8 @@ pub(crate) enum Commands {
         /// the message to send
         content: String,
     },
+    /// list installed skills
+    Skills,
     /// stop the running daemon
     Stop,
     /// tail the log file
