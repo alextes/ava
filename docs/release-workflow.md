@@ -16,8 +16,10 @@ all must pass — CI will reject the release otherwise.
 
 ## 1. review changes since last release
 
+read every commit title **and description** — titles alone miss important details.
+
 ```bash
-git log --oneline $(git describe --tags --abbrev=0)..HEAD
+git log --format="%h %s%n%b---" $(git describe --tags --abbrev=0)..HEAD
 ```
 
 ## 2. update changelog

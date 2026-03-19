@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added
+- **skill system**: load skills from `~/.ava/skills/*/SKILL.md` with YAML frontmatter. user invocation via `/skill-name`, model invocation via `activate_skill` tool, skill descriptions in system prompt. `ava skills` CLI to list installed skills
+- **MCP integration**: connect to MCP servers over stdio, namespaced tool discovery, config via `~/.ava/mcp.toml`, automatic restart-on-failure
+- **browser tool**: chromiumoxide-based browser with navigate, screenshot, click, type, and accessibility tree snapshot actions
+- **daemon mode**: `ava start` forks to background by default. plain-text log file at `~/.ava/ava.log` (no ANSI codes). `ava stop` sends SIGTERM and waits. `ava logs` tails the log file with `-f` follow mode. `ava restart` for stop+start
+- **context usage tracking**: `ContextUsage` struct with model-aware window sizes. injected into tool results at key thresholds (60% once, 80% every round). auto-compaction raised to 90%. persisted to DB (migration v9). shown in `ava status`
+- **workspace boundaries**: filesystem tools (text_editor, grep, glob) restricted to workspace directory. reads outside workspace require approval
+- **grep and glob tools**: ripgrep-based codebase search and glob file matching
+- **image support**: base64 image content blocks in messages and tool results
+- **self-upgrade tool**: `ava upgrade` rebuilds from source with SIGUSR1 hot-swap
+- **approval improvements**: per-segment pattern matching for piped/chained commands, path-based edit rules, `/rules` slash command, `ava rules` CLI subcommand, grep/glob patterns in approval prompts
+- **OpenAI Responses API**: migrated from Chat Completions, with reasoning token logging
+- **provider fallback**: automatic provider switch on budget exhaustion, `/switch` slash command for manual switching
+- **`~/.ava/` home directory**: PID file, log files, skills, and MCP config all under `~/.ava/`. `AVA_HOME` env var to override
+
+### Changed
+- system prompt trimmed to identity only, context usage moved to message injection for prompt cache efficiency
+- default models upgraded to claude-sonnet-4-6 and gpt-5.4
+- compaction threshold raised from 80% to 90%, context injection thresholds tuned (60% heads-up, 80% warning)
+- WARN log threshold raised to 80% context usage
+- main.rs, agent/mod.rs, and tool/mod.rs split into smaller modules
+
+### Fixed
+- include cache_read_tokens in context usage percentage calculation
+- model-aware context window sizes (opus/sonnet 1M, haiku 200k, gpt-5.4 1.05M, gpt-5-mini 400k)
+- telegram approval UX for expired and resolved messages
+- strip env var prefixes in pattern generation and matching
+- clear invalid persisted model instead of silently falling back
+- rate-limit vs budget exhaustion error distinction
+
 ## [0.3.1]
 
 ### Changed
@@ -75,7 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - openai provider uses `max_completion_tokens` instead of deprecated `max_tokens`
 
-[Unreleased]: https://github.com/alextes/ava/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/alextes/ava/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/alextes/ava/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/alextes/ava/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/alextes/ava/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/alextes/ava/compare/v0.1.0...v0.2.0
