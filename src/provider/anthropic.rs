@@ -380,10 +380,15 @@ mod tests {
         assert!(json["tools"][0].get("type").is_none());
 
         // built-in tool has type and name (no description, no input_schema)
-        let last_tool = json["tools"].as_array().unwrap().last().unwrap();
-        assert_eq!(last_tool["type"], "text_editor_20250728");
-        assert_eq!(last_tool["name"], "str_replace_based_edit_tool");
-        assert!(last_tool.get("description").is_none());
-        assert!(last_tool.get("input_schema").is_none());
+        let builtin_tool = json["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t.get("type").is_some_and(|v| v.is_string()))
+            .expect("should have a built-in tool");
+        assert_eq!(builtin_tool["type"], "text_editor_20250728");
+        assert_eq!(builtin_tool["name"], "str_replace_based_edit_tool");
+        assert!(builtin_tool.get("description").is_none());
+        assert!(builtin_tool.get("input_schema").is_none());
     }
 }

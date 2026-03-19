@@ -449,7 +449,14 @@ impl Agent {
             }
         }
 
-        tool::handle_tool_call(&self.client, &self.db, self.mcp.as_deref(), call).await
+        tool::handle_tool_call(
+            &self.client,
+            &self.db,
+            self.mcp.as_deref(),
+            &self.skills,
+            call,
+        )
+        .await
     }
 
     /// build the full list of tool definitions (built-in + MCP).
