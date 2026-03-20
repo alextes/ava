@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 use serde_json::json;
 
@@ -135,6 +137,111 @@ pub(super) fn exec_definition() -> ToolDefinition {
     }
 }
 
+/// resolve a vault:// secret source by reading from ~/.ava/vault/<name>.
+/// returns the secret value or an error message.
+pub(crate) fn resolve_vault_secret(source: &str) -> Result<String, String> {
+    let name = source
+        .strip_prefix("vault://")
+        .ok_or_else(|| format!("not a vault source: {source}"))?;
+
+    let path = crate::config::vault_dir().join(name);
+    std::fs::read_to_string(&path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("failed to read vault secret '{}': {e}", path.display()))
+}
+
+/// replace all occurrences of secret values in text with [REDACTED].
+/// handles multi-line secrets by scrubbing each line independently.
+pub(crate) fn scrub_secrets(text: &str, secrets: &HashMap<String, String>) -> String {
+    let mut result = text.to_string();
+    for value in secrets.values() {
+        if value.is_empty() {
+            continue;
+        }
+        // scrub the full value
+        result = result.replace(value.as_str(), "[REDACTED]");
+        // also scrub individual lines for multi-line secrets (e.g. PEM keys)
+        for line in value.lines() {
+            let line = line.trim();
+            if line.len() >= 8 {
+                result = result.replace(line, "[REDACTED]");
+            }
+        }
+    }
+    result
+}
+
+/// execute a command with secrets injected as env vars.
+/// secret values are scrubbed from the output before returning.
+/// the agent never sees the raw secret values.
+pub(crate) async fn sealed_exec(
+    command: &str,
+    secrets: &HashMap<String, String>,
+    timeout_secs: Option<u64>,
+    cwd: Option<&str>,
+) -> String {
+    if let Some(reason) = check_safety_filter(command) {
+        return reason.to_string();
+    }
+
+    let timeout = timeout_secs
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .min(MAX_TIMEOUT_SECS);
+
+    tracing::info!(
+        command,
+        timeout,
+        ?cwd,
+        secret_count = secrets.len(),
+        "sealed execution"
+    );
+
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(command);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    // inject secrets as env vars — only for this command's process
+    for (name, value) in secrets {
+        cmd.env(name, value);
+    }
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout), cmd.output()).await;
+
+    let raw_output = match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let code = output.status.code().unwrap_or(-1);
+
+            let mut result = format!("exit code: {code}");
+
+            if !stdout.is_empty() {
+                result.push_str("\nstdout:\n");
+                result.push_str(&stdout);
+            }
+
+            if !stderr.is_empty() {
+                result.push_str("\nstderr:\n");
+                result.push_str(&stderr);
+            }
+
+            if stdout.is_empty() && stderr.is_empty() {
+                result.push_str("\n(no output)");
+            }
+
+            result
+        }
+        Ok(Err(e)) => format!("failed to execute command: {e}"),
+        Err(_) => format!("command timed out after {timeout}s"),
+    };
+
+    // scrub secrets from output before it reaches the agent
+    let scrubbed = scrub_secrets(&raw_output, secrets);
+    truncate_output(&scrubbed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +325,133 @@ mod tests {
         )
         .await;
         assert!(result.contains("failed to execute command"));
+    }
+
+    // --- scrub_secrets tests ---
+
+    #[test]
+    fn test_scrub_secrets_basic() {
+        let mut secrets = HashMap::new();
+        secrets.insert("DB_URL".into(), "postgres://admin:s3cret@db:5432".into());
+
+        let output = "connected to postgres://admin:s3cret@db:5432 successfully";
+        let scrubbed = scrub_secrets(output, &secrets);
+        assert_eq!(scrubbed, "connected to [REDACTED] successfully");
+        assert!(!scrubbed.contains("s3cret"));
+    }
+
+    #[test]
+    fn test_scrub_secrets_multiline() {
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            "KEY".into(),
+            "-----BEGIN KEY-----\nMIIBogIBAAJBALK\n-----END KEY-----".into(),
+        );
+
+        let output = "loaded key: MIIBogIBAAJBALK";
+        let scrubbed = scrub_secrets(output, &secrets);
+        assert_eq!(scrubbed, "loaded key: [REDACTED]");
+    }
+
+    #[test]
+    fn test_scrub_secrets_multiple() {
+        let mut secrets = HashMap::new();
+        secrets.insert("USER".into(), "admin".into());
+        secrets.insert("PASS".into(), "hunter2".into());
+
+        let output = "login: admin / hunter2";
+        let scrubbed = scrub_secrets(output, &secrets);
+        assert!(!scrubbed.contains("admin"));
+        assert!(!scrubbed.contains("hunter2"));
+    }
+
+    #[test]
+    fn test_scrub_secrets_empty_value_skipped() {
+        let mut secrets = HashMap::new();
+        secrets.insert("EMPTY".into(), "".into());
+
+        let output = "nothing to scrub";
+        let scrubbed = scrub_secrets(output, &secrets);
+        assert_eq!(scrubbed, "nothing to scrub");
+    }
+
+    #[test]
+    fn test_scrub_secrets_short_lines_skipped() {
+        let mut secrets = HashMap::new();
+        secrets.insert("KEY".into(), "line1\nab\nlong_enough_line".into());
+
+        // "ab" is too short (< 8 chars) to scrub individually, avoids false positives
+        let output = "found: ab and long_enough_line";
+        let scrubbed = scrub_secrets(output, &secrets);
+        assert!(scrubbed.contains("ab"));
+        assert!(!scrubbed.contains("long_enough_line"));
+    }
+
+    // --- sealed_exec tests ---
+
+    #[tokio::test]
+    async fn test_sealed_exec_injects_env() {
+        let mut secrets = HashMap::new();
+        secrets.insert("MY_SECRET".into(), "supersecret123".into());
+
+        let result = sealed_exec("echo $MY_SECRET", &secrets, None, None).await;
+        // the output should have the secret scrubbed
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("supersecret123"));
+    }
+
+    #[tokio::test]
+    async fn test_sealed_exec_scrubs_stderr() {
+        let mut secrets = HashMap::new();
+        secrets.insert("TOKEN".into(), "tok_abc123xyz".into());
+
+        let result = sealed_exec("echo tok_abc123xyz >&2", &secrets, None, None).await;
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("tok_abc123xyz"));
+    }
+
+    #[tokio::test]
+    async fn test_sealed_exec_no_secrets_works_normally() {
+        let secrets = HashMap::new();
+        let result = sealed_exec("echo hello", &secrets, None, None).await;
+        assert!(result.contains("hello"));
+        assert!(result.contains("exit code: 0"));
+    }
+
+    // --- resolve_vault_secret tests ---
+
+    #[test]
+    fn test_resolve_vault_secret_not_vault_source() {
+        let result = resolve_vault_secret("op://Private/key");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not a vault source"));
+    }
+
+    #[test]
+    fn test_resolve_vault_secret_missing_file() {
+        let result = resolve_vault_secret("vault://nonexistent-secret-xyz");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("failed to read"));
+    }
+
+    #[test]
+    fn test_resolve_vault_secret_reads_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        std::fs::write(vault.join("test-secret"), "my-secret-value\n").unwrap();
+
+        // temporarily override AVA_HOME
+        // SAFETY: test-only, single-threaded context
+        unsafe {
+            std::env::set_var("AVA_HOME", dir.path().to_str().unwrap());
+        }
+
+        let result = resolve_vault_secret("vault://test-secret");
+        assert_eq!(result.unwrap(), "my-secret-value");
+
+        unsafe {
+            std::env::remove_var("AVA_HOME");
+        }
     }
 }
