@@ -2,7 +2,7 @@ mod compaction;
 pub(crate) mod context;
 mod prompt;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 
@@ -10,7 +10,9 @@ use crate::approver::AnyApprover;
 use crate::db::Database;
 use crate::error::Error;
 use crate::mcp::manager::McpManager;
-use crate::message::{InboundMessage, Message, MessageContent, OutboundMessage, Role};
+use crate::message::{
+    ContentBlock, InboundMessage, Message, MessageContent, OutboundMessage, Role, ToolResultContent,
+};
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
 use crate::skill::Skill;
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall, ToolDefinition};
@@ -25,6 +27,7 @@ pub struct Agent {
     client: reqwest::Client,
     mcp: Option<Arc<McpManager>>,
     skills: Arc<Vec<Skill>>,
+    vault_secrets: Arc<RwLock<Vec<String>>>,
 }
 
 impl Agent {
@@ -41,6 +44,7 @@ impl Agent {
             client,
             mcp: None,
             skills: Arc::new(Vec::new()),
+            vault_secrets: Arc::new(RwLock::new(tool::load_vault_secrets())),
         }
     }
 
@@ -454,14 +458,30 @@ impl Agent {
             }
         }
 
-        tool::handle_tool_call(
+        // refresh vault secrets when a skill is activated (user may have added secrets)
+        if call.name == tool::ACTIVATE_SKILL_TOOL_NAME
+            && let Ok(mut secrets) = self.vault_secrets.write()
+        {
+            *secrets = tool::load_vault_secrets();
+        }
+
+        let mut result = tool::handle_tool_call(
             &self.client,
             &self.db,
             self.mcp.as_deref(),
             &self.skills,
             call,
         )
-        .await
+        .await?;
+
+        // scrub vault secrets from all tool output
+        if let Ok(secrets) = self.vault_secrets.read()
+            && !secrets.is_empty()
+        {
+            result.content = scrub_tool_result(result.content, &secrets);
+        }
+
+        Ok(result)
     }
 
     /// build the full list of tool definitions (built-in + MCP).
@@ -593,6 +613,39 @@ impl Agent {
         ));
 
         Ok(prompt)
+    }
+}
+
+/// scrub vault secret values from a tool result's text content.
+/// images pass through unchanged.
+fn scrub_tool_result(content: MessageContent, secrets: &[String]) -> MessageContent {
+    match content {
+        MessageContent::ToolResult {
+            tool_use_id,
+            content: trc,
+        } => {
+            let scrubbed = match trc {
+                ToolResultContent::Text(text) => {
+                    ToolResultContent::Text(tool::scrub_vault_secrets(&text, secrets))
+                }
+                ToolResultContent::Blocks(blocks) => ToolResultContent::Blocks(
+                    blocks
+                        .into_iter()
+                        .map(|b| match b {
+                            ContentBlock::Text { text } => ContentBlock::Text {
+                                text: tool::scrub_vault_secrets(&text, secrets),
+                            },
+                            other => other,
+                        })
+                        .collect(),
+                ),
+            };
+            MessageContent::ToolResult {
+                tool_use_id,
+                content: scrubbed,
+            }
+        }
+        other => other,
     }
 }
 
@@ -1509,7 +1562,6 @@ mod tests {
             description: "summarize text".into(),
             user_invocable: true,
             disable_model_invocation: false,
-            secrets: vec![],
             body: "please summarize: $ARGUMENTS".into(),
         }]);
         let agent = Agent::new(
@@ -1551,7 +1603,6 @@ mod tests {
             description: "internal only".into(),
             user_invocable: false,
             disable_model_invocation: false,
-            secrets: vec![],
             body: "secret stuff".into(),
         }]);
         let agent = Agent::new(
@@ -1574,7 +1625,6 @@ mod tests {
             description: "check status".into(),
             user_invocable: true,
             disable_model_invocation: false,
-            secrets: vec![],
             body: "report the current status. args: $ARGUMENTS".into(),
         }]);
         let agent = Agent::new(
@@ -1599,7 +1649,7 @@ mod tests {
                 description: "summarize text".into(),
                 user_invocable: true,
                 disable_model_invocation: false,
-                secrets: vec![],
+
                 body: "summarize this".into(),
             },
             Skill {
@@ -1607,7 +1657,7 @@ mod tests {
                 description: "hidden from model".into(),
                 user_invocable: true,
                 disable_model_invocation: true,
-                secrets: vec![],
+
                 body: "secret".into(),
             },
         ]);

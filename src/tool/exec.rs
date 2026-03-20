@@ -150,6 +150,55 @@ pub(crate) fn resolve_vault_secret(source: &str) -> Result<String, String> {
         .map_err(|e| format!("failed to read vault secret '{}': {e}", path.display()))
 }
 
+/// load all vault file contents into memory for output scrubbing.
+/// reads every file in ~/.ava/vault/, returns trimmed non-empty contents.
+pub(crate) fn load_vault_secrets() -> Vec<String> {
+    let vault = crate::config::vault_dir();
+    let entries = match std::fs::read_dir(&vault) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut secrets = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let trimmed = content.trim().to_string();
+                if !trimmed.is_empty() {
+                    secrets.push(trimmed);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), %e, "failed to read vault file");
+            }
+        }
+    }
+    secrets
+}
+
+/// replace all occurrences of vault secret values in text with [REDACTED].
+/// handles multi-line secrets by scrubbing each line independently.
+pub(crate) fn scrub_vault_secrets(text: &str, secrets: &[String]) -> String {
+    let mut result = text.to_string();
+    for value in secrets {
+        if value.is_empty() {
+            continue;
+        }
+        result = result.replace(value.as_str(), "[REDACTED]");
+        for line in value.lines() {
+            let line = line.trim();
+            if line.len() >= 8 {
+                result = result.replace(line, "[REDACTED]");
+            }
+        }
+    }
+    result
+}
+
 /// replace all occurrences of secret values in text with [REDACTED].
 /// handles multi-line secrets by scrubbing each line independently.
 pub(crate) fn scrub_secrets(text: &str, secrets: &HashMap<String, String>) -> String {
@@ -325,6 +374,67 @@ mod tests {
         )
         .await;
         assert!(result.contains("failed to execute command"));
+    }
+
+    // --- load_vault_secrets tests ---
+
+    #[test]
+    fn test_load_vault_secrets_from_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        std::fs::write(vault.join("db-url"), "postgres://admin:secret@db\n").unwrap();
+        std::fs::write(vault.join("api-key"), "sk-abc123\n").unwrap();
+        std::fs::write(vault.join("empty"), "").unwrap();
+
+        unsafe { std::env::set_var("AVA_HOME", dir.path().to_str().unwrap()) };
+        let secrets = load_vault_secrets();
+        unsafe { std::env::remove_var("AVA_HOME") };
+
+        assert_eq!(secrets.len(), 2);
+        assert!(secrets.contains(&"postgres://admin:secret@db".to_string()));
+        assert!(secrets.contains(&"sk-abc123".to_string()));
+    }
+
+    #[test]
+    fn test_load_vault_secrets_no_dir() {
+        unsafe { std::env::set_var("AVA_HOME", "/nonexistent_ava_test_xyz") };
+        let secrets = load_vault_secrets();
+        unsafe { std::env::remove_var("AVA_HOME") };
+        assert!(secrets.is_empty());
+    }
+
+    // --- scrub_vault_secrets tests ---
+
+    #[test]
+    fn test_scrub_vault_secrets_basic() {
+        let secrets = vec!["postgres://admin:s3cret@db:5432".to_string()];
+        let output = "connected to postgres://admin:s3cret@db:5432 ok";
+        let scrubbed = scrub_vault_secrets(output, &secrets);
+        assert_eq!(scrubbed, "connected to [REDACTED] ok");
+    }
+
+    #[test]
+    fn test_scrub_vault_secrets_multiline() {
+        let secrets = vec!["-----BEGIN KEY-----\nMIIBogIBAAJBALK\n-----END KEY-----".to_string()];
+        let output = "key line: MIIBogIBAAJBALK";
+        let scrubbed = scrub_vault_secrets(output, &secrets);
+        assert_eq!(scrubbed, "key line: [REDACTED]");
+    }
+
+    #[test]
+    fn test_scrub_vault_secrets_multiple() {
+        let secrets = vec!["secretA123".to_string(), "secretB456".to_string()];
+        let output = "found secretA123 and secretB456";
+        let scrubbed = scrub_vault_secrets(output, &secrets);
+        assert!(!scrubbed.contains("secretA123"));
+        assert!(!scrubbed.contains("secretB456"));
+    }
+
+    #[test]
+    fn test_scrub_vault_secrets_empty_list() {
+        let output = "nothing to scrub";
+        assert_eq!(scrub_vault_secrets(output, &[]), "nothing to scrub");
     }
 
     // --- scrub_secrets tests ---

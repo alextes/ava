@@ -4,31 +4,6 @@ use serde::Deserialize;
 
 use crate::config;
 
-/// sensitivity level for a skill secret.
-#[allow(dead_code)]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Sensitivity {
-    /// telegram approval button unlocks
-    #[default]
-    Medium,
-    /// requires biometric auth (touch ID / face ID)
-    High,
-}
-
-/// a secret dependency declared in a skill's frontmatter.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-pub struct SkillSecret {
-    /// env var name the secret is injected as
-    pub name: String,
-    /// source URI: vault://name or op://vault/item
-    pub source: String,
-    /// sensitivity level (defaults to medium)
-    #[serde(default)]
-    pub sensitivity: Sensitivity,
-}
-
 /// a skill loaded from ~/.ava/skills/<name>/SKILL.md.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -40,8 +15,6 @@ pub struct Skill {
     /// when true, the skill is hidden from the system prompt and the model
     /// cannot activate it via tool call. only user invocation works.
     pub disable_model_invocation: bool,
-    /// secret dependencies for this skill
-    pub secrets: Vec<SkillSecret>,
     /// the markdown body (everything after the YAML frontmatter)
     pub body: String,
 }
@@ -54,8 +27,6 @@ struct SkillFrontmatter {
     user_invocable: bool,
     #[serde(default)]
     disable_model_invocation: bool,
-    #[serde(default)]
-    secrets: Vec<SkillSecret>,
 }
 
 /// parse a SKILL.md file into a Skill.
@@ -83,7 +54,6 @@ fn parse_skill(content: &str) -> Result<Skill, String> {
         description: fm.description,
         user_invocable: fm.user_invocable,
         disable_model_invocation: fm.disable_model_invocation,
-        secrets: fm.secrets,
         body,
     })
 }
@@ -186,44 +156,6 @@ this skill is user-only.
         let skill = parse_skill(content).unwrap();
         assert!(skill.user_invocable);
         assert!(skill.disable_model_invocation);
-    }
-
-    #[test]
-    fn test_parse_skill_with_secrets() {
-        let content = r#"---
-name: deploy
-description: deploy to production
-secrets:
-  - name: DEPLOY_KEY
-    source: vault://deploy-key
-  - name: API_TOKEN
-    source: op://Private/api-token
-    sensitivity: high
----
-
-run the deploy script.
-"#;
-        let skill = parse_skill(content).unwrap();
-        assert_eq!(skill.secrets.len(), 2);
-        assert_eq!(skill.secrets[0].name, "DEPLOY_KEY");
-        assert_eq!(skill.secrets[0].source, "vault://deploy-key");
-        assert_eq!(skill.secrets[0].sensitivity, Sensitivity::Medium);
-        assert_eq!(skill.secrets[1].name, "API_TOKEN");
-        assert_eq!(skill.secrets[1].source, "op://Private/api-token");
-        assert_eq!(skill.secrets[1].sensitivity, Sensitivity::High);
-    }
-
-    #[test]
-    fn test_parse_skill_no_secrets_default() {
-        let content = r#"---
-name: simple
-description: no secrets
----
-
-just a simple skill.
-"#;
-        let skill = parse_skill(content).unwrap();
-        assert!(skill.secrets.is_empty());
     }
 
     #[test]

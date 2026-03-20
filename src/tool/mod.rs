@@ -25,6 +25,7 @@ pub use browser::BROWSER_TOOL_NAME;
 pub use complete::COMPLETE_TOOL_NAME;
 pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
+pub(crate) use exec::{load_vault_secrets, scrub_vault_secrets};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
 pub use tasks::TASKS_TOOL_NAME;
