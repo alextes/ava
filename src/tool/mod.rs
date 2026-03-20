@@ -98,6 +98,48 @@ pub trait Approver: Send + Sync {
     ) -> impl Future<Output = Result<ApprovalDecision, Error>> + Send;
 }
 
+const VAULT_DENY_MSG: &str = "access denied: the vault directory is a protected area. secrets are only available \
+     through skill-based sealed execution, never directly to the agent.";
+
+/// check if a tool call attempts to access the vault directory.
+/// returns Some(ToolCallResult) with a hard deny if so, None otherwise.
+/// this runs before approval — no rules can override it.
+pub fn check_vault_deny(tool_call: &ToolCall) -> Option<ToolCallResult> {
+    let dominated = match tool_call.name.as_str() {
+        TEXT_EDITOR_TOOL_NAME | GREP_TOOL_NAME | GLOB_TOOL_NAME => {
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            workspace::is_vault_path(path)
+        }
+        EXEC_TOOL_NAME => {
+            let command = tool_call
+                .input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            workspace::command_references_vault(command)
+        }
+        _ => false,
+    };
+
+    if dominated {
+        tracing::warn!(
+            tool = %tool_call.name,
+            "blocked vault access attempt"
+        );
+        Some(ToolCallResult {
+            content: MessageContent::tool_result(&tool_call.id, VAULT_DENY_MSG),
+            switch_provider: None,
+            complete: false,
+        })
+    } else {
+        None
+    }
+}
+
 /// returns true if this tool call requires approval
 pub fn requires_approval(tool_call: &ToolCall) -> bool {
     match tool_call.name.as_str() {
@@ -581,6 +623,77 @@ mod tests {
             input: json!({"query": "rust"}),
         };
         assert!(!requires_approval(&call));
+    }
+
+    #[test]
+    fn test_vault_deny_exec_cat() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: EXEC_TOOL_NAME.into(),
+            input: json!({"command": "cat ~/.ava/vault/secret"}),
+        };
+        let deny = check_vault_deny(&call);
+        assert!(deny.is_some(), "exec cat of vault should be denied");
+    }
+
+    #[test]
+    fn test_vault_deny_exec_cp() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: EXEC_TOOL_NAME.into(),
+            input: json!({"command": "cp ~/.ava/vault/key /tmp/key"}),
+        };
+        assert!(check_vault_deny(&call).is_some());
+    }
+
+    #[test]
+    fn test_vault_deny_text_editor_view() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: TEXT_EDITOR_TOOL_NAME.into(),
+            input: json!({"command": "view", "path": "~/.ava/vault/secret"}),
+        };
+        assert!(check_vault_deny(&call).is_some());
+    }
+
+    #[test]
+    fn test_vault_deny_grep() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: GREP_TOOL_NAME.into(),
+            input: json!({"pattern": "password", "path": "~/.ava/vault/"}),
+        };
+        assert!(check_vault_deny(&call).is_some());
+    }
+
+    #[test]
+    fn test_vault_deny_glob() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: GLOB_TOOL_NAME.into(),
+            input: json!({"pattern": "*", "path": "~/.ava/vault/"}),
+        };
+        assert!(check_vault_deny(&call).is_some());
+    }
+
+    #[test]
+    fn test_vault_allow_normal_exec() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: EXEC_TOOL_NAME.into(),
+            input: json!({"command": "cargo test"}),
+        };
+        assert!(check_vault_deny(&call).is_none());
+    }
+
+    #[test]
+    fn test_vault_allow_normal_read() {
+        let call = ToolCall {
+            id: "test".into(),
+            name: TEXT_EDITOR_TOOL_NAME.into(),
+            input: json!({"command": "view", "path": "~/.ava/ava.log"}),
+        };
+        assert!(check_vault_deny(&call).is_none());
     }
 
     #[tokio::test]

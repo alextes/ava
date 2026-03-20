@@ -410,6 +410,11 @@ impl Agent {
         &self,
         call: &ToolCall,
     ) -> Result<tool::ToolCallResult, Error> {
+        // hard deny vault access before anything else — no approval can override
+        if let Some(deny) = tool::check_vault_deny(call) {
+            return Ok(deny);
+        }
+
         if tool::requires_approval(call) {
             let decision = match self.approver.request_approval(call).await {
                 Ok(d) => d,

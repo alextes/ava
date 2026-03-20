@@ -32,6 +32,11 @@ pub fn ava_home_dir() -> PathBuf {
     PathBuf::from(home).join(".ava")
 }
 
+/// returns path to the vault directory (~/.ava/vault/).
+pub fn vault_dir() -> PathBuf {
+    ava_home_dir().join("vault")
+}
+
 /// returns path to the PID file (~/.ava/ava.pid).
 pub fn pid_file_path() -> PathBuf {
     ava_home_dir().join("ava.pid")
