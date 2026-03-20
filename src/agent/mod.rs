@@ -1509,6 +1509,7 @@ mod tests {
             description: "summarize text".into(),
             user_invocable: true,
             disable_model_invocation: false,
+            secrets: vec![],
             body: "please summarize: $ARGUMENTS".into(),
         }]);
         let agent = Agent::new(
@@ -1550,6 +1551,7 @@ mod tests {
             description: "internal only".into(),
             user_invocable: false,
             disable_model_invocation: false,
+            secrets: vec![],
             body: "secret stuff".into(),
         }]);
         let agent = Agent::new(
@@ -1572,6 +1574,7 @@ mod tests {
             description: "check status".into(),
             user_invocable: true,
             disable_model_invocation: false,
+            secrets: vec![],
             body: "report the current status. args: $ARGUMENTS".into(),
         }]);
         let agent = Agent::new(
@@ -1596,6 +1599,7 @@ mod tests {
                 description: "summarize text".into(),
                 user_invocable: true,
                 disable_model_invocation: false,
+                secrets: vec![],
                 body: "summarize this".into(),
             },
             Skill {
@@ -1603,6 +1607,7 @@ mod tests {
                 description: "hidden from model".into(),
                 user_invocable: true,
                 disable_model_invocation: true,
+                secrets: vec![],
                 body: "secret".into(),
             },
         ]);
