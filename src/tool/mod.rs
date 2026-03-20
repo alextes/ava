@@ -98,8 +98,9 @@ pub trait Approver: Send + Sync {
     ) -> impl Future<Output = Result<ApprovalDecision, Error>> + Send;
 }
 
-const VAULT_DENY_MSG: &str = "access denied: the vault directory is a protected area. secrets are only available \
-     through skill-based sealed execution, never directly to the agent.";
+const VAULT_DENY_MSG: &str = "access denied: ~/.ava/vault/ is a protected area that you cannot \
+     read. secrets are only available through skill-based sealed execution. if a secret needs to \
+     be placed in the vault, ask the user to do it manually.";
 
 /// check if a tool call attempts to access the vault directory.
 /// returns Some(ToolCallResult) with a hard deny if so, None otherwise.
