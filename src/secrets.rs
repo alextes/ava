@@ -81,6 +81,12 @@ pub fn inject_secrets() -> Result<usize, String> {
         return Ok(0);
     }
 
+    // skip if all secrets are already in the environment (e.g. inherited from parent
+    // process after an exec restart). avoids a failing `op run` when there's no terminal.
+    if all_entries.iter().all(|(k, _)| std::env::var(k).is_ok()) {
+        return Ok(0);
+    }
+
     // write a merged .env.op to a temp file
     let tmp_dir = std::env::temp_dir();
     let merged_path = tmp_dir.join("ava-secrets.env.op");
