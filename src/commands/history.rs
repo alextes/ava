@@ -75,6 +75,7 @@ pub(crate) fn run_history(
             match msg.role {
                 Role::User => ("user", CYAN),
                 Role::Assistant => ("assistant", GREEN),
+                Role::System => ("system", DIM),
             }
         };
         let label = format!("── {role} · {} ──", msg.created_at);

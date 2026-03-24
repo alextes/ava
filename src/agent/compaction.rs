@@ -83,7 +83,7 @@ pub async fn compact_messages(
     }
     for msg in old_messages {
         let role_str = match msg.role {
-            Role::User => "user",
+            Role::User | Role::System => "user",
             Role::Assistant => "assistant",
         };
         for block in &msg.content {

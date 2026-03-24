@@ -379,9 +379,17 @@ impl Agent {
                 return Ok(None);
             }
 
-            // inject budget warning at the warning round
+            // persist tool results (clean, no injections)
+            self.db
+                .append_message(session_id, "user", &tool_results, None)?;
+            messages.push(Message::user_with_content(tool_results));
+
+            // collect system injections (budget warnings, context usage) into a
+            // separate message so they don't interfere with structured tool output.
+            let mut system_notes = Vec::new();
+
             if tool_rounds == WARNING_ROUND {
-                tool_results.push(MessageContent::text(format!(
+                system_notes.push(MessageContent::text(format!(
                     "[system: you have used {WARNING_ROUND} of {MAX_TOOL_ROUNDS} tool rounds. \
                      {} remain before you must produce a final response. plan accordingly.]",
                     MAX_TOOL_ROUNDS - WARNING_ROUND
@@ -397,16 +405,18 @@ impl Agent {
                 crossed_60pct = true;
             }
             if should_inject_context {
-                tool_results.push(MessageContent::text(format!(
+                system_notes.push(MessageContent::text(format!(
                     "[context: {:.0}% of window used ({}/{} tokens)]",
                     ctx.usage_percent, ctx.input_tokens, ctx.context_window
                 )));
             }
 
-            // persist tool results
-            self.db
-                .append_message(session_id, "user", &tool_results, None)?;
-            messages.push(Message::user_with_content(tool_results));
+            if !system_notes.is_empty() {
+                self.db
+                    .append_message(session_id, "system", &system_notes, None)?;
+                // sent to the API as a user message
+                messages.push(Message::user_with_content(system_notes));
+            }
         }
     }
 
@@ -997,10 +1007,10 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].content, "alex");
 
-        // messages were persisted (user + assistant[tool_use] + user[tool_result] + assistant[final])
+        // messages were persisted (user + assistant[tool_use] + user[tool_result] + system[context] + assistant[final])
         let sid = db.active_session().unwrap();
         let count = db.session_message_count(sid).unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
     }
 
     #[tokio::test]
@@ -1083,12 +1093,12 @@ mod tests {
         let episodes = db.recent_episodes().unwrap();
         assert_eq!(episodes.len(), 1);
 
-        // tool results message should contain 3 tool_result blocks + 1 context usage note
+        // tool results message is clean; context usage is a separate system message
         let sid = db.active_session().unwrap();
         let msgs = db.load_messages(sid).unwrap();
-        // user + assistant[3 tool_use] + user[3 tool_result + context] + assistant[final]
-        assert_eq!(msgs.len(), 4);
-        assert_eq!(msgs[2].content.len(), 4);
+        // user + assistant[3 tool_use] + user[3 tool_result] + user[context] + assistant[final]
+        assert_eq!(msgs.len(), 5);
+        assert_eq!(msgs[2].content.len(), 3);
     }
 
     #[tokio::test]
@@ -1332,8 +1342,8 @@ mod tests {
         // verify exec tool actually ran (check persisted messages contain tool result)
         let sid = db.active_session().unwrap();
         let msgs = db.load_messages(sid).unwrap();
-        // should have: user, assistant(tool_use), user(tool_result), assistant(final)
-        assert_eq!(msgs.len(), 4);
+        // should have: user, assistant(tool_use), user(tool_result), user(system/context), assistant(final)
+        assert_eq!(msgs.len(), 5);
     }
 
     #[test]

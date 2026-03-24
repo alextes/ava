@@ -154,7 +154,7 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
 
     for msg in messages {
         match msg.role {
-            Role::User => {
+            Role::User | Role::System => {
                 let mut text_parts = Vec::new();
                 for block in &msg.content {
                     match block {

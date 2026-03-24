@@ -57,7 +57,8 @@ impl Database {
         let mut result = Vec::with_capacity(messages.len());
         for (role_str, content_json) in messages {
             let role = match role_str.as_str() {
-                "user" => Role::User,
+                // system messages are sent to the API as user role
+                "user" | "system" => Role::User,
                 "assistant" => Role::Assistant,
                 _ => continue, // skip unknown roles
             };
@@ -97,6 +98,7 @@ impl Database {
             let role = match role_str.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
+                "system" => Role::System,
                 _ => continue,
             };
             let content: Vec<MessageContent> = serde_json::from_str(&content_json)
@@ -162,7 +164,7 @@ impl Database {
         let mut result = Vec::with_capacity(rows.len());
         for (id, role_str, content_json) in rows {
             let role = match role_str.as_str() {
-                "user" => Role::User,
+                "user" | "system" => Role::User,
                 "assistant" => Role::Assistant,
                 _ => continue,
             };

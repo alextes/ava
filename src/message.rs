@@ -8,6 +8,9 @@ use serde_json::Value;
 pub enum Role {
     User,
     Assistant,
+    /// internal system injections (context usage, budget warnings).
+    /// stored as "system" in the DB, but sent to the API as "user".
+    System,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
