@@ -56,12 +56,29 @@ pub(crate) fn run_history(
         if i > 0 {
             println!("\n");
         }
-        let (role, role_color) = match msg.role {
-            Role::User => ("user", CYAN),
-            Role::Assistant => ("assistant", GREEN),
+        // detect tool-result-only user messages — these aren't real user turns
+        let is_tool_results = msg.role == Role::User
+            && msg.content.iter().all(|b| {
+                matches!(
+                    b,
+                    MessageContent::ToolResult { .. } | MessageContent::Text { .. }
+                )
+            })
+            && msg
+                .content
+                .iter()
+                .any(|b| matches!(b, MessageContent::ToolResult { .. }));
+
+        let (role, role_color) = if is_tool_results {
+            ("tool result", MAGENTA)
+        } else {
+            match msg.role {
+                Role::User => ("user", CYAN),
+                Role::Assistant => ("assistant", GREEN),
+            }
         };
         let label = format!("── {role} · {} ──", msg.created_at);
-        let pad_len = 80usize.saturating_sub(label.len());
+        let pad_len = 56usize.saturating_sub(label.len());
         let padding = "─".repeat(pad_len);
         println!(
             "{DIM}──{RESET} {role_color}{role}{RESET} {DIM}· {} ──{padding}{RESET}",
