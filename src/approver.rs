@@ -39,6 +39,7 @@ impl Approver for AnyApprover {
 }
 
 const APPROVAL_TIMEOUT_SECS: u64 = 300; // 5 minutes
+const TIMED_RULE_DURATION_SECS: u64 = 900; // 15 minutes
 
 struct PendingApproval {
     sender: oneshot::Sender<ApprovalDecision>,
@@ -132,6 +133,14 @@ impl TelegramApprover {
                 let pattern = approval.patterns.get(idx).cloned().unwrap_or_default();
                 ApprovalDecision::AllowAlways { pattern }
             }
+            "timed" => {
+                let idx: usize = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let pattern = approval.patterns.get(idx).cloned().unwrap_or_default();
+                ApprovalDecision::AllowTimed {
+                    pattern,
+                    duration_secs: TIMED_RULE_DURATION_SECS,
+                }
+            }
             "deny" => ApprovalDecision::Deny,
             _ => {
                 if let Err(e) = bot
@@ -151,6 +160,11 @@ impl TelegramApprover {
                 let idx: usize = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
                 let pattern = approval.patterns.get(idx).map(|s| s.as_str()).unwrap_or("");
                 format!("approved (always: {pattern})")
+            }
+            "timed" => {
+                let idx: usize = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let pattern = approval.patterns.get(idx).map(|s| s.as_str()).unwrap_or("");
+                format!("approved (15 min: {pattern})")
             }
             "deny" => "denied".to_string(),
             _ => "unknown".to_string(),
@@ -349,10 +363,11 @@ impl Approver for TelegramApprover {
             },
         ];
 
-        // collect patterns for "always" buttons. stored on PendingApproval and
-        // referenced by index in callback_data to stay within telegram's 64-byte limit.
+        // collect patterns for "always" and "15 min" buttons. stored on PendingApproval
+        // and referenced by index in callback_data to stay within telegram's 64-byte limit.
         let mut patterns = Vec::new();
-        let mut row2 = Vec::new();
+        let mut row_timed = Vec::new();
+        let mut row_always = Vec::new();
         if show_allow_always {
             if is_read_tool {
                 let path = tool_call
@@ -363,7 +378,11 @@ impl Approver for TelegramApprover {
                 let pattern = generate_read_pattern(path);
                 let idx = patterns.len();
                 patterns.push(pattern.clone());
-                row2.push(InlineKeyboardButton {
+                row_timed.push(InlineKeyboardButton {
+                    text: format!("15 min: {pattern}"),
+                    callback_data: format!("exec:{nonce}:timed:{idx}"),
+                });
+                row_always.push(InlineKeyboardButton {
                     text: format!("always: {pattern}"),
                     callback_data: format!("exec:{nonce}:always:{idx}"),
                 });
@@ -376,7 +395,11 @@ impl Approver for TelegramApprover {
                 let pattern = generate_edit_pattern(path);
                 let idx = patterns.len();
                 patterns.push(pattern.clone());
-                row2.push(InlineKeyboardButton {
+                row_timed.push(InlineKeyboardButton {
+                    text: format!("15 min: {pattern}"),
+                    callback_data: format!("exec:{nonce}:timed:{idx}"),
+                });
+                row_always.push(InlineKeyboardButton {
                     text: format!("always: {pattern}"),
                     callback_data: format!("exec:{nonce}:always:{idx}"),
                 });
@@ -406,7 +429,11 @@ impl Approver for TelegramApprover {
                 for narrow in &narrow_list {
                     let idx = patterns.len();
                     patterns.push(narrow.clone());
-                    row2.push(InlineKeyboardButton {
+                    row_timed.push(InlineKeyboardButton {
+                        text: format!("15 min: {narrow}"),
+                        callback_data: format!("exec:{nonce}:timed:{idx}"),
+                    });
+                    row_always.push(InlineKeyboardButton {
                         text: format!("always: {narrow}"),
                         callback_data: format!("exec:{nonce}:always:{idx}"),
                     });
@@ -414,7 +441,11 @@ impl Approver for TelegramApprover {
                 for broad in &broad_list {
                     let idx = patterns.len();
                     patterns.push(broad.clone());
-                    row2.push(InlineKeyboardButton {
+                    row_timed.push(InlineKeyboardButton {
+                        text: format!("15 min: {broad}"),
+                        callback_data: format!("exec:{nonce}:timed:{idx}"),
+                    });
+                    row_always.push(InlineKeyboardButton {
                         text: format!("always: {broad}"),
                         callback_data: format!("exec:{nonce}:always:{idx}"),
                     });
@@ -423,8 +454,11 @@ impl Approver for TelegramApprover {
         }
 
         let mut keyboard_rows = vec![row1];
-        if !row2.is_empty() {
-            keyboard_rows.push(row2);
+        if !row_timed.is_empty() {
+            keyboard_rows.push(row_timed);
+        }
+        if !row_always.is_empty() {
+            keyboard_rows.push(row_always);
         }
         let keyboard = InlineKeyboardMarkup {
             inline_keyboard: keyboard_rows,

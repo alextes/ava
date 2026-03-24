@@ -88,6 +88,7 @@ pub struct ToolCallResult {
 pub enum ApprovalDecision {
     AllowOnce,
     AllowAlways { pattern: String },
+    AllowTimed { pattern: String, duration_secs: u64 },
     Deny,
     AutoApproved,
 }

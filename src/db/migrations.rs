@@ -135,6 +135,10 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN last_input_tokens INTEGER;
     ALTER TABLE sessions ADD COLUMN last_context_window INTEGER;
     "#,
+    // v10: time-limited approval rules
+    r#"
+    ALTER TABLE approval_rules ADD COLUMN expires_at TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

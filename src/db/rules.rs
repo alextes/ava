@@ -17,11 +17,20 @@ pub struct CommandCoverage {
 
 impl Database {
     pub fn save_approval_rule(&self, pattern: &str) -> Result<(), Error> {
-        tracing::debug!(pattern, "saving approval rule");
+        self.save_approval_rule_with_expiry(pattern, None)
+    }
+
+    /// save an approval rule with an optional expiry timestamp (ISO 8601).
+    pub fn save_approval_rule_with_expiry(
+        &self,
+        pattern: &str,
+        expires_at: Option<&str>,
+    ) -> Result<(), Error> {
+        tracing::debug!(pattern, ?expires_at, "saving approval rule");
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO approval_rules (pattern) VALUES (?1)",
-            [pattern],
+            "INSERT OR IGNORE INTO approval_rules (pattern, expires_at) VALUES (?1, ?2)",
+            rusqlite::params![pattern, expires_at],
         )?;
         Ok(())
     }
@@ -96,6 +105,13 @@ impl Database {
 
     pub fn list_approval_rules(&self) -> Result<Vec<ApprovalRule>, Error> {
         let conn = self.conn.lock().unwrap();
+
+        // purge expired rules
+        conn.execute(
+            "DELETE FROM approval_rules WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            [],
+        )?;
+
         let mut stmt = conn.prepare("SELECT id, pattern FROM approval_rules ORDER BY id")?;
 
         let rules = stmt
@@ -1267,5 +1283,69 @@ mod tests {
 
         // edit: rule should not be found by find_matching_read_rule
         assert!(db.find_matching_read_rule("/etc/passwd").unwrap().is_none());
+    }
+
+    // =========================================================================
+    // time-limited rules
+    // =========================================================================
+
+    #[test]
+    fn test_timed_rule_future_expiry_matches() {
+        let db = Database::open_in_memory().unwrap();
+        // expires 1 hour from now
+        db.save_approval_rule_with_expiry("cargo *", Some("2099-01-01 00:00:00"))
+            .unwrap();
+
+        let rules = db.list_approval_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "cargo *");
+    }
+
+    #[test]
+    fn test_timed_rule_past_expiry_purged() {
+        let db = Database::open_in_memory().unwrap();
+        // already expired
+        db.save_approval_rule_with_expiry("cargo *", Some("2000-01-01 00:00:00"))
+            .unwrap();
+
+        let rules = db.list_approval_rules().unwrap();
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn test_permanent_and_timed_rules_coexist() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule("git *").unwrap();
+        db.save_approval_rule_with_expiry("cargo *", Some("2099-01-01 00:00:00"))
+            .unwrap();
+        db.save_approval_rule_with_expiry("rm *", Some("2000-01-01 00:00:00"))
+            .unwrap();
+
+        let rules = db.list_approval_rules().unwrap();
+        // permanent "git *" + future "cargo *" survive, expired "rm *" is purged
+        assert_eq!(rules.len(), 2);
+        let patterns: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(patterns.contains(&"git *"));
+        assert!(patterns.contains(&"cargo *"));
+    }
+
+    #[test]
+    fn test_timed_rule_coverage_check() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule_with_expiry("cargo *", Some("2099-01-01 00:00:00"))
+            .unwrap();
+
+        let cov = db.check_command_coverage("cargo test --release").unwrap();
+        assert!(cov.fully_covered);
+    }
+
+    #[test]
+    fn test_expired_rule_does_not_cover() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_approval_rule_with_expiry("cargo *", Some("2000-01-01 00:00:00"))
+            .unwrap();
+
+        let cov = db.check_command_coverage("cargo test").unwrap();
+        assert!(!cov.fully_covered);
     }
 }

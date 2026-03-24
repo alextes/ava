@@ -448,6 +448,22 @@ impl Agent {
                         }
                     }
                 }
+                ApprovalDecision::AllowTimed {
+                    ref pattern,
+                    duration_secs,
+                } => {
+                    let expires_at =
+                        chrono::Utc::now() + chrono::Duration::seconds(duration_secs as i64);
+                    let expires_str = expires_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                    for p in pattern.split('\n') {
+                        let p = p.trim();
+                        if !p.is_empty() {
+                            tracing::info!(p, %expires_str, "saving timed approval rule");
+                            self.db
+                                .save_approval_rule_with_expiry(p, Some(&expires_str))?;
+                        }
+                    }
+                }
                 ApprovalDecision::Deny => {
                     return Ok(tool::ToolCallResult {
                         content: MessageContent::tool_result(&call.id, "command denied by user"),
