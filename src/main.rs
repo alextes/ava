@@ -12,6 +12,7 @@ mod message;
 mod provider;
 mod queue;
 mod scheduler;
+mod secrets;
 mod signal;
 mod skill;
 mod telegram;
@@ -31,6 +32,15 @@ fn main() {
     config::init_workspace_root();
 
     let cli = Cli::parse();
+
+    // resolve skill secrets before daemonization (needs terminal for Touch ID).
+    if matches!(cli.command, Commands::Start { .. }) {
+        match secrets::inject_secrets() {
+            Ok(0) => {}
+            Ok(n) => eprintln!("resolved {n} secrets from 1Password"),
+            Err(e) => eprintln!("warning: failed to resolve secrets: {e}"),
+        }
+    }
 
     // daemonize before tokio runtime and tracing are initialized.
     // fork() must happen while the process is single-threaded.
