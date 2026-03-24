@@ -17,8 +17,11 @@ pub struct ContextUsage {
 
 impl ContextUsage {
     pub fn compute(usage: &Usage, context_window: u32, compaction_count: u32) -> Self {
-        // total context = new input tokens + cached tokens read (which are also in the window)
-        let total_tokens = usage.input_tokens + usage.cache_read_tokens.unwrap_or(0);
+        // total context = uncached input + cache creation + cache read.
+        // all three contribute to the context window size for the request.
+        let total_tokens = usage.input_tokens
+            + usage.cache_creation_tokens.unwrap_or(0)
+            + usage.cache_read_tokens.unwrap_or(0);
         let usage_percent = if context_window > 0 {
             total_tokens as f64 / context_window as f64 * 100.0
         } else {
@@ -85,6 +88,22 @@ mod tests {
         assert!(cu.compacted);
         assert_eq!(cu.compaction_count, 2);
         assert!((cu.usage_percent - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_context_usage_includes_cache_creation() {
+        // first request: most tokens go to cache_creation, only a few uncached
+        // input=3 + cache_creation=9997 + cache_read=0 = 10000 / 1_000_000 = 1%
+        let usage = Usage {
+            input_tokens: 3,
+            output_tokens: 100,
+            cache_creation_tokens: Some(9_997),
+            cache_read_tokens: Some(0),
+            reasoning_tokens: None,
+        };
+        let cu = ContextUsage::compute(&usage, 1_000_000, 0);
+        assert_eq!(cu.input_tokens, 10_000);
+        assert!((cu.usage_percent - 1.0).abs() < 0.01);
     }
 
     #[test]
