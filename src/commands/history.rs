@@ -54,14 +54,14 @@ pub(crate) fn run_history(
 
     for (i, msg) in messages.iter().enumerate() {
         if i > 0 {
-            println!();
+            println!("\n");
         }
         let (role, role_color) = match msg.role {
             Role::User => ("user", CYAN),
             Role::Assistant => ("assistant", GREEN),
         };
         let label = format!("── {role} · {} ──", msg.created_at);
-        let pad_len = 56usize.saturating_sub(label.len());
+        let pad_len = 80usize.saturating_sub(label.len());
         let padding = "─".repeat(pad_len);
         println!(
             "{DIM}──{RESET} {role_color}{role}{RESET} {DIM}· {} ──{padding}{RESET}",
