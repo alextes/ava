@@ -357,10 +357,14 @@ impl Agent {
 
             let mut tool_results = Vec::new();
             let mut saw_complete = false;
+            let mut saw_compact = false;
             for result in results {
                 let result = result?;
                 if result.complete {
                     saw_complete = true;
+                }
+                if result.compact {
+                    saw_compact = true;
                 }
                 if let Some(new_provider) = result.switch_provider {
                     let model_id = new_provider.model_id();
@@ -417,6 +421,24 @@ impl Agent {
                 // sent to the API as a user message
                 messages.push(Message::user_with_content(system_notes));
             }
+
+            // agent-requested compaction (via compact_context tool)
+            if saw_compact && ctx.usage_percent >= 20.0 {
+                let prior_summary = self.db.get_session_summary(session_id)?;
+                let provider = switched_provider.as_ref().unwrap_or(&self.provider);
+                match compaction::compact_messages(provider, messages.clone(), prior_summary).await
+                {
+                    Ok((compacted, summary)) => {
+                        messages = compacted;
+                        self.db.set_session_summary(session_id, &summary)?;
+                        compaction_count += 1;
+                        tracing::info!(compaction_count, "agent-requested compaction");
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "agent-requested compaction failed");
+                    }
+                }
+            }
         }
     }
 
@@ -441,6 +463,7 @@ impl Agent {
                         ),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     });
                 }
                 Err(e) => return Err(e),
@@ -479,6 +502,7 @@ impl Agent {
                         content: MessageContent::tool_result(&call.id, "command denied by user"),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     });
                 }
             }

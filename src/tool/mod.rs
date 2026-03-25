@@ -1,4 +1,5 @@
 mod browser;
+mod compact;
 mod complete;
 mod cron;
 mod exec;
@@ -22,6 +23,7 @@ use crate::message::MessageContent;
 use crate::provider::AnyProvider;
 
 pub use browser::BROWSER_TOOL_NAME;
+pub use compact::COMPACT_CONTEXT_TOOL_NAME;
 pub use complete::COMPLETE_TOOL_NAME;
 pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
@@ -80,6 +82,8 @@ pub struct ToolCallResult {
     pub content: MessageContent,
     pub switch_provider: Option<AnyProvider>,
     pub complete: bool,
+    /// signal the agent loop to run context compaction
+    pub compact: bool,
 }
 
 // --- approver trait ---
@@ -137,6 +141,7 @@ pub fn check_vault_deny(tool_call: &ToolCall) -> Option<ToolCallResult> {
             content: MessageContent::tool_result(&tool_call.id, VAULT_DENY_MSG),
             switch_provider: None,
             complete: false,
+            compact: false,
         })
     } else {
         None
@@ -198,6 +203,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         cron::cron_definition(),
         tasks::tasks_definition(),
         complete::complete_definition(),
+        compact::compact_context_definition(),
         upgrade::upgrade_definition(),
         search::grep_definition(),
         search::glob_definition(),
@@ -249,6 +255,7 @@ pub async fn handle_tool_call(
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         WEB_SEARCH_TOOL_NAME => {
@@ -257,6 +264,7 @@ pub async fn handle_tool_call(
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         WEB_FETCH_TOOL_NAME => {
@@ -265,6 +273,7 @@ pub async fn handle_tool_call(
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         GREP_TOOL_NAME => {
@@ -273,6 +282,7 @@ pub async fn handle_tool_call(
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         GLOB_TOOL_NAME => {
@@ -281,6 +291,7 @@ pub async fn handle_tool_call(
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         TEXT_EDITOR_TOOL_NAME => {
@@ -289,6 +300,7 @@ pub async fn handle_tool_call(
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         BROWSER_TOOL_NAME => {
@@ -297,11 +309,13 @@ pub async fn handle_tool_call(
                 content,
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         CRON_TOOL_NAME => Ok(cron::handle_cron(db, &call.id, &call.input)),
         TASKS_TOOL_NAME => Ok(tasks::handle_tasks(db, &call.id, &call.input)),
         COMPLETE_TOOL_NAME => Ok(complete::handle_complete(&call.id, &call.input)),
+        COMPACT_CONTEXT_TOOL_NAME => Ok(compact::handle_compact_context(&call.id)),
         UPGRADE_TOOL_NAME => Ok(upgrade::handle_upgrade(&call.id)),
         SWITCH_MODEL_TOOL_NAME => {
             match serde_json::from_value::<SwitchModelInput>(call.input.clone()) {
@@ -323,6 +337,7 @@ pub async fn handle_tool_call(
                                 ),
                                 switch_provider: Some(provider),
                                 complete: false,
+                                compact: false,
                             })
                         }
                         Err(err) => Ok(ToolCallResult {
@@ -332,6 +347,7 @@ pub async fn handle_tool_call(
                             ),
                             switch_provider: None,
                             complete: false,
+                            compact: false,
                         }),
                     }
                 }
@@ -339,6 +355,7 @@ pub async fn handle_tool_call(
                     content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 }),
             }
         }
@@ -355,6 +372,7 @@ pub async fn handle_tool_call(
                                 ),
                                 switch_provider: None,
                                 complete: false,
+                                compact: false,
                             });
                         }
                         let mut output = String::new();
@@ -368,6 +386,7 @@ pub async fn handle_tool_call(
                             content: MessageContent::tool_result(&call.id, output),
                             switch_provider: None,
                             complete: false,
+                            compact: false,
                         })
                     }
                     "add" => match input.pattern {
@@ -380,6 +399,7 @@ pub async fn handle_tool_call(
                                 ),
                                 switch_provider: None,
                                 complete: false,
+                                compact: false,
                             })
                         }
                         _ => Ok(ToolCallResult {
@@ -389,6 +409,7 @@ pub async fn handle_tool_call(
                             ),
                             switch_provider: None,
                             complete: false,
+                            compact: false,
                         }),
                     },
                     "delete" => match input.id {
@@ -399,12 +420,14 @@ pub async fn handle_tool_call(
                                 content: MessageContent::tool_result(&call.id, msg),
                                 switch_provider: None,
                                 complete: false,
+                                compact: false,
                             })
                         }
                         None => Ok(ToolCallResult {
                             content: MessageContent::tool_result(&call.id, "delete requires id"),
                             switch_provider: None,
                             complete: false,
+                            compact: false,
                         }),
                     },
                     other => Ok(ToolCallResult {
@@ -414,12 +437,14 @@ pub async fn handle_tool_call(
                         ),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     }),
                 },
                 Err(err) => Ok(ToolCallResult {
                     content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 }),
             }
         }
@@ -440,6 +465,7 @@ pub async fn handle_tool_call(
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         _ => {
@@ -451,6 +477,7 @@ pub async fn handle_tool_call(
                 ),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
     }
@@ -534,6 +561,7 @@ async fn handle_mcp_tool_call(
             content: MessageContent::tool_result(&call.id, "MCP not available"),
             switch_provider: None,
             complete: false,
+            compact: false,
         });
     };
 
@@ -547,6 +575,7 @@ async fn handle_mcp_tool_call(
             ),
             switch_provider: None,
             complete: false,
+            compact: false,
         });
     };
 
@@ -572,12 +601,14 @@ async fn handle_mcp_tool_call(
                 content: MessageContent::tool_result(&call.id, text),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         Err(e) => Ok(ToolCallResult {
             content: MessageContent::tool_result(&call.id, format!("MCP tool call failed: {e}")),
             switch_provider: None,
             complete: false,
+            compact: false,
         }),
     }
 }

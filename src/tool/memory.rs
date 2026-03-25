@@ -136,6 +136,7 @@ pub(crate) async fn handle_remember(
                         ),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     });
                 }
             };
@@ -149,12 +150,14 @@ pub(crate) async fn handle_remember(
                 content: MessageContent::tool_result(&call.id, format!("ok (id={id})")),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         Err(err) => Ok(ToolCallResult {
             content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
             switch_provider: None,
             complete: false,
+            compact: false,
         }),
     }
 }
@@ -182,6 +185,7 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
                             ),
                             switch_provider: None,
                             complete: false,
+                            compact: false,
                         });
                     }
                 },
@@ -193,6 +197,7 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
                         ),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     });
                 }
             };
@@ -201,12 +206,14 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
                 content: MessageContent::tool_result(&call.id, msg),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         Err(err) => Ok(ToolCallResult {
             content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
             switch_provider: None,
             complete: false,
+            compact: false,
         }),
     }
 }
@@ -221,6 +228,7 @@ pub(crate) async fn handle_recall(db: &Database, call: &ToolCall) -> Result<Tool
                     content: MessageContent::tool_result(&call.id, "no memories found"),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 });
             }
             let mut output = String::new();
@@ -248,12 +256,14 @@ pub(crate) async fn handle_recall(db: &Database, call: &ToolCall) -> Result<Tool
                 content: MessageContent::tool_result(&call.id, output),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             })
         }
         Err(err) => Ok(ToolCallResult {
             content: MessageContent::tool_result(&call.id, format!("invalid input: {err}")),
             switch_provider: None,
             complete: false,
+            compact: false,
         }),
     }
 }

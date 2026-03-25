@@ -44,6 +44,7 @@ pub fn handle_complete(call_id: &str, input: &serde_json::Value) -> ToolCallResu
         content: MessageContent::tool_result(call_id, "ok"),
         switch_provider: None,
         complete: true,
+        compact: false,
     }
 }
 

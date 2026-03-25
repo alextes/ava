@@ -59,6 +59,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                 content: MessageContent::tool_result(call_id, format!("invalid input: {err}")),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             };
         }
     };
@@ -74,6 +75,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         ),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     },
                     Err(err) => ToolCallResult {
                         content: MessageContent::tool_result(
@@ -82,6 +84,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         ),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     },
                 }
             }
@@ -89,6 +92,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                 content: MessageContent::tool_result(call_id, "add requires a non-empty title"),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             },
         },
         "list" => {
@@ -100,6 +104,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                             content: MessageContent::tool_result(call_id, "no tasks"),
                             switch_provider: None,
                             complete: false,
+                            compact: false,
                         };
                     }
                     let mut output = String::new();
@@ -117,6 +122,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         content: MessageContent::tool_result(call_id, output),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     }
                 }
                 Err(err) => ToolCallResult {
@@ -126,6 +132,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     ),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 },
             }
         }
@@ -146,12 +153,14 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         content: MessageContent::tool_result(call_id, output),
                         switch_provider: None,
                         complete: false,
+                        compact: false,
                     }
                 }
                 Ok(None) => ToolCallResult {
                     content: MessageContent::tool_result(call_id, "task not found"),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 },
                 Err(err) => ToolCallResult {
                     content: MessageContent::tool_result(
@@ -160,12 +169,14 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     ),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 },
             },
             None => ToolCallResult {
                 content: MessageContent::tool_result(call_id, "get requires id"),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             },
         },
         "done" => match parsed.id {
@@ -174,11 +185,13 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     content: MessageContent::tool_result(call_id, "task completed"),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 },
                 Ok(false) => ToolCallResult {
                     content: MessageContent::tool_result(call_id, "task not found or already done"),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 },
                 Err(err) => ToolCallResult {
                     content: MessageContent::tool_result(
@@ -187,18 +200,21 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     ),
                     switch_provider: None,
                     complete: false,
+                    compact: false,
                 },
             },
             None => ToolCallResult {
                 content: MessageContent::tool_result(call_id, "done requires id"),
                 switch_provider: None,
                 complete: false,
+                compact: false,
             },
         },
         other => ToolCallResult {
             content: MessageContent::tool_result(call_id, format!("invalid action: {other}")),
             switch_provider: None,
             complete: false,
+            compact: false,
         },
     }
 }

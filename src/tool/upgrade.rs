@@ -24,6 +24,7 @@ pub fn handle_upgrade(call_id: &str) -> ToolCallResult {
         content: MessageContent::tool_result(call_id, result),
         switch_provider: None,
         complete: false,
+        compact: false,
     }
 }
 
