@@ -71,6 +71,9 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         .await;
     });
 
+    // track background tasks so we can abort them on shutdown
+    let mut bg_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     // start telegram if configured
     if std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
         let bot = Arc::new(TelegramBot::from_env()?);
@@ -87,28 +90,48 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             let db_sched = Arc::clone(&db);
             let tx_sched = tx.clone();
             let bot_sched = Arc::clone(&bot);
-            tokio::spawn(crate::scheduler::run(
+            bg_tasks.push(tokio::spawn(crate::scheduler::run(
                 db_sched, tx_sched, bot_sched, chat_id,
-            ));
+            )));
         }
 
         tracing::info!("starting telegram channel");
-        tokio::spawn(telegram_producer(
+        bg_tasks.push(tokio::spawn(telegram_producer(
             bot,
             tx.clone(),
             Arc::clone(&pending),
             allowed_ids,
-        ));
+        )));
     } else {
         tracing::info!("TELEGRAM_BOT_TOKEN not set, skipping telegram");
     }
 
-    // drop our copy of tx so agent_loop can exit when all producers stop
+    // drop our copy so the channel closes once bg tasks are aborted
     drop(tx);
 
-    agent_handle
-        .await
-        .map_err(|e| error::Error::Provider(format!("agent loop panicked: {e}")))?;
+    // wait for either Ctrl+C or the agent loop to finish naturally.
+    tokio::pin!(agent_handle);
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("received SIGINT, shutting down");
+            // abort background producers so their tx clones are dropped,
+            // which closes the channel and lets the agent loop exit.
+            for task in &bg_tasks {
+                task.abort();
+            }
+            // give the agent loop a moment to finish its current work
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                agent_handle,
+            ).await;
+        }
+        result = &mut agent_handle => {
+            for task in &bg_tasks {
+                task.abort();
+            }
+            result.map_err(|e| error::Error::Provider(format!("agent loop panicked: {e}")))?;
+        }
+    }
 
     // shut down MCP servers
     if let Some(ref mcp) = mcp {
