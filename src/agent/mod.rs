@@ -452,6 +452,13 @@ impl Agent {
         }
 
         if tool::requires_approval(call) {
+            // log a concise summary of what's being requested
+            let approval_summary = tool::approval_summary(call);
+            tracing::info!(
+                tool = %call.name,
+                detail = %approval_summary,
+                "requesting approval"
+            );
             let decision = match self.approver.request_approval(call).await {
                 Ok(d) => d,
                 Err(Error::ApprovalTimeout) => {
@@ -469,8 +476,11 @@ impl Agent {
                 Err(e) => return Err(e),
             };
             match decision {
-                ApprovalDecision::AllowOnce | ApprovalDecision::AutoApproved => {
-                    // proceed with execution
+                ApprovalDecision::AllowOnce => {
+                    tracing::info!(tool = %call.name, "approved (once)");
+                }
+                ApprovalDecision::AutoApproved => {
+                    tracing::debug!(tool = %call.name, "auto-approved");
                 }
                 ApprovalDecision::AllowAlways { ref pattern } => {
                     for p in pattern.split('\n') {

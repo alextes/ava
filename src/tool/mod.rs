@@ -188,6 +188,57 @@ pub fn requires_approval(tool_call: &ToolCall) -> bool {
     }
 }
 
+/// returns a concise human-readable summary of what a tool call does, for logging.
+pub fn approval_summary(call: &ToolCall) -> String {
+    let cmd = call
+        .input
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let path = call
+        .input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    match call.name.as_str() {
+        EXEC_TOOL_NAME => {
+            let cwd = call.input.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            if cwd.is_empty() {
+                cmd.to_string()
+            } else {
+                format!("{cmd} (in {cwd})")
+            }
+        }
+        TEXT_EDITOR_TOOL_NAME => format!("{cmd}: {path}"),
+        GREP_TOOL_NAME => {
+            let pattern = call
+                .input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("grep {pattern} in {path}")
+        }
+        GLOB_TOOL_NAME => {
+            let pattern = call
+                .input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("glob {pattern} in {path}")
+        }
+        MANAGE_RULES_TOOL_NAME => {
+            let pattern = call
+                .input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("add rule: {pattern}")
+        }
+        _ => call.name.clone(),
+    }
+}
+
 // --- tool definitions ---
 
 pub fn tool_definitions() -> Vec<ToolDefinition> {
