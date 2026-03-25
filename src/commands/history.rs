@@ -1,4 +1,4 @@
-use crate::db::Database;
+use crate::db::{Database, session::HistoryMessage};
 use crate::error;
 use crate::message::{MessageContent, Role};
 
@@ -9,17 +9,26 @@ enum HistoryMode {
     Full,
 }
 
+// ansi color codes
+const DIM: &str = "\x1b[2m";
+const CYAN: &str = "\x1b[36m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const MAGENTA: &str = "\x1b[35m";
+const RESET: &str = "\x1b[0m";
+
 pub(crate) fn run_history(
     limit: u32,
     json: bool,
     compact: bool,
     full: bool,
+    follow: bool,
 ) -> Result<(), error::Error> {
     let db = Database::open()?;
     let session_id = db.active_session()?;
     let messages = db.load_recent_messages(session_id, limit)?;
 
-    if messages.is_empty() {
+    if messages.is_empty() && !follow {
         if json {
             println!("[]");
         } else {
@@ -28,7 +37,7 @@ pub(crate) fn run_history(
         return Ok(());
     }
 
-    if json {
+    if json && !follow {
         let out = serde_json::to_string_pretty(&messages)
             .map_err(|e| error::Error::Provider(format!("failed to serialize history: {e}")))?;
         println!("{out}");
@@ -44,95 +53,110 @@ pub(crate) fn run_history(
         HistoryMode::Pretty
     };
 
-    // ansi color codes
-    const DIM: &str = "\x1b[2m";
-    const CYAN: &str = "\x1b[36m";
-    const GREEN: &str = "\x1b[32m";
-    const YELLOW: &str = "\x1b[33m";
-    const MAGENTA: &str = "\x1b[35m";
-    const RESET: &str = "\x1b[0m";
-
-    for (i, msg) in messages.iter().enumerate() {
-        if i > 0 {
+    // print initial messages
+    let mut is_first = true;
+    for msg in &messages {
+        if !is_first {
             println!("\n");
         }
-        // detect tool-result-only user messages — these aren't real user turns
-        let is_tool_results = msg.role == Role::User
-            && msg.content.iter().all(|b| {
-                matches!(
-                    b,
-                    MessageContent::ToolResult { .. } | MessageContent::Text { .. }
-                )
-            })
-            && msg
-                .content
-                .iter()
-                .any(|b| matches!(b, MessageContent::ToolResult { .. }));
+        is_first = false;
+        print_message(msg, &mode);
+    }
 
-        let (role, role_color) = if is_tool_results {
-            ("tool result", MAGENTA)
-        } else {
-            match msg.role {
-                Role::User => ("user", CYAN),
-                Role::Assistant => ("assistant", GREEN),
-                Role::System => ("system", DIM),
+    if !follow {
+        return Ok(());
+    }
+
+    // follow mode: poll for new messages
+    let mut last_id = messages.last().map(|m| m.id).unwrap_or(0);
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        let new_messages = db.load_messages_after(session_id, last_id)?;
+        for msg in &new_messages {
+            if !is_first {
+                println!("\n");
             }
-        };
-        let label = format!("── {role} · {} ──", msg.created_at);
-        let pad_len = 56usize.saturating_sub(label.len());
-        let padding = "─".repeat(pad_len);
-        println!(
-            "{DIM}──{RESET} {role_color}{role}{RESET} {DIM}· {} ──{padding}{RESET}",
-            msg.created_at
-        );
-        for block in &msg.content {
-            match block {
-                MessageContent::Text { text } => println!("{text}"),
-                MessageContent::ToolUse { name, input, .. } => match &mode {
+            is_first = false;
+            print_message(msg, &mode);
+            last_id = msg.id;
+        }
+    }
+}
+
+fn print_message(msg: &HistoryMessage, mode: &HistoryMode) {
+    // detect tool-result-only user messages — these aren't real user turns
+    let is_tool_results = msg.role == Role::User
+        && msg.content.iter().all(|b| {
+            matches!(
+                b,
+                MessageContent::ToolResult { .. } | MessageContent::Text { .. }
+            )
+        })
+        && msg
+            .content
+            .iter()
+            .any(|b| matches!(b, MessageContent::ToolResult { .. }));
+
+    let (role, role_color) = if is_tool_results {
+        ("tool result", MAGENTA)
+    } else {
+        match msg.role {
+            Role::User => ("user", CYAN),
+            Role::Assistant => ("assistant", GREEN),
+            Role::System => ("system", DIM),
+        }
+    };
+    let label = format!("── {role} · {} ──", msg.created_at);
+    let pad_len = 56usize.saturating_sub(label.len());
+    let padding = "─".repeat(pad_len);
+    println!(
+        "{DIM}──{RESET} {role_color}{role}{RESET} {DIM}· {} ──{padding}{RESET}",
+        msg.created_at
+    );
+    for block in &msg.content {
+        match block {
+            MessageContent::Text { text } => println!("{text}"),
+            MessageContent::ToolUse { name, input, .. } => match mode {
+                HistoryMode::Compact => {
+                    let input_str = serde_json::to_string(input).unwrap_or_default();
+                    println!("{YELLOW}[tool: {name}]{RESET} {DIM}{input_str}{RESET}");
+                }
+                HistoryMode::Pretty => {
+                    let truncated = truncate_json_strings(input, 200);
+                    let formatted = serde_json::to_string_pretty(&truncated).unwrap_or_default();
+                    println!("{YELLOW}[tool: {name}]{RESET}");
+                    println!("{DIM}{formatted}{RESET}");
+                }
+                HistoryMode::Full => {
+                    println!("{YELLOW}[tool: {name}]{RESET}");
+                    print_expanded_json(input);
+                }
+            },
+            MessageContent::ToolResult {
+                tool_use_id,
+                content,
+            } => {
+                let display_str = content.as_display_str();
+                match mode {
                     HistoryMode::Compact => {
-                        let input_str = serde_json::to_string(input).unwrap_or_default();
-                        println!("{YELLOW}[tool: {name}]{RESET} {DIM}{input_str}{RESET}");
+                        let display = truncate_str(&display_str, 200);
+                        println!("{MAGENTA}[result: {tool_use_id}]{RESET} {DIM}{display}{RESET}");
                     }
                     HistoryMode::Pretty => {
-                        let truncated = truncate_json_strings(input, 200);
-                        let formatted =
-                            serde_json::to_string_pretty(&truncated).unwrap_or_default();
-                        println!("{YELLOW}[tool: {name}]{RESET}");
-                        println!("{DIM}{formatted}{RESET}");
+                        let display = truncate_str(&display_str, 500);
+                        println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
+                        println!("{DIM}{display}{RESET}");
                     }
                     HistoryMode::Full => {
-                        println!("{YELLOW}[tool: {name}]{RESET}");
-                        print_expanded_json(input);
-                    }
-                },
-                MessageContent::ToolResult {
-                    tool_use_id,
-                    content,
-                } => {
-                    let display_str = content.as_display_str();
-                    match &mode {
-                        HistoryMode::Compact => {
-                            let display = truncate_str(&display_str, 200);
-                            println!(
-                                "{MAGENTA}[result: {tool_use_id}]{RESET} {DIM}{display}{RESET}"
-                            );
-                        }
-                        HistoryMode::Pretty => {
-                            let display = truncate_str(&display_str, 500);
-                            println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
-                            println!("{DIM}{display}{RESET}");
-                        }
-                        HistoryMode::Full => {
-                            println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
-                            println!("{display_str}");
-                        }
+                        println!("{MAGENTA}[result: {tool_use_id}]{RESET}");
+                        println!("{display_str}");
                     }
                 }
             }
         }
     }
-
-    Ok(())
 }
 
 /// truncate a string to `max` chars, appending `…` if truncated
@@ -165,9 +189,6 @@ fn truncate_json_strings(value: &serde_json::Value, max: usize) -> serde_json::V
 
 /// print a JSON value in expanded key-value format with newlines rendered
 fn print_expanded_json(value: &serde_json::Value) {
-    const DIM: &str = "\x1b[2m";
-    const RESET: &str = "\x1b[0m";
-
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map {

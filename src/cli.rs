@@ -75,6 +75,9 @@ pub(crate) enum Commands {
         /// show full tool call content with expanded newlines
         #[arg(long)]
         full: bool,
+        /// follow new messages as they arrive (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
     },
 }
 

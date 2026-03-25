@@ -8,6 +8,7 @@ use super::Database;
 /// a message with its timestamp, for history display
 #[derive(Debug, Clone, Serialize)]
 pub struct HistoryMessage {
+    pub id: i64,
     pub role: Role,
     pub content: Vec<MessageContent>,
     pub created_at: String,
@@ -78,7 +79,7 @@ impl Database {
     ) -> Result<Vec<HistoryMessage>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT role, content, created_at FROM messages
+            "SELECT id, role, content, created_at FROM messages
              WHERE session_id = ?1
              ORDER BY created_at DESC, id DESC
              LIMIT ?2",
@@ -86,15 +87,16 @@ impl Database {
 
         let rows = stmt
             .query_map(rusqlite::params![session_id, limit], |row| {
-                let role_str: String = row.get(0)?;
-                let content_json: String = row.get(1)?;
-                let created_at: String = row.get(2)?;
-                Ok((role_str, content_json, created_at))
+                let id: i64 = row.get(0)?;
+                let role_str: String = row.get(1)?;
+                let content_json: String = row.get(2)?;
+                let created_at: String = row.get(3)?;
+                Ok((id, role_str, content_json, created_at))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut result = Vec::with_capacity(rows.len());
-        for (role_str, content_json, created_at) in rows {
+        for (id, role_str, content_json, created_at) in rows {
             let role = match role_str.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
@@ -104,6 +106,7 @@ impl Database {
             let content: Vec<MessageContent> = serde_json::from_str(&content_json)
                 .map_err(|e| Error::Provider(format!("failed to deserialize message: {e}")))?;
             result.push(HistoryMessage {
+                id,
                 role,
                 content,
                 created_at,
@@ -112,6 +115,51 @@ impl Database {
 
         // reverse so oldest is first
         result.reverse();
+        Ok(result)
+    }
+
+    /// load messages for a session with id greater than `after_id`, oldest first.
+    /// used by `history --follow` to poll for new messages.
+    pub fn load_messages_after(
+        &self,
+        session_id: i64,
+        after_id: i64,
+    ) -> Result<Vec<HistoryMessage>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, role, content, created_at FROM messages
+             WHERE session_id = ?1 AND id > ?2
+             ORDER BY id ASC",
+        )?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![session_id, after_id], |row| {
+                let id: i64 = row.get(0)?;
+                let role_str: String = row.get(1)?;
+                let content_json: String = row.get(2)?;
+                let created_at: String = row.get(3)?;
+                Ok((id, role_str, content_json, created_at))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for (id, role_str, content_json, created_at) in rows {
+            let role = match role_str.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                "system" => Role::System,
+                _ => continue,
+            };
+            let content: Vec<MessageContent> = serde_json::from_str(&content_json)
+                .map_err(|e| Error::Provider(format!("failed to deserialize message: {e}")))?;
+            result.push(HistoryMessage {
+                id,
+                role,
+                content,
+                created_at,
+            });
+        }
+
         Ok(result)
     }
 

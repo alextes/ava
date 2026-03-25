@@ -2,7 +2,7 @@ mod memory;
 mod migrations;
 mod rules;
 mod schedule;
-mod session;
+pub(crate) mod session;
 mod task;
 
 use std::path::Path;

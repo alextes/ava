@@ -185,8 +185,9 @@ async fn async_main(cli: Cli) {
             json,
             compact,
             full,
+            follow,
         } => {
-            if let Err(e) = run_history(limit, json, compact, full) {
+            if let Err(e) = run_history(limit, json, compact, full, follow) {
                 tracing::error!(%e, "history command failed");
                 std::process::exit(1);
             }
