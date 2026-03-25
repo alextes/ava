@@ -178,6 +178,38 @@ impl TelegramBot {
         }
     }
 
+    /// send an OGG Opus voice message. telegram displays these with an inline waveform player.
+    #[tracing::instrument(skip(self, ogg_bytes), fields(chat_id, bytes_len = ogg_bytes.len()))]
+    pub async fn send_voice(&self, chat_id: i64, ogg_bytes: Vec<u8>) -> Result<i64, Error> {
+        let part = reqwest::multipart::Part::bytes(ogg_bytes)
+            .file_name("voice.ogg")
+            .mime_str("audio/ogg")
+            .map_err(|e| Error::Telegram(format!("failed to build multipart: {e}")))?;
+
+        let form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("voice", part);
+
+        let response: ApiResponse<SentMessage> = self
+            .client
+            .post(self.api_url("sendVoice"))
+            .multipart(form)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            Ok(response.result.map(|m| m.message_id).unwrap_or_default())
+        } else {
+            Err(Error::Telegram(
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".into()),
+            ))
+        }
+    }
+
     #[tracing::instrument(skip(self, text), fields(chat_id, message_id))]
     pub async fn edit_message_text(
         &self,
