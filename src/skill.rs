@@ -4,16 +4,6 @@ use serde::Deserialize;
 
 use crate::config;
 
-/// a secret dependency declared in a skill's frontmatter.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-pub struct SkillSecret {
-    /// env var name to inject (e.g. GMAIL_CLIENT_ID)
-    pub name: String,
-    /// source URI (e.g. vault://gmail-personal-client-id)
-    pub source: String,
-}
-
 /// a skill loaded from ~/.ava/skills/<name>/SKILL.md.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -25,8 +15,6 @@ pub struct Skill {
     /// when true, the skill is hidden from the system prompt and the model
     /// cannot activate it via tool call. only user invocation works.
     pub disable_model_invocation: bool,
-    /// secrets this skill needs, resolved from vault at activation time
-    pub secrets: Vec<SkillSecret>,
     /// the markdown body (everything after the YAML frontmatter)
     pub body: String,
 }
@@ -39,8 +27,6 @@ struct SkillFrontmatter {
     user_invocable: bool,
     #[serde(default)]
     disable_model_invocation: bool,
-    #[serde(default)]
-    secrets: Vec<SkillSecret>,
 }
 
 /// parse a SKILL.md file into a Skill.
@@ -68,7 +54,6 @@ fn parse_skill(content: &str) -> Result<Skill, String> {
         description: fm.description,
         user_invocable: fm.user_invocable,
         disable_model_invocation: fm.disable_model_invocation,
-        secrets: fm.secrets,
         body,
     })
 }
