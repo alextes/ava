@@ -1,11 +1,27 @@
 use thiserror::Error;
 
+/// redact secrets from URLs in error messages.
+/// replaces telegram bot tokens (bot<id>:<token>) with bot[REDACTED].
+fn redact_url(err: &reqwest::Error) -> String {
+    let msg = err.to_string();
+    // telegram bot token pattern: bot<digits>:<alphanumeric>/<method>
+    if let Some(start) = msg.find("bot")
+        && let Some(slash) = msg[start..].find('/')
+    {
+        let token_part = &msg[start..start + slash];
+        if token_part.contains(':') {
+            return msg.replace(token_part, "bot[REDACTED]");
+        }
+    }
+    msg
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
 
-    #[error("http error: {0}")]
+    #[error("http error: {}", redact_url(.0))]
     Http(#[from] reqwest::Error),
 
     #[error("io error: {0}")]
