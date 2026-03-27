@@ -185,6 +185,8 @@ pub struct InboundMessage {
 #[derive(Debug, Clone)]
 pub struct OutboundMessage {
     pub content: String,
+    /// OGG Opus audio bytes for voice output (sent via sendVoice on telegram, played locally otherwise)
+    pub voice: Option<Vec<u8>>,
 }
 
 #[cfg(test)]

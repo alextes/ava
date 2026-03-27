@@ -121,6 +121,7 @@ impl Agent {
             }
             _ => false,
         };
+        let mut pending_voice: Option<Vec<u8>> = None;
 
         loop {
             // compact context if approaching the model's limit
@@ -157,6 +158,7 @@ impl Agent {
                         content: "conversation context is full. key facts have been preserved \
                             — please start a new session."
                             .into(),
+                        voice: None,
                     }));
                 }
                 Err(Error::RateLimited(ref msg)) => {
@@ -167,6 +169,7 @@ impl Agent {
                             "rate limited by {provider_name}. please try again in a moment.\n\n\
                              details: {msg}"
                         ),
+                        voice: None,
                     }));
                 }
                 Err(Error::BudgetExhausted(ref msg)) => {
@@ -262,6 +265,7 @@ impl Agent {
 
                 return Ok(Some(OutboundMessage {
                     content: response.content,
+                    voice: pending_voice.take(),
                 }));
             }
 
@@ -328,6 +332,7 @@ impl Agent {
 
                 return Ok(Some(OutboundMessage {
                     content: final_content,
+                    voice: pending_voice.take(),
                 }));
             }
 
@@ -373,6 +378,9 @@ impl Agent {
                         tracing::warn!(%e, "failed to persist model selection");
                     }
                     switched_provider = Some(new_provider);
+                }
+                if let Some(voice_bytes) = result.voice {
+                    pending_voice = Some(voice_bytes);
                 }
                 tool_results.push(result.content);
             }
@@ -471,6 +479,7 @@ impl Agent {
                         switch_provider: None,
                         complete: false,
                         compact: false,
+                        voice: None,
                     });
                 }
                 Err(e) => return Err(e),
@@ -513,6 +522,7 @@ impl Agent {
                         switch_provider: None,
                         complete: false,
                         compact: false,
+                        voice: None,
                     });
                 }
             }

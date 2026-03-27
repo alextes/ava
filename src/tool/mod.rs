@@ -6,6 +6,7 @@ mod exec;
 mod filesystem;
 mod memory;
 mod search;
+mod speak;
 mod tasks;
 mod upgrade;
 mod web;
@@ -30,6 +31,7 @@ pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub(crate) use exec::{load_vault_secrets, scrub_vault_secrets};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
+pub use speak::SPEAK_TOOL_NAME;
 pub use tasks::TASKS_TOOL_NAME;
 pub use upgrade::UPGRADE_TOOL_NAME;
 pub use web::{WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME};
@@ -84,6 +86,8 @@ pub struct ToolCallResult {
     pub complete: bool,
     /// signal the agent loop to run context compaction
     pub compact: bool,
+    /// OGG Opus audio bytes produced by the speak tool
+    pub voice: Option<Vec<u8>>,
 }
 
 // --- approver trait ---
@@ -142,6 +146,7 @@ pub fn check_vault_deny(tool_call: &ToolCall) -> Option<ToolCallResult> {
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         })
     } else {
         None
@@ -259,6 +264,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         search::grep_definition(),
         search::glob_definition(),
         browser::browser_definition(),
+        speak::speak_definition(),
         ToolDefinition::BuiltIn {
             tool_type: "text_editor_20250728",
             name: TEXT_EDITOR_TOOL_NAME,
@@ -307,6 +313,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         WEB_SEARCH_TOOL_NAME => {
@@ -316,6 +323,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         WEB_FETCH_TOOL_NAME => {
@@ -325,6 +333,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         GREP_TOOL_NAME => {
@@ -334,6 +343,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         GLOB_TOOL_NAME => {
@@ -343,6 +353,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         TEXT_EDITOR_TOOL_NAME => {
@@ -352,6 +363,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         BROWSER_TOOL_NAME => {
@@ -361,8 +373,10 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
+        SPEAK_TOOL_NAME => Ok(speak::handle_speak(call).await),
         CRON_TOOL_NAME => Ok(cron::handle_cron(db, &call.id, &call.input)),
         TASKS_TOOL_NAME => Ok(tasks::handle_tasks(db, &call.id, &call.input)),
         COMPLETE_TOOL_NAME => Ok(complete::handle_complete(&call.id, &call.input)),
@@ -389,6 +403,7 @@ pub async fn handle_tool_call(
                                 switch_provider: Some(provider),
                                 complete: false,
                                 compact: false,
+                                voice: None,
                             })
                         }
                         Err(err) => Ok(ToolCallResult {
@@ -399,6 +414,7 @@ pub async fn handle_tool_call(
                             switch_provider: None,
                             complete: false,
                             compact: false,
+                            voice: None,
                         }),
                     }
                 }
@@ -407,6 +423,7 @@ pub async fn handle_tool_call(
                     switch_provider: None,
                     complete: false,
                     compact: false,
+                    voice: None,
                 }),
             }
         }
@@ -424,6 +441,7 @@ pub async fn handle_tool_call(
                                 switch_provider: None,
                                 complete: false,
                                 compact: false,
+                                voice: None,
                             });
                         }
                         let mut output = String::new();
@@ -438,6 +456,7 @@ pub async fn handle_tool_call(
                             switch_provider: None,
                             complete: false,
                             compact: false,
+                            voice: None,
                         })
                     }
                     "add" => match input.pattern {
@@ -451,6 +470,7 @@ pub async fn handle_tool_call(
                                 switch_provider: None,
                                 complete: false,
                                 compact: false,
+                                voice: None,
                             })
                         }
                         _ => Ok(ToolCallResult {
@@ -461,6 +481,7 @@ pub async fn handle_tool_call(
                             switch_provider: None,
                             complete: false,
                             compact: false,
+                            voice: None,
                         }),
                     },
                     "delete" => match input.id {
@@ -472,6 +493,7 @@ pub async fn handle_tool_call(
                                 switch_provider: None,
                                 complete: false,
                                 compact: false,
+                                voice: None,
                             })
                         }
                         None => Ok(ToolCallResult {
@@ -479,6 +501,7 @@ pub async fn handle_tool_call(
                             switch_provider: None,
                             complete: false,
                             compact: false,
+                            voice: None,
                         }),
                     },
                     other => Ok(ToolCallResult {
@@ -489,6 +512,7 @@ pub async fn handle_tool_call(
                         switch_provider: None,
                         complete: false,
                         compact: false,
+                        voice: None,
                     }),
                 },
                 Err(err) => Ok(ToolCallResult {
@@ -496,6 +520,7 @@ pub async fn handle_tool_call(
                     switch_provider: None,
                     complete: false,
                     compact: false,
+                    voice: None,
                 }),
             }
         }
@@ -517,6 +542,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         _ => {
@@ -529,6 +555,7 @@ pub async fn handle_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
     }
@@ -613,6 +640,7 @@ async fn handle_mcp_tool_call(
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         });
     };
 
@@ -627,6 +655,7 @@ async fn handle_mcp_tool_call(
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         });
     };
 
@@ -653,6 +682,7 @@ async fn handle_mcp_tool_call(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         Err(e) => Ok(ToolCallResult {
@@ -660,6 +690,7 @@ async fn handle_mcp_tool_call(
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         }),
     }
 }

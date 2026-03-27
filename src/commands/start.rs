@@ -155,7 +155,10 @@ async fn agent_loop(
             let msg = handle_switch_command(args, client.clone(), &db);
             send_response(
                 queued.sink,
-                crate::message::OutboundMessage { content: msg },
+                crate::message::OutboundMessage {
+                    content: msg,
+                    voice: None,
+                },
             )
             .await;
             continue;
@@ -165,7 +168,10 @@ async fn agent_loop(
             let msg = handle_rules_command(args, &db);
             send_response(
                 queued.sink,
-                crate::message::OutboundMessage { content: msg },
+                crate::message::OutboundMessage {
+                    content: msg,
+                    voice: None,
+                },
             )
             .await;
             continue;

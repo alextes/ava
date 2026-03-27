@@ -25,6 +25,7 @@ pub fn handle_upgrade(call_id: &str) -> ToolCallResult {
         switch_provider: None,
         complete: false,
         compact: false,
+        voice: None,
     }
 }
 

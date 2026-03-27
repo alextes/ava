@@ -69,6 +69,7 @@ pub fn handle_cron(db: &Database, call_id: &str, input: &serde_json::Value) -> T
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             };
         }
     };
@@ -82,6 +83,7 @@ pub fn handle_cron(db: &Database, call_id: &str, input: &serde_json::Value) -> T
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         },
     }
 }
@@ -95,6 +97,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             };
         }
     };
@@ -107,6 +110,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             };
         }
     };
@@ -124,6 +128,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                     switch_provider: None,
                     complete: false,
                     compact: false,
+                    voice: None,
                 };
             }
         };
@@ -139,6 +144,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                     switch_provider: None,
                     complete: false,
                     compact: false,
+                    voice: None,
                 };
             }
         };
@@ -164,6 +170,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                     switch_provider: None,
                     complete: false,
                     compact: false,
+                    voice: None,
                 };
             }
         }
@@ -176,6 +183,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         };
     };
 
@@ -194,6 +202,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             }
         }
         Err(e) => ToolCallResult {
@@ -201,6 +210,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         },
     }
 }
@@ -214,6 +224,7 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
                     switch_provider: None,
                     complete: false,
                     compact: false,
+                    voice: None,
                 };
             }
             let mut output = String::new();
@@ -236,6 +247,7 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             }
         }
         Err(e) => ToolCallResult {
@@ -243,6 +255,7 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         },
     }
 }
@@ -256,6 +269,7 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             };
         }
     };
@@ -266,18 +280,21 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         },
         Ok(false) => ToolCallResult {
             content: MessageContent::tool_result(call_id, "not found"),
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         },
         Err(e) => ToolCallResult {
             content: MessageContent::tool_result(call_id, format!("error: {e}")),
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         },
     }
 }

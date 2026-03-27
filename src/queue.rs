@@ -29,9 +29,19 @@ pub fn message_queue(buffer: usize) -> (MessageSender, MessageReceiver) {
 pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
     match sink {
         ResponseSink::Telegram { chat_id, bot } => {
-            let html = markdown_to_telegram_html(&outbound.content);
-            if let Err(e) = bot.send_message(chat_id, &html).await {
-                tracing::error!(%e, chat_id, "failed to send telegram response");
+            // send voice message if present
+            if let Some(voice_bytes) = outbound.voice {
+                if let Err(e) = bot.send_voice(chat_id, voice_bytes).await {
+                    tracing::error!(%e, chat_id, "failed to send voice message");
+                }
+            }
+
+            // send text response (always — voice is supplementary)
+            if !outbound.content.is_empty() {
+                let html = markdown_to_telegram_html(&outbound.content);
+                if let Err(e) = bot.send_message(chat_id, &html).await {
+                    tracing::error!(%e, chat_id, "failed to send telegram response");
+                }
             }
         }
     }
@@ -41,6 +51,7 @@ pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
 pub async fn send_error(sink: ResponseSink, msg: &str) {
     let outbound = OutboundMessage {
         content: msg.to_string(),
+        voice: None,
     };
     send_response(sink, outbound).await;
 }

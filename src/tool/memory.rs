@@ -137,6 +137,7 @@ pub(crate) async fn handle_remember(
                         switch_provider: None,
                         complete: false,
                         compact: false,
+                        voice: None,
                     });
                 }
             };
@@ -151,6 +152,7 @@ pub(crate) async fn handle_remember(
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         Err(err) => Ok(ToolCallResult {
@@ -158,6 +160,7 @@ pub(crate) async fn handle_remember(
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         }),
     }
 }
@@ -186,6 +189,7 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
                             switch_provider: None,
                             complete: false,
                             compact: false,
+                            voice: None,
                         });
                     }
                 },
@@ -198,6 +202,7 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
                         switch_provider: None,
                         complete: false,
                         compact: false,
+                        voice: None,
                     });
                 }
             };
@@ -207,6 +212,7 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         Err(err) => Ok(ToolCallResult {
@@ -214,6 +220,7 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         }),
     }
 }
@@ -229,6 +236,7 @@ pub(crate) async fn handle_recall(db: &Database, call: &ToolCall) -> Result<Tool
                     switch_provider: None,
                     complete: false,
                     compact: false,
+                    voice: None,
                 });
             }
             let mut output = String::new();
@@ -257,6 +265,7 @@ pub(crate) async fn handle_recall(db: &Database, call: &ToolCall) -> Result<Tool
                 switch_provider: None,
                 complete: false,
                 compact: false,
+                voice: None,
             })
         }
         Err(err) => Ok(ToolCallResult {
@@ -264,6 +273,7 @@ pub(crate) async fn handle_recall(db: &Database, call: &ToolCall) -> Result<Tool
             switch_provider: None,
             complete: false,
             compact: false,
+            voice: None,
         }),
     }
 }

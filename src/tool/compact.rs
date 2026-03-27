@@ -28,6 +28,7 @@ pub fn handle_compact_context(call_id: &str) -> ToolCallResult {
         switch_provider: None,
         complete: false,
         compact: true,
+        voice: None,
     }
 }
 
