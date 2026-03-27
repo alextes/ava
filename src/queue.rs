@@ -30,10 +30,10 @@ pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
     match sink {
         ResponseSink::Telegram { chat_id, bot } => {
             // send voice message if present
-            if let Some(voice_bytes) = outbound.voice {
-                if let Err(e) = bot.send_voice(chat_id, voice_bytes).await {
-                    tracing::error!(%e, chat_id, "failed to send voice message");
-                }
+            if let Some(voice_bytes) = outbound.voice
+                && let Err(e) = bot.send_voice(chat_id, voice_bytes).await
+            {
+                tracing::error!(%e, chat_id, "failed to send voice message");
             }
 
             // send text response (always — voice is supplementary)

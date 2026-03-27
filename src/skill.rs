@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::config;
 
 /// a secret dependency declared in a skill's frontmatter.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct SkillSecret {
     /// env var name to inject (e.g. GMAIL_CLIENT_ID)
