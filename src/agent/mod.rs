@@ -258,10 +258,12 @@ impl Agent {
             }
 
             if response.tool_calls.is_empty() {
-                // persist the final assistant response
-                let assistant_content = vec![MessageContent::text(&response.content)];
-                self.db
-                    .append_message(session_id, "assistant", &assistant_content, None)?;
+                // persist the final assistant response (skip empty content to avoid API rejection)
+                if !response.content.is_empty() {
+                    let assistant_content = vec![MessageContent::text(&response.content)];
+                    self.db
+                        .append_message(session_id, "assistant", &assistant_content, None)?;
+                }
 
                 return Ok(Some(OutboundMessage {
                     content: response.content,

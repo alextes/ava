@@ -65,6 +65,14 @@ impl Database {
             };
             let content: Vec<MessageContent> = serde_json::from_str(&content_json)
                 .map_err(|e| Error::Provider(format!("failed to deserialize message: {e}")))?;
+            // filter out empty text blocks that would be rejected by the API
+            let content: Vec<MessageContent> = content
+                .into_iter()
+                .filter(|c| !matches!(c, MessageContent::Text { text } if text.is_empty()))
+                .collect();
+            if content.is_empty() {
+                continue; // skip messages that become empty after filtering
+            }
             result.push(Message { role, content });
         }
 
