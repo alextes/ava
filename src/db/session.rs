@@ -65,13 +65,12 @@ impl Database {
             };
             let content: Vec<MessageContent> = serde_json::from_str(&content_json)
                 .map_err(|e| Error::Provider(format!("failed to deserialize message: {e}")))?;
-            // filter out empty text blocks that would be rejected by the API
-            let content: Vec<MessageContent> = content
-                .into_iter()
-                .filter(|c| !matches!(c, MessageContent::Text { text } if text.is_empty()))
-                .collect();
-            if content.is_empty() {
-                continue; // skip messages that become empty after filtering
+            if content
+                .iter()
+                .any(|c| matches!(c, MessageContent::Text { text } if text.is_empty()))
+            {
+                tracing::warn!("skipping message with empty text block (role={role_str})");
+                continue;
             }
             result.push(Message { role, content });
         }
@@ -179,6 +178,15 @@ impl Database {
         content: &[MessageContent],
         channel: Option<&str>,
     ) -> Result<(), Error> {
+        // guard: never persist empty text blocks — the API rejects them
+        if content
+            .iter()
+            .any(|c| matches!(c, MessageContent::Text { text } if text.is_empty()))
+        {
+            tracing::warn!(role, "refusing to persist message with empty text block");
+            return Ok(());
+        }
+
         let content_json = serde_json::to_string(content)
             .map_err(|e| Error::Provider(format!("failed to serialize message: {e}")))?;
 
