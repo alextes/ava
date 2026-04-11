@@ -6,6 +6,7 @@ pub(crate) fn run_skills() {
     if skills.is_empty() {
         println!("no skills installed");
         println!("add skills to ~/.ava/skills/<name>/SKILL.md");
+        println!("(skills from ~/.claude/skills/ are also loaded)");
         return;
     }
 

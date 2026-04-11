@@ -47,7 +47,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         }
     };
 
-    // load skills from ~/.ava/skills/
+    // load skills from ~/.ava/skills/ and ~/.claude/skills/
     let skills = Arc::new(crate::skill::load_skills());
     if !skills.is_empty() {
         tracing::info!(count = skills.len(), "loaded skills");

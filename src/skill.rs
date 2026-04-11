@@ -4,7 +4,8 @@ use serde::Deserialize;
 
 use crate::config;
 
-/// a skill loaded from ~/.ava/skills/<name>/SKILL.md.
+/// a skill loaded from ~/.ava/skills/<name>/SKILL.md or
+/// ~/.claude/skills/<name>/SKILL.md.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Skill {
@@ -58,11 +59,40 @@ fn parse_skill(content: &str) -> Result<Skill, String> {
     })
 }
 
-/// load all skills from ~/.ava/skills/.
+/// load all skills from ~/.ava/skills/ and ~/.claude/skills/.
 /// each skill is a directory containing a SKILL.md file.
+/// on name collision, the skill from ~/.ava/skills/ wins.
 pub fn load_skills() -> Vec<Skill> {
-    let skills_dir = config::ava_home_dir().join("skills");
-    load_skills_from(&skills_dir)
+    let ava_skills = load_skills_from(&config::ava_home_dir().join("skills"));
+    let claude_skills = load_skills_from(&claude_skills_dir());
+    merge_skills(ava_skills, claude_skills)
+}
+
+/// returns path to ~/.claude/skills/ (claude code's skills directory).
+fn claude_skills_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".claude")
+        .join("skills")
+}
+
+/// merge two skill lists, with `primary` winning on name collisions.
+/// result is sorted by name.
+fn merge_skills(mut primary: Vec<Skill>, secondary: Vec<Skill>) -> Vec<Skill> {
+    let primary_names: std::collections::HashSet<String> =
+        primary.iter().map(|s| s.name.clone()).collect();
+    for skill in secondary {
+        if primary_names.contains(&skill.name) {
+            tracing::info!(
+                name = %skill.name,
+                "skipping shadowed skill (same name already loaded from higher-priority source)"
+            );
+            continue;
+        }
+        primary.push(skill);
+    }
+    primary.sort_by(|a, b| a.name.cmp(&b.name));
+    primary
 }
 
 fn load_skills_from(skills_dir: &Path) -> Vec<Skill> {
@@ -213,5 +243,35 @@ this skill is user-only.
     fn test_load_skills_nonexistent_dir() {
         let skills = load_skills_from(Path::new("/nonexistent/path"));
         assert!(skills.is_empty());
+    }
+
+    fn skill(name: &str, body: &str) -> Skill {
+        Skill {
+            name: name.into(),
+            description: format!("desc for {name}"),
+            user_invocable: false,
+            disable_model_invocation: false,
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn test_merge_skills_no_collisions() {
+        let primary = vec![skill("alpha", "a"), skill("charlie", "c")];
+        let secondary = vec![skill("bravo", "b")];
+        let merged = merge_skills(primary, secondary);
+        let names: Vec<_> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn test_merge_skills_primary_wins_on_collision() {
+        let primary = vec![skill("db", "ava version")];
+        let secondary = vec![skill("db", "claude version"), skill("other", "s")];
+        let merged = merge_skills(primary, secondary);
+        assert_eq!(merged.len(), 2);
+        let db = merged.iter().find(|s| s.name == "db").unwrap();
+        assert_eq!(db.body, "ava version");
+        assert!(merged.iter().any(|s| s.name == "other"));
     }
 }
