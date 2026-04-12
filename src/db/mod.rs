@@ -1,4 +1,5 @@
 mod access;
+mod channels;
 mod memory;
 mod migrations;
 mod rules;
@@ -64,7 +65,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -75,7 +76,7 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -177,7 +178,7 @@ mod tests {
 
         // verify schema version is latest
         let version = migrations::schema_version(&conn).unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
 
         // verify facts table is gone
         let table_exists: bool = conn

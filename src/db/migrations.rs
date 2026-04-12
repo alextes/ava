@@ -153,6 +153,16 @@ const MIGRATIONS: &[&str] = &[
         added_by TEXT
     );
     "#,
+    // v12: channels registry
+    r#"
+    CREATE TABLE IF NOT EXISTS channels (
+        chat_id INTEGER PRIMARY KEY,
+        chat_type TEXT NOT NULL,
+        title TEXT,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

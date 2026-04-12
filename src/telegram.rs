@@ -25,6 +25,32 @@ impl TelegramBot {
         Ok(Self::new(token))
     }
 
+    /// fetch metadata about a chat the bot is a member of.
+    #[tracing::instrument(skip(self))]
+    pub async fn get_chat(&self, chat_id: i64) -> Result<Chat, Error> {
+        let params = serde_json::json!({ "chat_id": chat_id });
+        let response: ApiResponse<Chat> = self
+            .client
+            .post(self.api_url("getChat"))
+            .json(&params)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            response
+                .result
+                .ok_or_else(|| Error::Telegram("getChat returned no result".into()))
+        } else {
+            Err(Error::Telegram(
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".into()),
+            ))
+        }
+    }
+
     /// fetch the bot's own user profile via the getMe endpoint.
     #[allow(dead_code)]
     #[tracing::instrument(skip(self))]
@@ -59,7 +85,7 @@ impl TelegramBot {
         let params = GetUpdatesParams {
             timeout: 30,
             offset,
-            allowed_updates: Some(vec!["message", "callback_query"]),
+            allowed_updates: Some(vec!["message", "callback_query", "my_chat_member"]),
         };
 
         let response: ApiResponse<Vec<Update>> = self
@@ -334,6 +360,18 @@ pub struct Update {
     pub update_id: i64,
     pub message: Option<Message>,
     pub callback_query: Option<CallbackQuery>,
+    pub my_chat_member: Option<ChatMemberUpdated>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatMemberUpdated {
+    pub chat: Chat,
+    pub new_chat_member: ChatMember,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatMember {
+    pub status: String,
 }
 
 #[derive(Debug, Deserialize)]

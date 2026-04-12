@@ -285,6 +285,56 @@ async fn telegram_producer(
         for update in updates {
             offset = Some(update.update_id + 1);
 
+            // handle bot membership changes (added/removed from chats)
+            if let Some(membership) = update.my_chat_member {
+                let chat = &membership.chat;
+                let status = &membership.new_chat_member.status;
+                match status.as_str() {
+                    "member" | "administrator" => {
+                        // bot was added — fetch full metadata via getChat
+                        match bot.get_chat(chat.id).await {
+                            Ok(full_chat) => {
+                                let chat_type = full_chat.chat_type.as_deref().unwrap_or("unknown");
+                                let _ = db.upsert_channel(
+                                    chat.id,
+                                    chat_type,
+                                    full_chat.title.as_deref(),
+                                );
+                                tracing::info!(
+                                    chat_id = chat.id,
+                                    chat_type,
+                                    title = full_chat.title.as_deref().unwrap_or("(none)"),
+                                    "bot added to chat"
+                                );
+                            }
+                            Err(e) => {
+                                // fall back to whatever we have from the update
+                                let chat_type = chat.chat_type.as_deref().unwrap_or("unknown");
+                                let _ =
+                                    db.upsert_channel(chat.id, chat_type, chat.title.as_deref());
+                                tracing::warn!(
+                                    chat_id = chat.id,
+                                    %e,
+                                    "bot added to chat but getChat failed, using partial metadata"
+                                );
+                            }
+                        }
+                    }
+                    "left" | "kicked" => {
+                        let _ = db.remove_channel(chat.id);
+                        tracing::info!(chat_id = chat.id, status, "bot removed from chat");
+                    }
+                    _ => {
+                        tracing::debug!(
+                            chat_id = chat.id,
+                            status,
+                            "ignoring unhandled membership status"
+                        );
+                    }
+                }
+                continue;
+            }
+
             // handle callback queries (approval button presses)
             if let Some(callback) = update.callback_query {
                 if let Some(data) = &callback.data {
@@ -343,6 +393,9 @@ async fn telegram_producer(
                     continue;
                 }
             }
+
+            // track channel activity
+            let _ = db.upsert_channel(chat_id, chat_type, msg.chat.title.as_deref());
 
             // push to queue instead of spawning a task
             let queued = QueuedMessage {
