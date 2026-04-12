@@ -25,6 +25,31 @@ impl TelegramBot {
         Ok(Self::new(token))
     }
 
+    /// fetch the bot's own user profile via the getMe endpoint.
+    #[allow(dead_code)]
+    #[tracing::instrument(skip(self))]
+    pub async fn get_me(&self) -> Result<User, Error> {
+        let response: ApiResponse<User> = self
+            .client
+            .post(self.api_url("getMe"))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            response
+                .result
+                .ok_or_else(|| Error::Telegram("getMe returned no result".into()))
+        } else {
+            Err(Error::Telegram(
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".into()),
+            ))
+        }
+    }
+
     fn api_url(&self, method: &str) -> String {
         format!("{}{}/{}", API_BASE, self.token, method)
     }
@@ -313,21 +338,47 @@ pub struct Update {
 
 #[derive(Debug, Deserialize)]
 pub struct Message {
-    #[allow(dead_code)]
     pub message_id: i64,
     pub from: Option<User>,
     pub chat: Chat,
     pub text: Option<String>,
+    #[allow(dead_code)]
+    pub reply_to_message: Option<Box<Message>>,
+    #[allow(dead_code)]
+    pub entities: Option<Vec<MessageEntity>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageEntity {
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    pub entity_type: String,
+    #[allow(dead_code)]
+    pub offset: i64,
+    #[allow(dead_code)]
+    pub length: i64,
+    /// present for "text_mention" entities
+    #[allow(dead_code)]
+    pub user: Option<User>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct User {
     pub id: i64,
+    #[allow(dead_code)]
+    pub username: Option<String>,
+    #[allow(dead_code)]
+    pub is_bot: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Chat {
     pub id: i64,
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    pub chat_type: Option<String>,
+    #[allow(dead_code)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
