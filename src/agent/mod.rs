@@ -142,9 +142,10 @@ impl Agent {
                 let provider = switched_provider.as_ref().unwrap_or(&self.provider);
                 match compaction::compact_messages(provider, messages.clone(), prior_summary).await
                 {
-                    Ok((compacted, summary)) => {
-                        messages = compacted;
+                    Ok((compacted, summary, split_at)) => {
+                        self.persist_compaction_cursor(session_id, split_at)?;
                         self.db.set_session_summary(session_id, &summary)?;
+                        messages = compacted;
                         compaction_count += 1;
                         tracing::info!(compaction_count, "compacted context");
                     }
@@ -446,9 +447,10 @@ impl Agent {
                 let provider = switched_provider.as_ref().unwrap_or(&self.provider);
                 match compaction::compact_messages(provider, messages.clone(), prior_summary).await
                 {
-                    Ok((compacted, summary)) => {
-                        messages = compacted;
+                    Ok((compacted, summary, split_at)) => {
+                        self.persist_compaction_cursor(session_id, split_at)?;
                         self.db.set_session_summary(session_id, &summary)?;
+                        messages = compacted;
                         compaction_count += 1;
                         tracing::info!(compaction_count, "agent-requested compaction");
                     }
@@ -645,6 +647,32 @@ impl Agent {
             .append_message(session_id, "user", &synthetic, None)?;
         messages.push(Message::user_with_content(synthetic));
 
+        Ok(())
+    }
+
+    /// advance the compaction cursor after a successful compaction.
+    /// `split_at` is the number of messages consumed from the in-memory vec.
+    /// if a cursor already existed, the first message was the synthetic summary
+    /// (not in DB), so we offset by 1.
+    fn persist_compaction_cursor(&self, session_id: i64, split_at: usize) -> Result<(), Error> {
+        if split_at == 0 {
+            return Ok(());
+        }
+        let current_cursor = self.db.get_compaction_cursor(session_id)?;
+        // if cursor was set, the first in-memory message was the synthetic summary,
+        // which has no DB row. so the DB messages consumed = split_at - 1.
+        let db_consumed = if current_cursor.is_some() {
+            split_at.saturating_sub(1)
+        } else {
+            split_at
+        };
+        if db_consumed == 0 {
+            return Ok(());
+        }
+        let after_id = current_cursor.unwrap_or(0);
+        if let Some(new_cursor) = self.db.nth_message_id(session_id, after_id, db_consumed)? {
+            self.db.set_compaction_cursor(session_id, new_cursor)?;
+        }
         Ok(())
     }
 

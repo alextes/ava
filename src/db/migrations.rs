@@ -219,6 +219,10 @@ const MIGRATIONS: &[&str] = &[
 
     COMMIT;
     "#,
+    // v14: compaction cursor — skip messages already summarized
+    r#"
+    ALTER TABLE sessions ADD COLUMN compacted_before_id INTEGER;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

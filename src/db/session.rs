@@ -39,23 +39,42 @@ impl Database {
     }
 
     /// load all messages for a session, oldest first
+    /// load messages for the LLM context. if a compaction cursor is set,
+    /// skips old messages and prepends the saved summary instead.
     pub fn load_messages(&self, session_id: i64) -> Result<Vec<Message>, Error> {
         let conn = self.conn.lock().unwrap();
+
+        // check for compaction cursor + summary
+        let (cursor, summary): (Option<i64>, Option<String>) = conn.query_row(
+            "SELECT compacted_before_id, summary FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
         let mut stmt = conn.prepare(
             "SELECT role, content FROM messages
-             WHERE session_id = ?1
+             WHERE session_id = ?1 AND id > ?2
              ORDER BY created_at ASC, id ASC",
         )?;
 
+        let after_id = cursor.unwrap_or(0);
         let messages = stmt
-            .query_map([session_id], |row| {
+            .query_map(rusqlite::params![session_id, after_id], |row| {
                 let role_str: String = row.get(0)?;
                 let content_json: String = row.get(1)?;
                 Ok((role_str, content_json))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut result = Vec::with_capacity(messages.len());
+        let mut result = Vec::with_capacity(messages.len() + 1);
+
+        // prepend summary if compaction has occurred
+        if let (Some(_), Some(summary_text)) = (cursor, &summary) {
+            result.push(Message::user(format!(
+                "[conversation summary]\n{summary_text}"
+            )));
+        }
+
         for (role_str, content_json) in messages {
             let role = match role_str.as_str() {
                 // system messages are sent to the API as user role
@@ -378,6 +397,52 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// set the compaction cursor — messages with id <= this are considered summarized.
+    pub fn set_compaction_cursor(&self, session_id: i64, before_id: i64) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET compacted_before_id = ?1 WHERE id = ?2",
+            rusqlite::params![before_id, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// get the current compaction cursor for a session.
+    pub fn get_compaction_cursor(&self, session_id: i64) -> Result<Option<i64>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let cursor: Option<i64> = conn.query_row(
+            "SELECT compacted_before_id FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        Ok(cursor)
+    }
+
+    /// get the id of the nth message (1-indexed) after a given cursor.
+    /// used to compute the new compaction cursor after summarization.
+    pub fn nth_message_id(
+        &self,
+        session_id: i64,
+        after_id: i64,
+        n: usize,
+    ) -> Result<Option<i64>, Error> {
+        if n == 0 {
+            return Ok(None);
+        }
+        let conn = self.conn.lock().unwrap();
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages
+                 WHERE session_id = ?1 AND id > ?2
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT 1 OFFSET ?3",
+                rusqlite::params![session_id, after_id, (n - 1) as i64],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(id)
+    }
 }
 
 #[cfg(test)]
@@ -593,5 +658,151 @@ mod tests {
             db.get_session_summary(sid).unwrap().as_deref(),
             Some("updated summary")
         );
+    }
+
+    #[test]
+    fn test_compaction_cursor_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        // default is none
+        assert_eq!(db.get_compaction_cursor(sid).unwrap(), None);
+
+        // set and get
+        db.set_compaction_cursor(sid, 42).unwrap();
+        assert_eq!(db.get_compaction_cursor(sid).unwrap(), Some(42));
+
+        // advance
+        db.set_compaction_cursor(sid, 100).unwrap();
+        assert_eq!(db.get_compaction_cursor(sid).unwrap(), Some(100));
+    }
+
+    #[test]
+    fn test_load_messages_respects_cursor() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        // insert 6 messages
+        for i in 1..=6 {
+            let role = if i % 2 == 1 { "user" } else { "assistant" };
+            db.append_message(
+                sid,
+                role,
+                &[MessageContent::text(format!("msg {i}"))],
+                Some("cli"),
+            )
+            .unwrap();
+        }
+
+        // find the 4th message id (we'll compact everything up to it)
+        let all = db.load_messages_with_ids(sid).unwrap();
+        assert_eq!(all.len(), 6);
+        let cursor_id = all[3].0; // 4th message
+
+        // set cursor + summary
+        db.set_compaction_cursor(sid, cursor_id).unwrap();
+        db.set_session_summary(sid, "summary of msgs 1-4").unwrap();
+
+        // load_messages should return [summary, msg5, msg6]
+        let msgs = db.load_messages(sid).unwrap();
+        assert_eq!(msgs.len(), 3);
+
+        // first is the synthetic summary
+        match &msgs[0].content[0] {
+            MessageContent::Text { text } => {
+                assert!(text.contains("[conversation summary]"));
+                assert!(text.contains("summary of msgs 1-4"));
+            }
+            _ => panic!("expected text"),
+        }
+
+        // remaining are the real messages after the cursor
+        match &msgs[1].content[0] {
+            MessageContent::Text { text } => assert_eq!(text, "msg 5"),
+            _ => panic!("expected text"),
+        }
+        match &msgs[2].content[0] {
+            MessageContent::Text { text } => assert_eq!(text, "msg 6"),
+            _ => panic!("expected text"),
+        }
+    }
+
+    #[test]
+    fn test_load_messages_no_cursor_unchanged() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        db.append_message(sid, "user", &[MessageContent::text("hello")], Some("cli"))
+            .unwrap();
+        db.append_message(sid, "assistant", &[MessageContent::text("hi")], None)
+            .unwrap();
+
+        // no cursor set — should behave exactly as before
+        let msgs = db.load_messages(sid).unwrap();
+        assert_eq!(msgs.len(), 2);
+        match &msgs[0].content[0] {
+            MessageContent::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected text"),
+        }
+    }
+
+    #[test]
+    fn test_nth_message_id() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        for i in 1..=5 {
+            db.append_message(
+                sid,
+                "user",
+                &[MessageContent::text(format!("msg {i}"))],
+                Some("cli"),
+            )
+            .unwrap();
+        }
+
+        let all = db.load_messages_with_ids(sid).unwrap();
+        let id1 = all[0].0;
+        let id3 = all[2].0;
+        let id5 = all[4].0;
+
+        // 1st message after id 0
+        assert_eq!(db.nth_message_id(sid, 0, 1).unwrap(), Some(id1));
+        // 3rd message after id 0
+        assert_eq!(db.nth_message_id(sid, 0, 3).unwrap(), Some(id3));
+        // 5th message after id 0
+        assert_eq!(db.nth_message_id(sid, 0, 5).unwrap(), Some(id5));
+        // 6th doesn't exist
+        assert_eq!(db.nth_message_id(sid, 0, 6).unwrap(), None);
+        // 0th is none
+        assert_eq!(db.nth_message_id(sid, 0, 0).unwrap(), None);
+        // 2nd message after id1 should be id3
+        assert_eq!(db.nth_message_id(sid, id1, 2).unwrap(), Some(id3));
+    }
+
+    #[test]
+    fn test_load_recent_messages_unaffected_by_cursor() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        for i in 1..=4 {
+            let role = if i % 2 == 1 { "user" } else { "assistant" };
+            db.append_message(
+                sid,
+                role,
+                &[MessageContent::text(format!("msg {i}"))],
+                Some("cli"),
+            )
+            .unwrap();
+        }
+
+        let all = db.load_messages_with_ids(sid).unwrap();
+        let cursor_id = all[1].0;
+        db.set_compaction_cursor(sid, cursor_id).unwrap();
+        db.set_session_summary(sid, "summary").unwrap();
+
+        // load_recent_messages should still return all 4 messages
+        let recent = db.load_recent_messages(sid, 10).unwrap();
+        assert_eq!(recent.len(), 4);
     }
 }

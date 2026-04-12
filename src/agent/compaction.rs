@@ -45,16 +45,17 @@ pub fn needs_compaction(
 /// 1. splits messages: keeps the most recent ~20% of messages, everything else is "old"
 /// 2. respects tool pairs: never splits between an assistant tool_use and its user tool_result
 /// 3. calls `provider.complete()` with a summarization prompt to get a summary
-/// 4. returns `[summary_message] ++ recent_messages` and the summary text
+/// 4. returns `(compacted_messages, summary_text, split_at)` where `split_at`
+///    is the number of old messages that were summarized (0 if nothing was compacted)
 pub async fn compact_messages(
     provider: &AnyProvider,
     messages: Vec<Message>,
     prior_summary: Option<String>,
-) -> Result<(Vec<Message>, String), Error> {
+) -> Result<(Vec<Message>, String, usize), Error> {
     let total = messages.len();
     if total <= 2 {
         // nothing meaningful to compact
-        return Ok((messages, prior_summary.unwrap_or_default()));
+        return Ok((messages, prior_summary.unwrap_or_default(), 0));
     }
 
     // keep ~20% of messages as recent, at least 2
@@ -69,7 +70,7 @@ pub async fn compact_messages(
 
     if split_at == 0 {
         // can't compact — all messages are recent
-        return Ok((messages, prior_summary.unwrap_or_default()));
+        return Ok((messages, prior_summary.unwrap_or_default(), 0));
     }
 
     let (old_messages, recent_messages) = messages.split_at(split_at);
@@ -135,7 +136,7 @@ pub async fn compact_messages(
     compacted.push(Message::user(&summary_text));
     compacted.extend_from_slice(recent_messages);
 
-    Ok((compacted, summary))
+    Ok((compacted, summary, split_at))
 }
 
 /// check if a message is a user message containing only tool results
@@ -203,7 +204,7 @@ mod tests {
             Message::assistant("you're welcome"),
         ];
 
-        let (compacted, summary) = compact_messages(&provider, messages, None).await.unwrap();
+        let (compacted, summary, _) = compact_messages(&provider, messages, None).await.unwrap();
 
         // should have summary + recent messages
         assert!(!compacted.is_empty());
@@ -244,7 +245,7 @@ mod tests {
         messages.push(Message::assistant("based on the search..."));
         messages.push(Message::user("ok thanks"));
 
-        let (compacted, _) = compact_messages(&provider, messages, None).await.unwrap();
+        let (compacted, _, _) = compact_messages(&provider, messages, None).await.unwrap();
 
         // verify no tool_result message is the first of the recent messages
         // (the split should not break tool pairs)
@@ -290,7 +291,7 @@ mod tests {
             Message::assistant("reply 3"),
         ];
 
-        let (compacted, summary) =
+        let (compacted, summary, _) =
             compact_messages(&provider, messages, Some("old summary content".into()))
                 .await
                 .unwrap();
@@ -309,12 +310,13 @@ mod tests {
 
         let messages = vec![Message::user("hello"), Message::assistant("hi")];
 
-        let (compacted, _) = compact_messages(&provider, messages.clone(), None)
+        let (compacted, _, split_at) = compact_messages(&provider, messages.clone(), None)
             .await
             .unwrap();
 
         // should return messages unchanged
         assert_eq!(compacted.len(), 2);
+        assert_eq!(split_at, 0);
     }
 
     #[test]
