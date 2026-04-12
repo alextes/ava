@@ -3,7 +3,6 @@ use crate::error::Error;
 use super::Database;
 
 impl Database {
-    #[allow(dead_code)]
     pub fn is_user_allowed(&self, user_id: i64) -> Result<bool, Error> {
         let conn = self.conn.lock().unwrap();
         let exists: bool = conn.query_row(
@@ -14,7 +13,6 @@ impl Database {
         Ok(exists)
     }
 
-    #[allow(dead_code)]
     pub fn is_chat_allowed(&self, chat_id: i64) -> Result<bool, Error> {
         let conn = self.conn.lock().unwrap();
         let exists: bool = conn.query_row(

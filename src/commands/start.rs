@@ -95,16 +95,21 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     // start telegram if configured
     if std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
         let bot = Arc::new(TelegramBot::from_env()?);
-        let allowed_ids = db.list_allowed_users().unwrap_or_default();
+        let allowed_users = db.list_allowed_users().unwrap_or_default();
 
-        if allowed_ids.is_empty() {
-            tracing::warn!("no allowed users configured, bot will ignore all messages");
+        if allowed_users.is_empty() {
+            tracing::warn!("no allowed users configured, bot will ignore all DMs");
         } else {
-            tracing::info!(?allowed_ids, "loaded user whitelist from DB");
+            tracing::info!(?allowed_users, "loaded user whitelist from DB");
+        }
+
+        let allowed_chats = db.list_allowed_chats().unwrap_or_default();
+        if !allowed_chats.is_empty() {
+            tracing::info!(?allowed_chats, "loaded chat whitelist from DB");
         }
 
         // spawn scheduler if we have a default chat_id
-        if let Some(&chat_id) = allowed_ids.first() {
+        if let Some(&chat_id) = allowed_users.first() {
             let db_sched = Arc::clone(&db);
             let tx_sched = tx.clone();
             let bot_sched = Arc::clone(&bot);
@@ -118,7 +123,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             bot,
             tx.clone(),
             Arc::clone(&pending),
-            allowed_ids,
+            Arc::clone(&db),
         )));
     } else {
         tracing::info!("TELEGRAM_BOT_TOKEN not set, skipping telegram");
@@ -263,7 +268,7 @@ async fn telegram_producer(
     bot: Arc<TelegramBot>,
     tx: crate::queue::MessageSender,
     pending: Arc<PendingApprovals>,
-    allowed_ids: Vec<i64>,
+    db: Arc<Database>,
 ) {
     let mut offset: Option<i64> = None;
 
@@ -314,12 +319,29 @@ async fn telegram_producer(
 
             let chat_id = msg.chat.id;
             let user_id = msg.from.map(|u| u.id);
+            let chat_type = msg.chat.chat_type.as_deref().unwrap_or("private");
+            let is_group = chat_type == "group" || chat_type == "supergroup";
 
-            // check whitelist
-            let is_allowed = user_id.map(|id| allowed_ids.contains(&id)).unwrap_or(false);
-            if !is_allowed {
-                tracing::warn!(?user_id, "ignoring message from unauthorized user");
-                continue;
+            // pre-agent authorization — no LLM sees rejected messages
+            if is_group {
+                // group chats: check chat_id whitelist
+                let chat_allowed = db.is_chat_allowed(chat_id).unwrap_or(false);
+                if !chat_allowed {
+                    tracing::debug!(chat_id, "ignoring message from non-whitelisted chat");
+                    continue;
+                }
+            } else {
+                // DMs: check user_id whitelist
+                let user_allowed = user_id
+                    .map(|id| db.is_user_allowed(id).unwrap_or(false))
+                    .unwrap_or(false);
+                if !user_allowed {
+                    tracing::warn!(?user_id, "rejecting DM from non-whitelisted user");
+                    let _ = bot
+                        .send_message(chat_id, "DM not available for this user.")
+                        .await;
+                    continue;
+                }
             }
 
             // push to queue instead of spawning a task
