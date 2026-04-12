@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0]
+
+### Added
+- **group chat support**: mention-only mode for telegram groups. bot responds only when @mentioned, replied to, or addressed by name. per-chat message ring buffer provides conversation context when triggered. configurable via `TELEGRAM_ALLOWED_CHATS` and `TELEGRAM_BOT_NAME` env vars
+- **multi-channel awareness**: channels DB table tracks all chats the bot is in via `my_chat_member` events. channel list shown in system prompt. `channel_history` tool for cross-channel context on demand
+- **authorization overhaul**: DB-backed user and chat whitelists (seeded from env vars). pre-agent auth check — rejected messages never touch the LLM. DMs: user whitelist with static rejection message. groups: chat_id whitelist with silent drop. `manage_access` tool for self-service whitelisting
+- **OpenRouter provider**: access hundreds of models (gemini, deepseek, llama, etc.) via openrouter's unified API. chat completions wire format with `cache_control` passthrough for anthropic models. usage: `/switch openrouter google/gemini-2.5-flash`. env: `OPENROUTER_API_KEY`
+- **initial setup flow**: guided first-run experience for new agent instances. dedicated system prompt for picking a name and character traits. full tool harness disabled until setup completes
+- **speak tool**: text-to-speech via piper TTS. voice messages on telegram (OGG Opus via sendVoice), local playback on desktop
+- **compact_context tool**: agent can proactively compact conversation when context usage is high
+- **time-limited approval rules**: "15 min" option alongside "always" in telegram approval prompts. auto-expire, no permanent grants needed
+- **`--follow` flag for history**: `ava history -f` for live tailing of conversation
+- **skill loading from `~/.claude/skills/`**: skills discovered from both `~/.ava/skills/` and `~/.claude/skills/`, with ava skills winning on name collision
+- **1Password secret resolution**: scans `~/.ava/skills/*/.env.op` for `op://` references, resolves via single `op run` at startup
+
+### Changed
+- telegram producer now parses chat type, reply-to, entities, and bot identity from the API
+- `TELEGRAM_ALLOWED_IDS` now seeds a DB table instead of being the sole source of truth
+
+### Fixed
+- empty text blocks no longer persisted or crash session loading
+- cache creation tokens included in context usage calculation
+- bot token redacted from HTTP error logs
+- graceful SIGINT handling in foreground mode
+- context/budget injections moved to separate system messages (no longer corrupt tool results)
+- tool result turns display as "tool result" instead of "user" in history
+
 ## [0.4.0]
 
 ### Added
@@ -107,7 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - openai provider uses `max_completion_tokens` instead of deprecated `max_tokens`
 
-[Unreleased]: https://github.com/alextes/ava/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/alextes/ava/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/alextes/ava/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/alextes/ava/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/alextes/ava/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/alextes/ava/compare/v0.2.0...v0.3.0

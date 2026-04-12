@@ -6,7 +6,7 @@ hi! i'm ava — a friendly, capable ai assistant that lives on your machine and 
 
 i can search the web, run commands, read and edit files, browse the web, remember things about you, schedule tasks, and switch between ai models mid-conversation. i talk to you through telegram (or the command line), and i keep my memory between conversations so we can build a relationship over time.
 
-under the hood i'm a rust-based agent with a tool loop that connects to LLM providers (anthropic, openai). but you don't need to worry about that — just say hi.
+under the hood i'm a rust-based agent with a tool loop that connects to LLM providers (anthropic, openai, openrouter). but you don't need to worry about that — just say hi.
 
 ## getting started
 
@@ -28,15 +28,18 @@ ava reads environment variables (and `.env` files via dotenvy).
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | anthropic API key |
 | `OPENAI_API_KEY` | openai API key |
+| `OPENROUTER_API_KEY` | openrouter API key (access hundreds of models) |
 
-either key works — ava uses whichever is available. if both are set, anthropic is the default. use `/switch openai` to change mid-conversation.
+either anthropic or openai key works — ava uses whichever is available. if both are set, anthropic is the default. use `/switch openai` or `/switch openrouter google/gemini-2.5-flash` to change mid-conversation.
 
 ### optional
 
 | variable | description |
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | telegram bot token (enables telegram channel) |
-| `TELEGRAM_ALLOWED_IDS` | comma-separated user IDs allowed to message the bot |
+| `TELEGRAM_ALLOWED_IDS` | comma-separated user IDs allowed to DM the bot |
+| `TELEGRAM_ALLOWED_CHATS` | comma-separated chat IDs for group chats |
+| `TELEGRAM_BOT_NAME` | display name for mention detection in groups |
 | `BRAVE_SEARCH_API_KEY` | brave search API key (enables web search) |
 | `JINA_API_KEY` | jina reader API key (improves web page reading) |
 | `AVA_HOME` | override `~/.ava/` home directory |
@@ -81,13 +84,17 @@ ava upgrade    # rebuild from source and hot-swap
 - **grep / glob** — search file contents and find files by pattern
 - **browser** — navigate web pages, take screenshots, click, type, read accessibility trees
 - **remember / recall / forget** — store and retrieve facts, episodes, and character traits across conversations
-- **skills** — load custom skills from `~/.ava/skills/` (user-invocable via `/skill-name`, model-invocable via `activate_skill`)
+- **skills** — load custom skills from `~/.ava/skills/` and `~/.claude/skills/` (user-invocable via `/skill-name`, model-invocable via `activate_skill`)
 - **MCP tools** — connect to MCP servers configured in `~/.ava/mcp.toml`
 - **cron** — schedule one-time or recurring tasks
 - **tasks** — scratchpad for tracking deferred work
 - **web_search** — search the web via brave search
 - **web_fetch** — read web pages
-- **switch_model** — swap between ai providers and models mid-conversation
+- **speak** — text-to-speech via piper TTS (voice messages on telegram, local playback otherwise)
+- **channel_history** — view recent messages from any monitored channel
+- **manage_access** — add/remove users and chats from the whitelist
+- **compact_context** — proactively compact conversation history when context is high
+- **switch_model** — swap between ai providers and models mid-conversation (anthropic, openai, openrouter)
 
 ## how it works
 
@@ -97,7 +104,9 @@ ava upgrade    # rebuild from source and hot-swap
 - **session persistence** — conversations are stored in SQLite so nothing is lost between restarts
 - **context compaction** — when a conversation gets long, older messages are summarized to make room
 - **workspace boundaries** — filesystem reads outside the workspace require approval
-- **approval system** — shell commands require your explicit okay, with "allow always" patterns for commands you trust
+- **approval system** — shell commands require your explicit okay, with "allow always" and time-limited (15 min) patterns
+- **group chat support** — mention-only mode in groups, per-chat message buffering, cross-channel context
+- **initial setup** — guided first-run flow to pick a name and set character traits
 - **crash recovery** — orphaned tool calls are automatically repaired on restart
 
 ## upgrading
