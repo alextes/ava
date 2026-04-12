@@ -14,6 +14,60 @@ use crate::queue::{
 };
 use crate::telegram::TelegramBot;
 
+struct BotIdentity {
+    id: i64,
+    username: String,
+    /// optional display name for fuzzy matching (from TELEGRAM_BOT_NAME env var)
+    display_name: String,
+}
+
+impl BotIdentity {
+    /// check if a message is directed at the bot via @mention entities.
+    fn is_mentioned_in_entities(&self, entities: &[crate::telegram::MessageEntity]) -> bool {
+        entities.iter().any(|e| {
+            e.entity_type == "mention"
+                || (e.entity_type == "text_mention"
+                    && e.user.as_ref().is_some_and(|u| u.id == self.id))
+        })
+    }
+
+    /// check if the bot's name appears in the message text (case-insensitive).
+    fn is_named_in_text(&self, text: &str) -> bool {
+        let lower = text.to_lowercase();
+        if !self.username.is_empty() && lower.contains(&self.username.to_lowercase()) {
+            return true;
+        }
+        if !self.display_name.is_empty() && lower.contains(&self.display_name.to_lowercase()) {
+            return true;
+        }
+        false
+    }
+
+    /// strip @bot_username from the text.
+    fn strip_mention<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.username.is_empty() {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let pattern = format!("@{}", self.username);
+        if let Some(pos) = text.to_lowercase().find(&pattern.to_lowercase()) {
+            let mut result = String::with_capacity(text.len());
+            result.push_str(&text[..pos]);
+            result.push_str(&text[pos + pattern.len()..]);
+            let trimmed = result.trim();
+            std::borrow::Cow::Owned(trimmed.to_string())
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
+    }
+
+    /// check if a message is a reply to a message sent by this bot.
+    fn is_reply_to_bot(&self, reply_to: Option<&crate::telegram::Message>) -> bool {
+        reply_to
+            .and_then(|m| m.from.as_ref())
+            .is_some_and(|u| u.id == self.id)
+    }
+}
+
 fn parse_id_list(env_var: &str) -> Vec<i64> {
     std::env::var(env_var)
         .unwrap_or_default()
@@ -99,6 +153,14 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     // start telegram if configured
     if std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
         let bot = Arc::new(TelegramBot::from_env()?);
+
+        // fetch bot identity for mention detection
+        let bot_identity = bot.get_me().await?;
+        let bot_id = bot_identity.id;
+        let bot_username = bot_identity.username.clone().unwrap_or_default();
+        let bot_name = std::env::var("TELEGRAM_BOT_NAME").unwrap_or_default();
+        tracing::info!(bot_id, %bot_username, "fetched bot identity");
+
         let allowed_users = db.list_allowed_users().unwrap_or_default();
 
         if allowed_users.is_empty() {
@@ -129,6 +191,11 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             Arc::clone(&pending),
             Arc::clone(&db),
             Arc::clone(&chat_buffer),
+            BotIdentity {
+                id: bot_id,
+                username: bot_username,
+                display_name: bot_name,
+            },
         )));
     } else {
         tracing::info!("TELEGRAM_BOT_TOKEN not set, skipping telegram");
@@ -275,6 +342,7 @@ async fn telegram_producer(
     pending: Arc<PendingApprovals>,
     db: Arc<Database>,
     chat_buffer: Arc<ChatBuffer>,
+    bot_identity: BotIdentity,
 ) {
     let mut offset: Option<i64> = None;
 
@@ -420,10 +488,35 @@ async fn telegram_producer(
                 },
             );
 
-            // push to queue instead of spawning a task
+            // mention-only filter for group chats
+            let content = if is_group {
+                let entities = msg.entities.as_deref().unwrap_or_default();
+                let mentioned = bot_identity.is_mentioned_in_entities(entities);
+                let replied_to = bot_identity.is_reply_to_bot(msg.reply_to_message.as_deref());
+                let named = bot_identity.is_named_in_text(&text);
+
+                if !mentioned && !replied_to && !named {
+                    tracing::debug!(chat_id, "group message not addressed to bot, skipping");
+                    continue;
+                }
+
+                // strip @mention from text and prepend buffer context
+                let cleaned = bot_identity.strip_mention(&text);
+                match chat_buffer.format_context(chat_id) {
+                    Some(ctx) => format!(
+                        "[recent chat history]\n{ctx}\n\n[message addressed to you]\n{cleaned}"
+                    ),
+                    None => cleaned.into_owned(),
+                }
+            } else {
+                // DMs: pass through as-is
+                text
+            };
+
+            // push to queue
             let queued = QueuedMessage {
                 channel: ChannelKind::Telegram,
-                content: text,
+                content,
                 sink: ResponseSink::Telegram {
                     chat_id,
                     bot: Arc::clone(&bot),
@@ -435,5 +528,123 @@ async fn telegram_producer(
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telegram::MessageEntity;
+
+    fn bot() -> BotIdentity {
+        BotIdentity {
+            id: 123,
+            username: "ren_bot".into(),
+            display_name: "ren".into(),
+        }
+    }
+
+    #[test]
+    fn test_is_mentioned_in_entities() {
+        let b = bot();
+        let entities = vec![MessageEntity {
+            entity_type: "mention".into(),
+            offset: 0,
+            length: 8,
+            user: None,
+        }];
+        assert!(b.is_mentioned_in_entities(&entities));
+
+        let text_mention = vec![MessageEntity {
+            entity_type: "text_mention".into(),
+            offset: 0,
+            length: 3,
+            user: Some(crate::telegram::User {
+                id: 123,
+                username: None,
+                is_bot: Some(true),
+            }),
+        }];
+        assert!(b.is_mentioned_in_entities(&text_mention));
+
+        // wrong user id
+        let wrong_user = vec![MessageEntity {
+            entity_type: "text_mention".into(),
+            offset: 0,
+            length: 3,
+            user: Some(crate::telegram::User {
+                id: 999,
+                username: None,
+                is_bot: None,
+            }),
+        }];
+        assert!(!b.is_mentioned_in_entities(&wrong_user));
+
+        assert!(!b.is_mentioned_in_entities(&[]));
+    }
+
+    #[test]
+    fn test_is_named_in_text() {
+        let b = bot();
+        assert!(b.is_named_in_text("hey ren, what's up?"));
+        assert!(b.is_named_in_text("Hey Ren, what's up?"));
+        assert!(b.is_named_in_text("@ren_bot do something"));
+        assert!(!b.is_named_in_text("hello everyone"));
+    }
+
+    #[test]
+    fn test_strip_mention() {
+        let b = bot();
+        assert_eq!(b.strip_mention("@ren_bot what's up").as_ref(), "what's up");
+        assert_eq!(
+            b.strip_mention("hey @ren_bot do this").as_ref(),
+            "hey  do this"
+        );
+        assert_eq!(
+            b.strip_mention("no mention here").as_ref(),
+            "no mention here"
+        );
+        assert_eq!(b.strip_mention("@REN_BOT caps").as_ref(), "caps");
+    }
+
+    #[test]
+    fn test_is_reply_to_bot() {
+        let b = bot();
+        let bot_msg = crate::telegram::Message {
+            message_id: 1,
+            from: Some(crate::telegram::User {
+                id: 123,
+                username: None,
+                is_bot: Some(true),
+            }),
+            chat: crate::telegram::Chat {
+                id: 1,
+                chat_type: None,
+                title: None,
+            },
+            text: Some("hi".into()),
+            reply_to_message: None,
+            entities: None,
+        };
+        assert!(b.is_reply_to_bot(Some(&bot_msg)));
+
+        let other_msg = crate::telegram::Message {
+            message_id: 2,
+            from: Some(crate::telegram::User {
+                id: 999,
+                username: None,
+                is_bot: None,
+            }),
+            chat: crate::telegram::Chat {
+                id: 1,
+                chat_type: None,
+                title: None,
+            },
+            text: Some("hi".into()),
+            reply_to_message: None,
+            entities: None,
+        };
+        assert!(!b.is_reply_to_bot(Some(&other_msg)));
+        assert!(!b.is_reply_to_bot(None));
     }
 }

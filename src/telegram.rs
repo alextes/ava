@@ -52,7 +52,6 @@ impl TelegramBot {
     }
 
     /// fetch the bot's own user profile via the getMe endpoint.
-    #[allow(dead_code)]
     #[tracing::instrument(skip(self))]
     pub async fn get_me(&self) -> Result<User, Error> {
         let response: ApiResponse<User> = self
@@ -380,30 +379,25 @@ pub struct Message {
     pub from: Option<User>,
     pub chat: Chat,
     pub text: Option<String>,
-    #[allow(dead_code)]
     pub reply_to_message: Option<Box<Message>>,
-    #[allow(dead_code)]
     pub entities: Option<Vec<MessageEntity>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageEntity {
     #[serde(rename = "type")]
-    #[allow(dead_code)]
     pub entity_type: String,
     #[allow(dead_code)]
     pub offset: i64,
     #[allow(dead_code)]
     pub length: i64,
     /// present for "text_mention" entities
-    #[allow(dead_code)]
     pub user: Option<User>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct User {
     pub id: i64,
-    #[allow(dead_code)]
     pub username: Option<String>,
     #[allow(dead_code)]
     pub is_bot: Option<bool>,
