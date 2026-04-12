@@ -1,9 +1,11 @@
 mod anthropic;
 mod openai;
+mod openrouter;
 
 pub use crate::tool::ToolCall;
 pub use anthropic::AnthropicProvider;
 pub use openai::OpenAiProvider;
+pub use openrouter::OpenRouterProvider;
 
 use std::future::Future;
 
@@ -80,6 +82,7 @@ pub trait Provider: Send + Sync {
 pub enum AnyProvider {
     Anthropic(AnthropicProvider),
     OpenAi(OpenAiProvider),
+    OpenRouter(OpenRouterProvider),
     #[cfg(test)]
     Test(TestProvider),
 }
@@ -95,6 +98,7 @@ impl AnyProvider {
         match self {
             Self::Anthropic(p) => format!("anthropic/{}", p.model_name()),
             Self::OpenAi(p) => format!("openai/{}", p.model_name()),
+            Self::OpenRouter(p) => format!("openrouter/{}", p.model_name()),
             #[cfg(test)]
             Self::Test(_) => "test/test".to_string(),
         }
@@ -134,6 +138,14 @@ impl AnyProvider {
                 }
                 Ok(Self::OpenAi(p))
             }
+            "openrouter" => {
+                let mut p = OpenRouterProvider::from_env(client)?;
+                if let Some(m) = model {
+                    // no validation — openrouter has hundreds of models, let the API reject bad ones
+                    p.set_model(m.to_string());
+                }
+                Ok(Self::OpenRouter(p))
+            }
             _ => Err(Error::Provider(format!("unknown provider: {provider}"))),
         }
     }
@@ -142,6 +154,7 @@ impl AnyProvider {
         match self {
             Self::Anthropic(_) => "anthropic",
             Self::OpenAi(_) => "openai",
+            Self::OpenRouter(_) => "openrouter",
             #[cfg(test)]
             Self::Test(_) => "test",
         }
@@ -151,6 +164,7 @@ impl AnyProvider {
         match self {
             Self::Anthropic(p) => p.context_window(),
             Self::OpenAi(p) => p.context_window(),
+            Self::OpenRouter(p) => p.context_window(),
             #[cfg(test)]
             Self::Test(_) => 200_000,
         }
@@ -167,6 +181,7 @@ impl Provider for AnyProvider {
         match self {
             Self::Anthropic(p) => p.complete(system_prompt, messages, tools).await,
             Self::OpenAi(p) => p.complete(system_prompt, messages, tools).await,
+            Self::OpenRouter(p) => p.complete(system_prompt, messages, tools).await,
             #[cfg(test)]
             Self::Test(p) => p.complete(system_prompt, messages, tools).await,
         }

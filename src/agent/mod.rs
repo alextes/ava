@@ -184,6 +184,7 @@ impl Agent {
                     let fallback_name = match current_name {
                         "anthropic" => "openai",
                         "openai" => "anthropic",
+                        "openrouter" => "anthropic",
                         _ => return Err(Error::BudgetExhausted(msg.clone())),
                     };
                     tracing::warn!(

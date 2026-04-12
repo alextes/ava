@@ -617,13 +617,12 @@ fn switch_model_definition() -> ToolDefinition {
             "properties": {
                 "provider": {
                     "type": "string",
-                    "enum": ["anthropic", "openai"],
+                    "enum": ["anthropic", "openai", "openrouter"],
                     "description": "the provider to switch to"
                 },
                 "model": {
                     "type": "string",
-                    "enum": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-5.4", "gpt-5-mini"],
-                    "description": "model name. must match the chosen provider. anthropic: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5. openai: gpt-5.4, gpt-5-mini. if omitted, uses the provider's default."
+                    "description": "model name. must match the chosen provider. anthropic: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5. openai: gpt-5.4, gpt-5-mini. openrouter: any model in provider/name format (e.g. google/gemini-2.5-flash, deepseek/deepseek-chat-v3-0324). if omitted, uses the provider's default."
                 }
             },
             "required": ["provider"]
