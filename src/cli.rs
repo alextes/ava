@@ -79,6 +79,8 @@ pub(crate) enum Commands {
         #[arg(short, long)]
         follow: bool,
     },
+    /// start a new conversation session (archives the current one)
+    NewSession,
 }
 
 #[derive(Subcommand)]

@@ -24,8 +24,9 @@ use clap::Parser;
 
 use crate::cli::{Cli, Commands, DoctorAction};
 use crate::commands::{
-    run_doctor_diagnose, run_doctor_fix, run_history, run_logs, run_message, run_restart,
-    run_rules, run_schedules, run_skills, run_start, run_status, run_stop, run_upgrade,
+    run_doctor_diagnose, run_doctor_fix, run_history, run_logs, run_message, run_new_session,
+    run_restart, run_rules, run_schedules, run_skills, run_start, run_status, run_stop,
+    run_upgrade,
 };
 
 fn main() {
@@ -192,6 +193,9 @@ async fn async_main(cli: Cli) {
                 tracing::error!(%e, "history command failed");
                 std::process::exit(1);
             }
+        }
+        Commands::NewSession => {
+            run_new_session();
         }
     }
 }

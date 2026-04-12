@@ -378,6 +378,18 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// deactivate the current session and create a fresh one.
+    /// returns the new session id.
+    pub fn new_session(&self) -> Result<i64, Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE sessions SET active = 0 WHERE active = 1", [])?;
+        conn.execute(
+            "INSERT INTO sessions (active, title) VALUES (1, 'default')",
+            [],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
 }
 
 #[cfg(test)]

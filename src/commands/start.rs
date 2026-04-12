@@ -275,6 +275,30 @@ async fn agent_loop(
             continue;
         }
 
+        if let Some(("new-session", _)) = parse_slash_command(&queued.content) {
+            let msg = match db.new_session() {
+                Ok(id) => {
+                    tracing::info!(session_id = id, "started new session via slash command");
+                    format!(
+                        "started new session (id: {id}). conversation history has been cleared."
+                    )
+                }
+                Err(e) => {
+                    tracing::error!(%e, "failed to create new session");
+                    format!("error: failed to create new session: {e}")
+                }
+            };
+            send_response(
+                queued.sink,
+                crate::message::OutboundMessage {
+                    content: msg,
+                    voice: None,
+                },
+            )
+            .await;
+            continue;
+        }
+
         let provider = match provider_for_session(client.clone(), &db) {
             Ok(p) => p,
             Err(e) => {
