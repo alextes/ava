@@ -379,6 +379,17 @@ impl Database {
         Ok(model)
     }
 
+    /// get the creation timestamp for a session (e.g. "2026-04-12 14:30:00")
+    pub fn session_created_at(&self, session_id: i64) -> Result<String, Error> {
+        let conn = self.conn.lock().unwrap();
+        let created_at: String = conn.query_row(
+            "SELECT created_at FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        Ok(created_at)
+    }
+
     pub fn get_session_summary(&self, session_id: i64) -> Result<Option<String>, Error> {
         let conn = self.conn.lock().unwrap();
         let summary: Option<String> = conn.query_row(

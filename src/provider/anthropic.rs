@@ -129,7 +129,7 @@ impl Provider for AnthropicProvider {
             last_block["cache_control"] = json!({"type": "ephemeral"});
         }
 
-        let tools_json: Vec<serde_json::Value> = tools
+        let mut tools_json: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| match t {
                 ToolDefinition::Custom {
@@ -156,6 +156,12 @@ impl Provider for AnthropicProvider {
                 }),
             })
             .collect();
+
+        // cache breakpoint on last tool: creates a stable prefix (system + tools)
+        // independent of the growing message history
+        if let Some(last_tool) = tools_json.last_mut() {
+            last_tool["cache_control"] = json!({"type": "ephemeral"});
+        }
 
         let request = ApiRequest {
             model: &self.model,

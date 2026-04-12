@@ -116,7 +116,18 @@ impl Agent {
             .append_message(session_id, "user", &user_content, Some(channel_str))?;
         messages.push(Message::user(&content));
 
-        let system_prompt = self.system_prompt()?;
+        // inject current timestamp as a system note so the model knows the time
+        // without putting it in the system prompt (which would bust the cache).
+        let time_note = format!(
+            "[system: current date and time is {}]",
+            Utc::now().format("%Y-%m-%d %H:%M UTC")
+        );
+        let time_content = vec![MessageContent::text(&time_note)];
+        self.db
+            .append_message(session_id, "system", &time_content, None)?;
+        messages.push(Message::user(&time_note));
+
+        let system_prompt = self.system_prompt(session_id)?;
         let tools = self.all_tool_definitions().await;
         let mut tool_rounds = 0;
         let mut switched_provider: Option<AnyProvider> = None;
@@ -680,7 +691,7 @@ impl Agent {
         Ok(!self.db.is_setup_complete()?)
     }
 
-    fn system_prompt(&self) -> Result<String, Error> {
+    fn system_prompt(&self, session_id: i64) -> Result<String, Error> {
         // in setup mode, use a dedicated prompt that guides the user through initialization
         if self.is_setup_mode()? {
             let mut prompt = SETUP_SYSTEM_PROMPT.to_string();
@@ -707,10 +718,13 @@ impl Agent {
             None => DEFAULT_SYSTEM_PROMPT.to_string(),
         };
 
-        prompt.push_str(&format!(
-            "\n\ncurrent date and time: {}",
-            Utc::now().format("%Y-%m-%d %H:%M UTC")
-        ));
+        // use session creation date (stable) instead of current time (changes every minute)
+        // to avoid busting the prompt cache. current time is injected as a system note
+        // in the message flow instead.
+        let session_date = self.db.session_created_at(session_id)?;
+        // extract just the date portion (YYYY-MM-DD) from "YYYY-MM-DD HH:MM:SS"
+        let date_only = session_date.split(' ').next().unwrap_or(&session_date);
+        prompt.push_str(&format!("\n\nsession started: {date_only}"));
 
         if !traits.is_empty() {
             prompt.push_str("\n\n");
@@ -984,9 +998,9 @@ mod tests {
         };
         agent.process(&inbound).await.unwrap().unwrap();
 
-        // provider should have seen 3 messages: 2 history + 1 new
+        // provider should have seen 4 messages: 2 history + 1 new + 1 time note
         let msg_count = seen_msgs.lock().unwrap().unwrap();
-        assert_eq!(msg_count, 3);
+        assert_eq!(msg_count, 4);
     }
 
     fn make_memory(
@@ -1146,10 +1160,10 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].content, "alex");
 
-        // messages were persisted (user + assistant[tool_use] + user[tool_result] + system[context] + assistant[final])
+        // messages were persisted (user + system[time] + assistant[tool_use] + user[tool_result] + system[context] + assistant[final])
         let sid = db.active_session().unwrap();
         let count = db.session_message_count(sid).unwrap();
-        assert_eq!(count, 5);
+        assert_eq!(count, 6);
     }
 
     #[tokio::test]
@@ -1235,9 +1249,9 @@ mod tests {
         // tool results message is clean; context usage is a separate system message
         let sid = db.active_session().unwrap();
         let msgs = db.load_messages(sid).unwrap();
-        // user + assistant[3 tool_use] + user[3 tool_result] + user[context] + assistant[final]
-        assert_eq!(msgs.len(), 5);
-        assert_eq!(msgs[2].content.len(), 3);
+        // user + system[time] + assistant[3 tool_use] + user[3 tool_result] + user[context] + assistant[final]
+        assert_eq!(msgs.len(), 6);
+        assert_eq!(msgs[3].content.len(), 3);
     }
 
     #[tokio::test]
@@ -1481,8 +1495,8 @@ mod tests {
         // verify exec tool actually ran (check persisted messages contain tool result)
         let sid = db.active_session().unwrap();
         let msgs = db.load_messages(sid).unwrap();
-        // should have: user, assistant(tool_use), user(tool_result), user(system/context), assistant(final)
-        assert_eq!(msgs.len(), 5);
+        // should have: user, system(time), assistant(tool_use), user(tool_result), user(system/context), assistant(final)
+        assert_eq!(msgs.len(), 6);
     }
 
     #[test]
@@ -1504,9 +1518,11 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt().unwrap();
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap())
+            .unwrap();
 
-        assert!(prompt.contains("current date and time:"));
+        assert!(prompt.contains("session started:"));
         assert!(prompt.contains("## identity"));
         assert!(prompt.contains("- tone: formal"));
         assert!(prompt.contains("## known facts"));
@@ -1531,7 +1547,9 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt().unwrap();
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap())
+            .unwrap();
 
         assert!(prompt.contains("## pending tasks"));
         assert!(prompt.contains("fix CI failure"));
@@ -1550,7 +1568,9 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt().unwrap();
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap())
+            .unwrap();
 
         assert!(!prompt.contains("## pending tasks"));
     }
@@ -1609,8 +1629,8 @@ mod tests {
 
         // verify the provider saw the synthetic tool_result
         let msgs = seen_msgs.lock().unwrap();
-        // expected: assistant(tool_use) + user(synthetic tool_result) + user(new message)
-        assert_eq!(msgs.len(), 3);
+        // expected: assistant(tool_use) + user(synthetic tool_result) + user(new message) + system(time)
+        assert_eq!(msgs.len(), 4);
 
         // second message should be the synthetic tool_result
         let repair_msg = &msgs[1];
@@ -1638,7 +1658,9 @@ mod tests {
             reqwest::Client::new(),
         );
 
-        let prompt = agent.system_prompt().unwrap();
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap())
+            .unwrap();
         assert!(!prompt.contains("context usage"));
     }
 
@@ -1657,7 +1679,9 @@ mod tests {
             db,
             reqwest::Client::new(),
         );
-        let prompt = agent.system_prompt().unwrap();
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap())
+            .unwrap();
 
         assert!(prompt.contains("## pending tasks"));
         assert!(prompt.contains("pending task"));
@@ -1719,10 +1743,10 @@ mod tests {
         // provider was called once
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
-        // messages were persisted (user + assistant[tool_use] + user[tool_result])
+        // messages were persisted (user + system[time] + assistant[tool_use] + user[tool_result])
         let sid = db.active_session().unwrap();
         let count = db.session_message_count(sid).unwrap();
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
     }
 
     #[test]
@@ -1844,7 +1868,9 @@ mod tests {
         )
         .with_skills(skills);
 
-        let prompt = agent.system_prompt().unwrap();
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap())
+            .unwrap();
         assert!(prompt.contains("## available skills"));
         assert!(prompt.contains("**summarize**: summarize text"));
         // hidden skill should not appear
@@ -1862,7 +1888,9 @@ mod tests {
             reqwest::Client::new(),
         );
 
-        let prompt = agent.system_prompt().unwrap();
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap())
+            .unwrap();
         assert!(!prompt.contains("## available skills"));
     }
 }
