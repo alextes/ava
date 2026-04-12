@@ -4,3 +4,4 @@ ava.db
 
 # claude local settings
 .claude/*.local.*
+CLAUDE.local.md
