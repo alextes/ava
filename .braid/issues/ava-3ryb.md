@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-3ryb
 title: design MCP integration
 priority: P2
-status: open
+status: done
 type: design
 deps: []
 tags:
@@ -11,6 +11,7 @@ tags:
 owner: null
 created_at: 2026-02-04T21:37:17.07543Z
 started_at: 2026-02-10T14:14:35.551198Z
+completed_at: 2026-03-15T22:21:07.335026Z
 ---
 
 extend ava with Model Context Protocol servers for custom tools.

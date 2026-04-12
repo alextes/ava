@@ -6,7 +6,11 @@ priority: P2
 status: open
 type: design
 deps:
-- ava-palc
+- ava-wo9p
+- ava-yquw
+- ava-fmgy
+- ava-vkoh
+- ava-prx4
 tags:
 - observability
 - session

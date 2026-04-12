@@ -3,12 +3,13 @@ schema_version: 9
 id: ava-e7eo
 title: extract system prompt formatting from agent/mod.rs
 priority: P2
-status: open
+status: done
 deps: []
 tags:
 - refactor
 owner: null
 created_at: 2026-02-11T11:29:53.772937Z
+completed_at: 2026-03-24T08:15:39.939316Z
 ---
 
 agent/mod.rs is 1,417 lines — the largest file in the codebase. ~70 lines of pure formatting helpers can be extracted to reduce its size and improve readability.

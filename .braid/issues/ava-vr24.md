@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-vr24
 title: design speech-to-text for voice messages (parakeet v3)
 priority: P2
-status: open
+status: done
 type: design
 deps: []
 tags:
@@ -11,11 +11,40 @@ tags:
 - tool
 owner: null
 created_at: 2026-02-08T19:20:59.650683Z
+started_at: 2026-03-17T20:39:30.042932Z
+completed_at: 2026-03-18T21:28:11.8839Z
 ---
 
 ## goal
 
-allow ava to decode voice messages using NVIDIA parakeet v3 (a local speech-to-text model), so that when a user sends a voice message via telegram, ava can transcribe and process it.
+allow ava to decode voice messages using parakeet-mlx (local STT on Apple Silicon), so that when a user sends a voice message via telegram, ava can transcribe and process it.
+
+## design
+
+### decisions
+- **runtime**: parakeet-mlx on Apple Silicon. other platforms unsupported for now.
+- **self-bootstrap**: if parakeet-mlx CLI isn't found, the transcribe tool returns install instructions. the agent can use exec to install it (requires approval).
+- **pipeline**: tool-based. voice messages are queued with a hint; agent uses `transcribe` tool to get text.
+- **CLI interface**: shell out to `parakeet-mlx <path> --format txt`. start simple, timestamps (--format json) can be added later.
+- **no approval needed**: transcribe is read-only. the bootstrap install goes through exec which already requires approval.
+
+### flow
+1. telegram voice message arrives → telegram_producer downloads audio to `~/.ava/voice/<file_id>.ogg`
+2. queued as `[voice message received — audio saved to /path/to/file.ogg. use the transcribe tool to get the text.]`
+3. agent calls `transcribe` tool with the file path
+4. tool shells out to `parakeet-mlx`, returns transcript
+5. agent processes the transcript as if the user typed it
+
+### scope
+- `src/telegram.rs` — Voice type, get_file/download_file methods
+- `src/commands/start.rs` — handle voice messages in telegram_producer
+- `src/tool/transcribe.rs` — new transcribe tool
+- `src/config.rs` — voice_dir() helper
+
+### implementation issues
+1. add voice message types and file download to TelegramBot
+2. handle voice messages in telegram_producer (download + queue with hint)
+3. add transcribe tool (shells out to parakeet-mlx CLI)
 
 ## key design questions
 

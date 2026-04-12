@@ -3,13 +3,15 @@ schema_version: 9
 id: ava-i727
 title: add browser tool with chromiumoxide
 priority: P2
-status: open
+status: done
 deps:
 - ava-a5d8
 tags:
 - tool
 owner: null
 created_at: 2026-02-08T19:46:21.921075Z
+started_at: 2026-03-16T15:32:16.526432Z
+completed_at: 2026-03-16T16:12:03.692268Z
 ---
 
 add a `browser` tool using chromiumoxide for CDP-based browser automation.

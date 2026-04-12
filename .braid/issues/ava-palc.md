@@ -3,7 +3,7 @@ schema_version: 9
 id: ava-palc
 title: design context usage legibility
 priority: P2
-status: open
+status: done
 type: design
 deps:
 - ava-oh2z
@@ -12,6 +12,7 @@ tags:
 - observability
 owner: null
 created_at: 2026-02-08T16:17:47.059116Z
+completed_at: 2026-03-15T22:22:42.986762Z
 ---
 
 make context usage visible and actionable — show how much of the model's context window is consumed and what headroom remains.

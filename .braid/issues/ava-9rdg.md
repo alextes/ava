@@ -2,7 +2,7 @@
 schema_version: 9
 id: ava-9rdg
 title: 'design: parallel CI runners with per-runner persistent caches'
-priority: P2
+priority: P3
 status: open
 type: design
 deps: []

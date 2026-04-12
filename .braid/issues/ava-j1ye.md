@@ -3,13 +3,15 @@ schema_version: 9
 id: ava-j1ye
 title: restrict filesystem tool to working directory by default
 priority: P2
-status: open
+status: done
 deps: []
 tags:
 - security
 - tool
 owner: null
 created_at: 2026-03-12T13:35:42.879395Z
+started_at: 2026-03-16T13:13:59.520133Z
+completed_at: 2026-03-16T13:25:45.720887Z
 ---
 
 the filesystem tool should operate read-only within the directory ava is started from by default. expanding access requires explicit permission.
@@ -29,12 +31,20 @@ running ava on a server or exposed to the internet means filesystem access shoul
 
 ### permission expansion
 
-two levels of expansion, both requiring user approval:
+when access is blocked, the user gets three options:
+
+1. **allow once** — permit this specific access, no rule saved
+2. **allow always** — save a persistent rule for the path's subtree, scoped to the permission level being requested:
+   - read request → saves `read:/path/**` (only grants read)
+   - write request → saves `edit:/path/**` (grants read + write)
+3. **deny** — block the access
+
+two levels of expansion:
 
 1. **read access to a new path** — 'ava is requesting read access to /Users/alex/documents/'
 2. **read/write access to a new path** — 'ava is requesting read/write access to /etc/'
 
-approved expansions are stored as rules (e.g. 'read:/Users/alex/documents/**', 'edit:/etc/**') and persist across sessions.
+an existing `edit:` rule for a path implies read access to that path (no need for a separate `read:` rule).
 
 ### absolute path behaviour
 
