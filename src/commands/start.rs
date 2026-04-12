@@ -13,8 +13,8 @@ use crate::queue::{
 };
 use crate::telegram::TelegramBot;
 
-fn allowed_telegram_ids() -> Vec<i64> {
-    std::env::var("TELEGRAM_ALLOWED_IDS")
+fn parse_id_list(env_var: &str) -> Vec<i64> {
+    std::env::var(env_var)
         .unwrap_or_default()
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
@@ -26,6 +26,24 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     let db = Arc::new(Database::open()?);
     let (tx, rx) = message_queue(64);
     let pending = Arc::new(PendingApprovals::new());
+
+    // seed whitelists from env vars
+    let allowed_user_ids = parse_id_list("TELEGRAM_ALLOWED_IDS");
+    let allowed_chat_ids = parse_id_list("TELEGRAM_ALLOWED_CHATS");
+    if !allowed_user_ids.is_empty() {
+        db.seed_allowed_users(&allowed_user_ids)?;
+        tracing::info!(
+            count = allowed_user_ids.len(),
+            "seeded allowed users from env"
+        );
+    }
+    if !allowed_chat_ids.is_empty() {
+        db.seed_allowed_chats(&allowed_chat_ids)?;
+        tracing::info!(
+            count = allowed_chat_ids.len(),
+            "seeded allowed chats from env"
+        );
+    }
 
     crate::config::write_pid_file();
     tracing::info!(pid = std::process::id(), "wrote PID file");
@@ -77,12 +95,12 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     // start telegram if configured
     if std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
         let bot = Arc::new(TelegramBot::from_env()?);
-        let allowed_ids = allowed_telegram_ids();
+        let allowed_ids = db.list_allowed_users().unwrap_or_default();
 
         if allowed_ids.is_empty() {
-            tracing::warn!("TELEGRAM_ALLOWED_IDS not set, bot will ignore all messages");
+            tracing::warn!("no allowed users configured, bot will ignore all messages");
         } else {
-            tracing::info!(?allowed_ids, "loaded user whitelist");
+            tracing::info!(?allowed_ids, "loaded user whitelist from DB");
         }
 
         // spawn scheduler if we have a default chat_id

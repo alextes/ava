@@ -139,6 +139,20 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE approval_rules ADD COLUMN expires_at TEXT;
     "#,
+    // v11: allowed users and chats whitelists
+    r#"
+    CREATE TABLE IF NOT EXISTS allowed_users (
+        user_id INTEGER PRIMARY KEY,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        added_by TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS allowed_chats (
+        chat_id INTEGER PRIMARY KEY,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        added_by TEXT
+    );
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {
