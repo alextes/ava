@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::agent::Agent;
 use crate::approver::{AnyApprover, PendingApprovals, TelegramApprover};
+use crate::chat_buffer::{BufferedMessage, ChatBuffer};
 use crate::cli::{
     handle_rules_command, handle_switch_command, parse_slash_command, provider_for_session,
 };
@@ -71,6 +72,9 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         tracing::info!(count = skills.len(), "loaded skills");
     }
 
+    // shared message buffer for cross-channel context
+    let chat_buffer = Arc::new(ChatBuffer::new());
+
     // start agent loop
     let db_clone = Arc::clone(&db);
     let pending_clone = Arc::clone(&pending);
@@ -124,6 +128,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             tx.clone(),
             Arc::clone(&pending),
             Arc::clone(&db),
+            Arc::clone(&chat_buffer),
         )));
     } else {
         tracing::info!("TELEGRAM_BOT_TOKEN not set, skipping telegram");
@@ -269,6 +274,7 @@ async fn telegram_producer(
     tx: crate::queue::MessageSender,
     pending: Arc<PendingApprovals>,
     db: Arc<Database>,
+    chat_buffer: Arc<ChatBuffer>,
 ) {
     let mut offset: Option<i64> = None;
 
@@ -368,7 +374,8 @@ async fn telegram_producer(
             };
 
             let chat_id = msg.chat.id;
-            let user_id = msg.from.map(|u| u.id);
+            let user_id = msg.from.as_ref().map(|u| u.id);
+            let username = msg.from.as_ref().and_then(|u| u.username.clone());
             let chat_type = msg.chat.chat_type.as_deref().unwrap_or("private");
             let is_group = chat_type == "group" || chat_type == "supergroup";
 
@@ -396,6 +403,22 @@ async fn telegram_producer(
 
             // track channel activity
             let _ = db.upsert_channel(chat_id, chat_type, msg.chat.title.as_deref());
+
+            // buffer message for context (all authorized messages, not just those that trigger the agent)
+            let user_name = username.clone().unwrap_or_else(|| {
+                user_id
+                    .map(|id| format!("user_{id}"))
+                    .unwrap_or_else(|| "unknown".into())
+            });
+            chat_buffer.push(
+                chat_id,
+                BufferedMessage {
+                    user_name,
+                    user_id,
+                    text: text.clone(),
+                    received_at: std::time::Instant::now(),
+                },
+            );
 
             // push to queue instead of spawning a task
             let queued = QueuedMessage {

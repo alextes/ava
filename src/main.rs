@@ -1,6 +1,7 @@
 mod agent;
 mod approver;
 mod channel;
+mod chat_buffer;
 mod cli;
 mod commands;
 mod config;
