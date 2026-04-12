@@ -65,12 +65,29 @@ async fn execute_command(command: &str, timeout_secs: Option<u64>, cwd: Option<&
     tracing::info!(command, timeout, ?cwd, "executing command");
 
     let mut cmd = tokio::process::Command::new("sh");
-    cmd.arg("-c").arg(command);
+    cmd.arg("-c")
+        .arg(command)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        // start in its own process group so we can kill the whole tree
+        .process_group(0);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout), cmd.output()).await;
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return format!("failed to execute command: {e}"),
+    };
+
+    // save the process group id before wait_with_output consumes the child
+    let pgid = child.id();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout),
+        child.wait_with_output(),
+    )
+    .await;
 
     match result {
         Ok(Ok(output)) => {
@@ -97,7 +114,15 @@ async fn execute_command(command: &str, timeout_secs: Option<u64>, cwd: Option<&
             truncate_output(&result)
         }
         Ok(Err(e)) => format!("failed to execute command: {e}"),
-        Err(_) => format!("command timed out after {timeout}s"),
+        Err(_) => {
+            // kill the entire process group to clean up child processes silently
+            if let Some(pid) = pgid {
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            format!("command timed out after {timeout}s")
+        }
     }
 }
 

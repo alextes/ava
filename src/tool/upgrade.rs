@@ -61,20 +61,17 @@ fn run_upgrade() -> String {
     {
         if let Some(pid) = crate::config::read_pid_file() {
             tracing::info!(pid, "signaling running ava to restart via SIGUSR1");
-            let status = std::process::Command::new("kill")
-                .args(["-USR1", &pid.to_string()])
-                .status();
-            match status {
-                Ok(s) if s.success() => {
-                    result.push_str(&format!(" signaled running ava (pid {pid}) to restart."));
-                }
-                Ok(s) => {
-                    result.push_str(&format!(
-                        " kill -USR1 {pid} exited with {s}. process may not be running — restart ava manually."
-                    ));
-                }
-                Err(e) => {
-                    result.push_str(&format!(" failed to signal pid {pid}: {e}."));
+            // use libc::kill directly to avoid shell "kill" printing to stderr
+            // when the process doesn't exist
+            let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGUSR1) };
+            if ret == 0 {
+                result.push_str(&format!(" signaled running ava (pid {pid}) to restart."));
+            } else {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::ESRCH) {
+                    result.push_str(&format!(" pid {pid} not running — restart ava manually."));
+                } else {
+                    result.push_str(&format!(" failed to signal pid {pid}: {err}."));
                 }
             }
         } else {

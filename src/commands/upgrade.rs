@@ -29,10 +29,17 @@ pub(crate) fn run_upgrade() -> Result<(), error::Error> {
     #[cfg(unix)]
     if let Some(pid) = crate::config::read_pid_file() {
         println!("signaling running ava (pid {pid}) to restart...");
-        let _ = std::process::Command::new("kill")
-            .args(["-USR1", &pid.to_string()])
-            .status();
-        println!("done — ava will restart after finishing current work");
+        let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGUSR1) };
+        if ret == 0 {
+            println!("done — ava will restart after finishing current work");
+        } else {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                println!("pid {pid} not running — restart ava manually");
+            } else {
+                println!("failed to signal pid {pid}: {err}");
+            }
+        }
     } else {
         println!("no running ava process found (no PID file), skipping signal");
     }
