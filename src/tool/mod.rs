@@ -5,6 +5,7 @@ mod complete;
 mod cron;
 mod exec;
 mod filesystem;
+mod manage_access;
 mod memory;
 mod search;
 mod setup;
@@ -33,6 +34,7 @@ pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub(crate) use exec::{load_vault_secrets, scrub_vault_secrets};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
+pub use manage_access::MANAGE_ACCESS_TOOL_NAME;
 pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
 pub use setup::COMPLETE_SETUP_TOOL_NAME;
 pub use speak::SPEAK_TOOL_NAME;
@@ -277,6 +279,7 @@ pub fn tool_definitions(setup_mode: bool) -> Vec<ToolDefinition> {
         browser::browser_definition(),
         speak::speak_definition(),
         channel_history::channel_history_definition(),
+        manage_access::manage_access_definition(),
         ToolDefinition::BuiltIn {
             tool_type: "text_editor_20250728",
             name: TEXT_EDITOR_TOOL_NAME,
@@ -395,6 +398,11 @@ pub async fn handle_tool_call(
         CHANNEL_HISTORY_TOOL_NAME => Ok(channel_history::handle_channel_history(
             db,
             chat_buffer,
+            &call.id,
+            &call.input,
+        )),
+        MANAGE_ACCESS_TOOL_NAME => Ok(manage_access::handle_manage_access(
+            db,
             &call.id,
             &call.input,
         )),

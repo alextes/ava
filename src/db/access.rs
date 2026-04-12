@@ -32,7 +32,6 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn remove_allowed_user(&self, user_id: i64) -> Result<(), Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM allowed_users WHERE user_id = ?1", [user_id])?;
@@ -48,7 +47,6 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn remove_allowed_chat(&self, chat_id: i64) -> Result<(), Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM allowed_chats WHERE chat_id = ?1", [chat_id])?;
@@ -64,7 +62,6 @@ impl Database {
         Ok(ids)
     }
 
-    #[allow(dead_code)]
     pub fn list_allowed_chats(&self) -> Result<Vec<i64>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT chat_id FROM allowed_chats ORDER BY chat_id")?;
