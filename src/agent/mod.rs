@@ -728,6 +728,19 @@ impl Agent {
             prompt.push_str(&prompt::format_active_channels(&recent_channels));
         }
 
+        // environment context so the model knows where it's running
+        {
+            let hostname = hostname::get()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "unknown".to_string());
+            let workspace = crate::config::workspace_root().display();
+            prompt.push_str(&format!(
+                "\n\n## environment\nhostname: {hostname}\nworkspace: {workspace}\n\
+                 use \".\" or relative paths for the exec tool cwd, not absolute paths from \
+                 other machines."
+            ));
+        }
+
         prompt.push_str(&format!(
             "\n\n## tool budget\nyou have a budget of {MAX_TOOL_ROUNDS} tool rounds per user \
              message. after exhausting the budget you get one final text-only turn. if you need \
@@ -851,6 +864,7 @@ mod tests {
     async fn test_agent_injects_facts_into_system_prompt() {
         use std::sync::{Arc as StdArc, Mutex};
 
+        crate::config::init_workspace_root();
         let seen_prompt = StdArc::new(Mutex::new(None));
         let seen_prompt_clone = seen_prompt.clone();
 
@@ -1445,6 +1459,7 @@ mod tests {
 
     #[test]
     fn test_system_prompt_includes_all_sections() {
+        crate::config::init_workspace_root();
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.mark_setup_complete().unwrap();
         db.remember(MemoryKind::Character, "formal", None, Some("tone"))

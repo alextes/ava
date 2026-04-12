@@ -72,6 +72,13 @@ async fn execute_command(command: &str, timeout_secs: Option<u64>, cwd: Option<&
         // start in its own process group so we can kill the whole tree
         .process_group(0);
     if let Some(dir) = cwd {
+        let path = std::path::Path::new(dir);
+        if !path.is_dir() {
+            return format!(
+                "error: cwd '{dir}' does not exist on this host. \
+                 use \".\" for the current working directory or provide a valid path."
+            );
+        }
         cmd.current_dir(dir);
     }
 
@@ -291,7 +298,7 @@ mod tests {
             Some("/nonexistent_dir_that_does_not_exist"),
         )
         .await;
-        assert!(result.contains("failed to execute command"));
+        assert!(result.contains("does not exist on this host"));
     }
 
     // --- load_vault_secrets tests ---
