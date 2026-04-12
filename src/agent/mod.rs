@@ -663,12 +663,12 @@ impl Agent {
             return Ok(prompt);
         }
 
-        let traits = self.db.character_traits()?;
+        let traits = self.db.identity_traits()?;
         let facts = self.db.recent_facts()?;
         let episodes = self.db.recent_episodes()?;
         let pending_tasks = self.db.pending_task_titles()?;
 
-        // build base prompt, incorporating agent name from character traits if available
+        // build base prompt, incorporating agent name from identity traits if available
         let name = traits
             .iter()
             .find(|t| t.key.as_deref() == Some("name"))
@@ -686,7 +686,7 @@ impl Agent {
 
         if !traits.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&prompt::format_character_traits(&traits));
+            prompt.push_str(&prompt::format_identity_traits(&traits));
         }
 
         if !facts.is_empty() {
@@ -1020,24 +1020,24 @@ mod tests {
     }
 
     #[test]
-    fn test_format_character_traits() {
+    fn test_format_identity_traits() {
         let traits = vec![
             make_memory(
-                MemoryKind::Character,
+                MemoryKind::Identity,
                 "formal and precise",
                 None,
                 Some("tone"),
             ),
             make_memory(
-                MemoryKind::Character,
+                MemoryKind::Identity,
                 "dry wit, concise",
                 None,
                 Some("personality"),
             ),
         ];
 
-        let formatted = format_character_traits(&traits);
-        assert!(formatted.contains("## character"));
+        let formatted = format_identity_traits(&traits);
+        assert!(formatted.contains("## identity"));
         assert!(formatted.contains("- tone: formal and precise"));
         assert!(formatted.contains("- personality: dry wit, concise"));
     }
@@ -1462,7 +1462,7 @@ mod tests {
         crate::config::init_workspace_root();
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.mark_setup_complete().unwrap();
-        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+        db.remember(MemoryKind::Identity, "formal", None, Some("tone"))
             .unwrap();
         db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
             .unwrap();
@@ -1479,7 +1479,7 @@ mod tests {
         let prompt = agent.system_prompt().unwrap();
 
         assert!(prompt.contains("current date and time:"));
-        assert!(prompt.contains("## character"));
+        assert!(prompt.contains("## identity"));
         assert!(prompt.contains("- tone: formal"));
         assert!(prompt.contains("## known facts"));
         assert!(prompt.contains("- name: alex"));

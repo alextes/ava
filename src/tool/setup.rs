@@ -11,7 +11,7 @@ pub(super) fn complete_setup_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: COMPLETE_SETUP_TOOL_NAME,
         description: "mark initial setup as complete. call this once the user has chosen a name \
-                      and optionally specified character traits. this finalizes the setup process.",
+                      and optionally specified identity traits. this finalizes the setup process.",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -62,8 +62,8 @@ pub(super) fn handle_complete_setup(
         });
     }
 
-    // store the name as a character trait
-    db.remember(MemoryKind::Character, name, None, Some("name"))?;
+    // store the name as an identity trait
+    db.remember(MemoryKind::Identity, name, None, Some("name"))?;
 
     // mark setup as complete
     db.mark_setup_complete()?;
@@ -74,8 +74,8 @@ pub(super) fn handle_complete_setup(
         content: MessageContent::tool_result(
             call_id,
             format!(
-                "setup complete! your name is now \"{name}\". character traits can be updated \
-                 at any time using the remember tool with kind=character."
+                "setup complete! your name is now \"{name}\". identity traits can be updated \
+                 at any time using the remember tool with kind=identity."
             ),
         ),
         switch_provider: None,
@@ -108,7 +108,7 @@ mod tests {
         assert!(text.contains("ren"), "result: {text}");
 
         // verify name was stored
-        let traits = db.character_traits().unwrap();
+        let traits = db.identity_traits().unwrap();
         let name_trait = traits.iter().find(|t| t.key.as_deref() == Some("name"));
         assert_eq!(name_trait.unwrap().content, "ren");
 

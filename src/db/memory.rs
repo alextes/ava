@@ -6,7 +6,7 @@ use super::Database;
 pub enum MemoryKind {
     Fact,
     Episode,
-    Character,
+    Identity,
 }
 
 impl MemoryKind {
@@ -14,7 +14,7 @@ impl MemoryKind {
         match self {
             MemoryKind::Fact => "fact",
             MemoryKind::Episode => "episode",
-            MemoryKind::Character => "character",
+            MemoryKind::Identity => "identity",
         }
     }
 
@@ -22,7 +22,7 @@ impl MemoryKind {
         match s {
             "fact" => Some(MemoryKind::Fact),
             "episode" => Some(MemoryKind::Episode),
-            "character" => Some(MemoryKind::Character),
+            "identity" => Some(MemoryKind::Identity),
             _ => None,
         }
     }
@@ -75,16 +75,16 @@ impl Database {
                 )?;
                 Ok(conn.last_insert_rowid())
             }
-            MemoryKind::Character => {
+            MemoryKind::Identity => {
                 let k = key.unwrap_or("");
                 let updated = conn.execute(
                     "UPDATE memories SET content = ?1, updated_at = datetime('now')
-                     WHERE kind = 'character' AND key = ?2",
+                     WHERE kind = 'identity' AND key = ?2",
                     rusqlite::params![content, k],
                 )?;
                 if updated > 0 {
                     let id: i64 = conn.query_row(
-                        "SELECT id FROM memories WHERE kind = 'character' AND key = ?1",
+                        "SELECT id FROM memories WHERE kind = 'identity' AND key = ?1",
                         rusqlite::params![k],
                         |row| row.get(0),
                     )?;
@@ -116,10 +116,10 @@ impl Database {
         Ok(rows > 0)
     }
 
-    pub fn forget_character(&self, key: &str) -> Result<bool, Error> {
+    pub fn forget_identity(&self, key: &str) -> Result<bool, Error> {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
-            "DELETE FROM memories WHERE kind = 'character' AND key = ?1",
+            "DELETE FROM memories WHERE kind = 'identity' AND key = ?1",
             rusqlite::params![key],
         )?;
         Ok(rows > 0)
@@ -131,11 +131,11 @@ impl Database {
         Ok(rows > 0)
     }
 
-    pub fn character_traits(&self) -> Result<Vec<Memory>, Error> {
+    pub fn identity_traits(&self) -> Result<Vec<Memory>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, kind, content, category, key, created_at
-             FROM memories WHERE kind = 'character'
+             FROM memories WHERE kind = 'identity'
              ORDER BY updated_at DESC LIMIT 20",
         )?;
         let memories = stmt
@@ -143,7 +143,7 @@ impl Database {
                 let kind_str: String = row.get(1)?;
                 Ok(Memory {
                     id: row.get(0)?,
-                    kind: MemoryKind::from_str(&kind_str).unwrap_or(MemoryKind::Character),
+                    kind: MemoryKind::from_str(&kind_str).unwrap_or(MemoryKind::Identity),
                     content: row.get(2)?,
                     category: row.get(3)?,
                     key: row.get(4)?,
@@ -273,14 +273,14 @@ mod tests {
     }
 
     #[test]
-    fn test_remember_character_upserts() {
+    fn test_remember_identity_upserts() {
         let db = Database::open_in_memory().unwrap();
-        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+        db.remember(MemoryKind::Identity, "formal", None, Some("tone"))
             .unwrap();
-        db.remember(MemoryKind::Character, "casual", None, Some("tone"))
+        db.remember(MemoryKind::Identity, "casual", None, Some("tone"))
             .unwrap();
 
-        let traits = db.character_traits().unwrap();
+        let traits = db.identity_traits().unwrap();
         assert_eq!(traits.len(), 1);
         assert_eq!(traits[0].content, "casual");
     }
@@ -308,13 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn test_forget_character() {
+    fn test_forget_identity() {
         let db = Database::open_in_memory().unwrap();
-        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+        db.remember(MemoryKind::Identity, "formal", None, Some("tone"))
             .unwrap();
-        assert!(db.forget_character("tone").unwrap());
-        assert!(!db.forget_character("tone").unwrap());
-        assert!(db.character_traits().unwrap().is_empty());
+        assert!(db.forget_identity("tone").unwrap());
+        assert!(!db.forget_identity("tone").unwrap());
+        assert!(db.identity_traits().unwrap().is_empty());
     }
 
     #[test]

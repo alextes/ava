@@ -163,6 +163,62 @@ const MIGRATIONS: &[&str] = &[
         last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     "#,
+    // v13: rename memory kind 'character' → 'identity'
+    r#"
+    BEGIN;
+
+    -- drop FTS infrastructure before dropping the memories table
+    DROP TRIGGER IF EXISTS memories_fts_ai;
+    DROP TRIGGER IF EXISTS memories_fts_au;
+    DROP TRIGGER IF EXISTS memories_fts_ad;
+    DROP TABLE IF EXISTS memories_fts;
+
+    CREATE TABLE memories_new (
+        id INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('fact', 'episode', 'identity')),
+        content TEXT NOT NULL,
+        category TEXT,
+        key TEXT,
+        source TEXT NOT NULL DEFAULT 'agent',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    INSERT INTO memories_new (id, kind, content, category, key, source, created_at, updated_at)
+        SELECT id,
+               CASE WHEN kind = 'character' THEN 'identity' ELSE kind END,
+               content, category, key, source, created_at, updated_at
+        FROM memories;
+
+    DROP TABLE memories;
+    ALTER TABLE memories_new RENAME TO memories;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_fact_unique
+        ON memories(category, key) WHERE kind = 'fact';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_identity_unique
+        ON memories(key) WHERE kind = 'identity';
+    CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+    CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at DESC);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        content, content=memories, content_rowid=id, tokenize='porter unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
+        INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
+    END;
+
+    INSERT INTO memories_fts(rowid, content) SELECT id, content FROM memories;
+
+    COMMIT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

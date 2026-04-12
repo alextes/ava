@@ -908,18 +908,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_remember_character() {
+    async fn test_handle_remember_identity() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call(
             "remember",
-            json!({"content": "formal and precise", "kind": "character", "key": "tone"}),
+            json!({"content": "formal and precise", "kind": "identity", "key": "tone"}),
         );
         let result = handle_tool_call(&reqwest::Client::new(), &db, None, &[], &call, None)
             .await
             .unwrap();
         assert!(extract_tool_result_text(&result.content).starts_with("ok (id="));
 
-        let traits = db.character_traits().unwrap();
+        let traits = db.identity_traits().unwrap();
         assert_eq!(traits.len(), 1);
         assert_eq!(traits[0].content, "formal and precise");
     }
@@ -991,17 +991,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_forget_character() {
+    async fn test_handle_forget_identity() {
         let db = Database::open_in_memory().unwrap();
-        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+        db.remember(MemoryKind::Identity, "formal", None, Some("tone"))
             .unwrap();
 
-        let call = make_call("forget", json!({"kind": "character", "key": "tone"}));
+        let call = make_call("forget", json!({"kind": "identity", "key": "tone"}));
         let result = handle_tool_call(&reqwest::Client::new(), &db, None, &[], &call, None)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
-        assert!(db.character_traits().unwrap().is_empty());
+        assert!(db.identity_traits().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1076,7 +1076,7 @@ mod tests {
             None,
         )
         .unwrap();
-        db.remember(MemoryKind::Character, "formal", None, Some("tone"))
+        db.remember(MemoryKind::Identity, "formal", None, Some("tone"))
             .unwrap();
 
         let call = make_call("recall", json!({"query": "rust"}));
@@ -1113,7 +1113,7 @@ mod tests {
         db.remember(MemoryKind::Episode, "discussed rust project", None, None)
             .unwrap();
         db.remember(
-            MemoryKind::Character,
+            MemoryKind::Identity,
             "rust enthusiast",
             None,
             Some("personality"),
@@ -1127,7 +1127,7 @@ mod tests {
         let text = extract_tool_result_text(&result.content);
         assert!(text.contains("[fact]"));
         assert!(text.contains("[episode]"));
-        assert!(text.contains("[character]"));
+        assert!(text.contains("[identity]"));
     }
 
     // manage_rules tool

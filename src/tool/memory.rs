@@ -40,7 +40,7 @@ struct RecallInput {
 pub(crate) fn remember_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: REMEMBER_TOOL_NAME,
-        description: "store something in long-term memory. kind=fact: structured knowledge (requires category + key, e.g. user/name: alex). kind=episode: events, decisions, context worth preserving. kind=character: persona traits that shape behavior (requires key).",
+        description: "store something in long-term memory. kind=fact: structured knowledge (requires category + key, e.g. user/name: alex). kind=episode: events, decisions, context worth preserving. kind=identity: identity traits — name, personality, behavioral preferences (requires key).",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -50,7 +50,7 @@ pub(crate) fn remember_definition() -> ToolDefinition {
                 },
                 "kind": {
                     "type": "string",
-                    "enum": ["fact", "episode", "character"],
+                    "enum": ["fact", "episode", "identity"],
                     "description": "memory type"
                 },
                 "category": {
@@ -59,7 +59,7 @@ pub(crate) fn remember_definition() -> ToolDefinition {
                 },
                 "key": {
                     "type": "string",
-                    "description": "key within category (required for kind=fact and kind=character)"
+                    "description": "key within category (required for kind=fact and kind=identity)"
                 }
             },
             "required": ["content", "kind"]
@@ -70,13 +70,13 @@ pub(crate) fn remember_definition() -> ToolDefinition {
 pub(crate) fn forget_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: FORGET_TOOL_NAME,
-        description: "delete a memory. for facts: provide kind+category+key. for character traits: provide kind+key. for episodes: provide kind+id.",
+        description: "delete a memory. for facts: provide kind+category+key. for identity traits: provide kind+key. for episodes: provide kind+id.",
         input_schema: json!({
             "type": "object",
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["fact", "episode", "character"],
+                    "enum": ["fact", "episode", "identity"],
                     "description": "memory type to delete"
                 },
                 "category": {
@@ -85,7 +85,7 @@ pub(crate) fn forget_definition() -> ToolDefinition {
                 },
                 "key": {
                     "type": "string",
-                    "description": "key (for kind=fact or kind=character)"
+                    "description": "key (for kind=fact or kind=identity)"
                 },
                 "id": {
                     "type": "integer",
@@ -174,9 +174,9 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
                     let key = input.key.as_deref().unwrap_or("");
                     db.forget_fact(cat, key)?
                 }
-                "character" => {
+                "identity" => {
                     let key = input.key.as_deref().unwrap_or("");
-                    db.forget_character(key)?
+                    db.forget_identity(key)?
                 }
                 "episode" => match input.id {
                     Some(id) => db.forget_memory(id)?,
@@ -254,9 +254,9 @@ pub(crate) async fn handle_recall(db: &Database, call: &ToolCall) -> Result<Tool
                         let date = m.created_at.split(' ').next().unwrap_or(&m.created_at);
                         output.push_str(&format!("[episode] {date}: {}", m.content));
                     }
-                    MemoryKind::Character => {
+                    MemoryKind::Identity => {
                         let key = m.key.as_deref().unwrap_or("?");
-                        output.push_str(&format!("[character] {key}: {}", m.content));
+                        output.push_str(&format!("[identity] {key}: {}", m.content));
                     }
                 }
             }

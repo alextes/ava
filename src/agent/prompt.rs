@@ -5,8 +5,8 @@ use crate::skill::Skill;
 pub(crate) const MAX_FACT_VALUE_CHARS: usize = 500;
 const MAX_SKILLS_SECTION_CHARS: usize = 2000;
 
-pub(crate) fn format_character_traits(traits: &[Memory]) -> String {
-    let mut output = String::from("## character");
+pub(crate) fn format_identity_traits(traits: &[Memory]) -> String {
+    let mut output = String::from("## identity");
     for t in traits {
         let key = t.key.as_deref().unwrap_or("?");
         let value = truncate_chars(&t.content, MAX_FACT_VALUE_CHARS);

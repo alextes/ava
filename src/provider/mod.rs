@@ -29,11 +29,11 @@ ask the user:
 1. **what should they call you?** a name is strongly encouraged — without one, features \
 like group chat participation and intelligent replies won't work well because there's no \
 name to refer to you by.
-2. **any character traits or behavioral preferences?** for example: tone, personality, \
+2. **any identity traits or behavioral preferences?** for example: tone, personality, \
 areas of expertise, communication style. this is entirely optional — defaults are fine.
 
 let the user know that all of these can be updated at any time after setup using the \
-`remember` tool with `kind: character`.
+`remember` tool with `kind: identity`.
 
 once the user has chosen at least a name, call the `complete_setup` tool to finalize. \
 keep this brief — don't over-explain. get the name, optionally traits, and complete setup.";
