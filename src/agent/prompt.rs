@@ -1,4 +1,5 @@
 use crate::db::Memory;
+use crate::db::channels::ChannelInfo;
 use crate::skill::Skill;
 
 pub(crate) const MAX_FACT_VALUE_CHARS: usize = 500;
@@ -83,6 +84,47 @@ pub(crate) fn format_available_skills(skills: &[Skill]) -> String {
             break;
         }
         output.push_str(&line);
+    }
+
+    output
+}
+
+pub(crate) fn format_active_channels(channels: &[ChannelInfo]) -> String {
+    let mut output = String::from("## channels\nyou are active in the following channels:");
+    let now = chrono::Utc::now();
+
+    for ch in channels {
+        let label = match ch.chat_type.as_str() {
+            "private" => format!("DM with user {}", ch.chat_id),
+            _ => ch
+                .title
+                .as_deref()
+                .map(|t| format!("#{t}"))
+                .unwrap_or_else(|| format!("chat {}", ch.chat_id)),
+        };
+
+        let ago = match chrono::NaiveDateTime::parse_from_str(&ch.last_seen_at, "%Y-%m-%d %H:%M:%S")
+        {
+            Ok(dt) => {
+                let seen = dt.and_utc();
+                let diff = now - seen;
+                if diff.num_minutes() < 1 {
+                    "just now".into()
+                } else if diff.num_minutes() < 60 {
+                    format!("{}m ago", diff.num_minutes())
+                } else if diff.num_hours() < 24 {
+                    format!("{}h ago", diff.num_hours())
+                } else {
+                    format!("{}d ago", diff.num_days())
+                }
+            }
+            Err(_) => "unknown".into(),
+        };
+
+        output.push_str(&format!(
+            "\n- {label} ({}, chat_id: {}) — last active {ago}",
+            ch.chat_type, ch.chat_id
+        ));
     }
 
     output

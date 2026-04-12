@@ -1,5 +1,5 @@
 mod access;
-mod channels;
+pub(crate) mod channels;
 mod memory;
 mod migrations;
 mod rules;

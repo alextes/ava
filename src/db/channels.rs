@@ -2,7 +2,6 @@ use crate::error::Error;
 
 use super::Database;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ChannelInfo {
     pub chat_id: i64,
@@ -38,7 +37,6 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn list_channels(&self) -> Result<Vec<ChannelInfo>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

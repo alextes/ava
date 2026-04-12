@@ -706,6 +706,19 @@ impl Agent {
             prompt.push_str(&prompt::format_available_skills(&model_skills));
         }
 
+        // show active channels (only those active in the last 7 days)
+        let channels = self.db.list_channels().unwrap_or_default();
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+        let recent_channels: Vec<_> = channels
+            .into_iter()
+            .filter(|ch| ch.last_seen_at >= cutoff_str)
+            .collect();
+        if !recent_channels.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&prompt::format_active_channels(&recent_channels));
+        }
+
         prompt.push_str(&format!(
             "\n\n## tool budget\nyou have a budget of {MAX_TOOL_ROUNDS} tool rounds per user \
              message. after exhausting the budget you get one final text-only turn. if you need \
