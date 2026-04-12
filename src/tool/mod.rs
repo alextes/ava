@@ -6,6 +6,7 @@ mod exec;
 mod filesystem;
 mod memory;
 mod search;
+mod setup;
 mod speak;
 mod tasks;
 mod upgrade;
@@ -31,6 +32,7 @@ pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub(crate) use exec::{load_vault_secrets, scrub_vault_secrets};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
+pub use setup::COMPLETE_SETUP_TOOL_NAME;
 pub use speak::SPEAK_TOOL_NAME;
 pub use tasks::TASKS_TOOL_NAME;
 pub use upgrade::UPGRADE_TOOL_NAME;
@@ -246,7 +248,14 @@ pub fn approval_summary(call: &ToolCall) -> String {
 
 // --- tool definitions ---
 
-pub fn tool_definitions() -> Vec<ToolDefinition> {
+pub fn tool_definitions(setup_mode: bool) -> Vec<ToolDefinition> {
+    if setup_mode {
+        return vec![
+            setup::complete_setup_definition(),
+            memory::remember_definition(),
+        ];
+    }
+
     vec![
         memory::remember_definition(),
         memory::forget_definition(),
@@ -382,6 +391,7 @@ pub async fn handle_tool_call(
         COMPLETE_TOOL_NAME => Ok(complete::handle_complete(&call.id, &call.input)),
         COMPACT_CONTEXT_TOOL_NAME => Ok(compact::handle_compact_context(&call.id)),
         UPGRADE_TOOL_NAME => Ok(upgrade::handle_upgrade(&call.id)),
+        COMPLETE_SETUP_TOOL_NAME => setup::handle_complete_setup(db, &call.id, &call.input),
         SWITCH_MODEL_TOOL_NAME => {
             match serde_json::from_value::<SwitchModelInput>(call.input.clone()) {
                 Ok(input) => {

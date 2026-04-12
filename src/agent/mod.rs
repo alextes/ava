@@ -13,7 +13,7 @@ use crate::mcp::manager::McpManager;
 use crate::message::{
     ContentBlock, InboundMessage, Message, MessageContent, OutboundMessage, Role, ToolResultContent,
 };
-use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider};
+use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider, SETUP_SYSTEM_PROMPT};
 use crate::skill::Skill;
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall, ToolDefinition};
 
@@ -558,7 +558,12 @@ impl Agent {
 
     /// build the full list of tool definitions (built-in + MCP).
     async fn all_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let mut tools = tool::tool_definitions();
+        let setup_mode = self.is_setup_mode().unwrap_or(false);
+        let mut tools = tool::tool_definitions(setup_mode);
+
+        if setup_mode {
+            return tools;
+        }
 
         if let Some(ref mcp) = self.mcp {
             let builtin_names: std::collections::HashSet<String> =
@@ -634,13 +639,36 @@ impl Agent {
         Ok(())
     }
 
+    fn is_setup_mode(&self) -> Result<bool, Error> {
+        Ok(!self.db.is_setup_complete()?)
+    }
+
     fn system_prompt(&self) -> Result<String, Error> {
+        // in setup mode, use a dedicated prompt that guides the user through initialization
+        if self.is_setup_mode()? {
+            let mut prompt = SETUP_SYSTEM_PROMPT.to_string();
+            prompt.push_str(&format!(
+                "\n\ncurrent date and time: {}",
+                Utc::now().format("%Y-%m-%d %H:%M UTC")
+            ));
+            return Ok(prompt);
+        }
+
         let traits = self.db.character_traits()?;
         let facts = self.db.recent_facts()?;
         let episodes = self.db.recent_episodes()?;
         let pending_tasks = self.db.pending_task_titles()?;
 
-        let mut prompt = DEFAULT_SYSTEM_PROMPT.to_string();
+        // build base prompt, incorporating agent name from character traits if available
+        let name = traits
+            .iter()
+            .find(|t| t.key.as_deref() == Some("name"))
+            .map(|t| t.content.as_str());
+
+        let mut prompt = match name {
+            Some(n) => format!("you are {n}, an ai assistant."),
+            None => DEFAULT_SYSTEM_PROMPT.to_string(),
+        };
 
         prompt.push_str(&format!(
             "\n\ncurrent date and time: {}",
@@ -817,6 +845,7 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
         db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
             .unwrap();
         let agent = Agent::new(
@@ -1395,6 +1424,7 @@ mod tests {
     #[test]
     fn test_system_prompt_includes_all_sections() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
         db.remember(MemoryKind::Character, "formal", None, Some("tone"))
             .unwrap();
         db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
@@ -1425,6 +1455,7 @@ mod tests {
     #[test]
     fn test_system_prompt_includes_pending_tasks() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
         db.add_task("fix CI failure", None).unwrap();
         db.add_task("review PR #42", None).unwrap();
 
@@ -1445,6 +1476,7 @@ mod tests {
     #[test]
     fn test_system_prompt_omits_empty_tasks() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
 
         let provider = make_test_provider("hi");
         let agent = Agent::new(
@@ -1532,6 +1564,7 @@ mod tests {
         // context usage is injected as a message, not in the system prompt,
         // to avoid busting the prompt cache on every tool round.
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
         let provider = make_test_provider("hi");
         let agent = Agent::new(
             provider,
@@ -1547,6 +1580,7 @@ mod tests {
     #[test]
     fn test_system_prompt_excludes_completed_tasks() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
         let id = db.add_task("done task", None).unwrap();
         db.complete_task(id).unwrap();
         db.add_task("pending task", None).unwrap();
@@ -1718,6 +1752,7 @@ mod tests {
     #[test]
     fn test_system_prompt_includes_skills() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
         let skills = Arc::new(vec![
             Skill {
                 name: "summarize".into(),
@@ -1754,6 +1789,7 @@ mod tests {
     #[test]
     fn test_system_prompt_omits_skills_when_none() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
         let agent = Agent::new(
             make_test_provider("hi"),
             AnyApprover::Cli(CliApprover),

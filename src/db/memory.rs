@@ -203,6 +203,29 @@ impl Database {
         Ok(memories)
     }
 
+    /// mark initial setup as completed.
+    pub fn mark_setup_complete(&self) -> Result<(), Error> {
+        self.remember(
+            MemoryKind::Fact,
+            "true",
+            Some("system"),
+            Some("setup_completed"),
+        )?;
+        Ok(())
+    }
+
+    /// check if the initial setup flow has been completed.
+    pub fn is_setup_complete(&self) -> Result<bool, Error> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memories
+             WHERE kind = 'fact' AND category = 'system' AND key = 'setup_completed'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn recent_facts(&self) -> Result<Vec<Memory>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

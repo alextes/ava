@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_convert_tools() {
-        let definitions = crate::tool::tool_definitions();
+        let definitions = crate::tool::tool_definitions(false);
         let custom_count = definitions
             .iter()
             .filter(|d| matches!(d, ToolDefinition::Custom { .. }))

@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_request_serialization() {
         let messages = vec![Message::user("hello")];
-        let tools = crate::tool::tool_definitions();
+        let tools = crate::tool::tool_definitions(false);
 
         let system = json!([{
             "type": "text",
