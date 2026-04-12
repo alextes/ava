@@ -28,6 +28,7 @@ pub struct Agent {
     mcp: Option<Arc<McpManager>>,
     skills: Arc<Vec<Skill>>,
     vault_secrets: Arc<RwLock<Vec<String>>>,
+    chat_buffer: Option<Arc<crate::chat_buffer::ChatBuffer>>,
 }
 
 impl Agent {
@@ -45,6 +46,7 @@ impl Agent {
             mcp: None,
             skills: Arc::new(Vec::new()),
             vault_secrets: Arc::new(RwLock::new(tool::load_vault_secrets())),
+            chat_buffer: None,
         }
     }
 
@@ -55,6 +57,11 @@ impl Agent {
 
     pub fn with_skills(mut self, skills: Arc<Vec<Skill>>) -> Self {
         self.skills = skills;
+        self
+    }
+
+    pub fn with_chat_buffer(mut self, buf: Arc<crate::chat_buffer::ChatBuffer>) -> Self {
+        self.chat_buffer = Some(buf);
         self
     }
 
@@ -543,6 +550,7 @@ impl Agent {
             self.mcp.as_deref(),
             &self.skills,
             call,
+            self.chat_buffer.as_deref(),
         )
         .await?;
 

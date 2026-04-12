@@ -24,7 +24,6 @@ pub struct ChatBuffer {
     chats: Mutex<HashMap<i64, VecDeque<BufferedMessage>>>,
 }
 
-#[allow(dead_code)]
 impl ChatBuffer {
     pub fn new() -> Self {
         Self {

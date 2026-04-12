@@ -135,6 +135,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     let client_clone = client.clone();
     let mcp_clone = mcp.clone();
     let skills_clone = Arc::clone(&skills);
+    let chat_buffer_clone = Arc::clone(&chat_buffer);
     let agent_handle = tokio::spawn(async move {
         agent_loop(
             rx,
@@ -143,6 +144,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             client_clone,
             mcp_clone,
             skills_clone,
+            chat_buffer_clone,
         )
         .await;
     });
@@ -244,6 +246,7 @@ async fn agent_loop(
     client: reqwest::Client,
     mcp: Option<Arc<crate::mcp::manager::McpManager>>,
     skills: Arc<Vec<crate::skill::Skill>>,
+    chat_buffer: Arc<ChatBuffer>,
 ) {
     while let Some(queued) = rx.recv().await {
         if let Some(("switch", args)) = parse_slash_command(&queued.content) {
@@ -293,7 +296,8 @@ async fn agent_loop(
         };
 
         let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone())
-            .with_skills(Arc::clone(&skills));
+            .with_skills(Arc::clone(&skills))
+            .with_chat_buffer(Arc::clone(&chat_buffer));
         if let Some(ref mcp) = mcp {
             agent = agent.with_mcp(Arc::clone(mcp));
         }
