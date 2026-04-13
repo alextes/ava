@@ -285,11 +285,15 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("completed")
                                     .to_string();
-                                let operation = serde_json::json!({
+                                let mut operation = serde_json::json!({
                                     "type": input.get("operation").and_then(|v| v.as_str()).unwrap_or("update_file"),
                                     "path": input.get("path").and_then(|v| v.as_str()).unwrap_or(""),
-                                    "diff": input.get("diff").and_then(|v| v.as_str()),
                                 });
+                                // only include diff when present — delete_file has no diff
+                                // and the API rejects unknown fields
+                                if let Some(diff) = input.get("diff").and_then(|v| v.as_str()) {
+                                    operation["diff"] = serde_json::Value::String(diff.to_string());
+                                }
                                 out.push(InputItem::ApplyPatchCall {
                                     id: apc_id,
                                     call_id: id.clone(),
@@ -472,16 +476,19 @@ impl Provider for OpenAiProvider {
                     status,
                     operation,
                 } => {
+                    let mut input = serde_json::json!({
+                        "apc_id": id,
+                        "apc_status": status,
+                        "operation": operation.op_type,
+                        "path": operation.path,
+                    });
+                    if let Some(diff) = operation.diff {
+                        input["diff"] = serde_json::Value::String(diff);
+                    }
                     tool_calls.push(ToolCall {
                         id: call_id,
                         name: APPLY_PATCH_TOOL_NAME.to_string(),
-                        input: serde_json::json!({
-                            "apc_id": id,
-                            "apc_status": status,
-                            "operation": operation.op_type,
-                            "path": operation.path,
-                            "diff": operation.diff,
-                        }),
+                        input,
                     });
                 }
                 OutputItem::Other => {}
