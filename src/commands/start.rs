@@ -40,14 +40,29 @@ impl BotIdentity {
         })
     }
 
-    /// check if the bot's name appears in the message text (case-insensitive).
+    /// check if the bot's name appears in the message text as a word (case-insensitive).
+    /// matches "ren," and "hi ren!" but not "current" or "different".
     fn is_named_in_text(&self, text: &str, display_name: &str) -> bool {
         let lower = text.to_lowercase();
-        if !self.username.is_empty() && lower.contains(&self.username.to_lowercase()) {
-            return true;
-        }
-        if !display_name.is_empty() && lower.contains(&display_name.to_lowercase()) {
-            return true;
+        for name in [&self.username, &display_name.to_lowercase()] {
+            if name.is_empty() {
+                continue;
+            }
+            let name_lower = name.to_lowercase();
+            let mut start = 0;
+            while let Some(pos) = lower[start..].find(&name_lower) {
+                let abs_pos = start + pos;
+                let end_pos = abs_pos + name_lower.len();
+                // check word boundary: char before and after must be non-alphanumeric
+                let before_ok =
+                    abs_pos == 0 || !lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+                let after_ok =
+                    end_pos >= lower.len() || !lower.as_bytes()[end_pos].is_ascii_alphanumeric();
+                if before_ok && after_ok {
+                    return true;
+                }
+                start = abs_pos + 1;
+            }
         }
         false
     }
@@ -625,7 +640,8 @@ async fn telegram_producer(
                 );
 
                 // photos sent as replies to the bot count as addressed
-                if !mentioned && !replied_to && !named && !has_photo {
+                let photo_reply = has_photo && replied_to;
+                if !mentioned && !replied_to && !named && !photo_reply {
                     tracing::debug!(
                         chat_id,
                         thread_id,
@@ -730,9 +746,21 @@ mod tests {
     #[test]
     fn test_is_named_in_text() {
         let b = bot();
+        // word boundary matches
         assert!(b.is_named_in_text("hey ren, what's up?", "ren"));
         assert!(b.is_named_in_text("Hey Ren, what's up?", "ren"));
+        assert!(b.is_named_in_text("ren.", "ren"));
+        assert!(b.is_named_in_text("ren!", "ren"));
+        assert!(b.is_named_in_text("hi ren", "ren"));
+        assert!(b.is_named_in_text("ren can you help", "ren"));
+        assert!(b.is_named_in_text("that's it ren old boy", "ren"));
+        // username match
         assert!(b.is_named_in_text("@ren_bot do something", "ren"));
+        // should NOT match substrings inside other words
+        assert!(!b.is_named_in_text("the current status", "ren"));
+        assert!(!b.is_named_in_text("apparently not", "ren"));
+        assert!(!b.is_named_in_text("different approach", "ren"));
+        assert!(!b.is_named_in_text("rendering complete", "ren"));
         assert!(!b.is_named_in_text("hello everyone", "ren"));
     }
 
