@@ -307,7 +307,28 @@ async fn agent_loop(
             images: queued.images,
         };
 
-        match agent.process(&inbound).await {
+        // send "typing" indicator while the agent processes.
+        // telegram's indicator expires after ~5s, so we re-send every 4s.
+        let typing_bot = match &queued.sink {
+            ResponseSink::Telegram { chat_id, bot, .. } => Some((*chat_id, Arc::clone(bot))),
+        };
+        let typing_handle = typing_bot.map(|(chat_id, bot)| {
+            tokio::spawn(async move {
+                loop {
+                    let _ = bot.send_chat_action(chat_id, "typing").await;
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                }
+            })
+        });
+
+        let result = agent.process(&inbound).await;
+
+        // stop typing indicator
+        if let Some(handle) = typing_handle {
+            handle.abort();
+        }
+
+        match result {
             Ok(Some(outbound)) => send_response(queued.sink, outbound).await,
             Ok(None) => tracing::debug!("agent completed silently"),
             Err(error::Error::RateLimited(ref msg)) => {

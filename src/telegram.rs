@@ -341,6 +341,34 @@ impl TelegramBot {
             ))
         }
     }
+
+    /// send a chat action (e.g. "typing") to indicate activity.
+    /// the indicator auto-expires after ~5 seconds in telegram.
+    pub async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<(), Error> {
+        let params = serde_json::json!({
+            "chat_id": chat_id,
+            "action": action,
+        });
+
+        let response: ApiResponse<bool> = self
+            .client
+            .post(self.api_url("sendChatAction"))
+            .json(&params)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            Ok(())
+        } else {
+            Err(Error::Telegram(
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".into()),
+            ))
+        }
+    }
 }
 
 // --- API request/response types ---
