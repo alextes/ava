@@ -28,6 +28,7 @@ pub fn needs_compaction(
                 .flat_map(|m| &m.content)
                 .map(|c| match c {
                     MessageContent::Text { text } => text.len(),
+                    MessageContent::Image { source } => source.data.len(),
                     MessageContent::ToolUse { input, .. } => input.to_string().len(),
                     MessageContent::ToolResult { content, .. } => content.estimated_len(),
                 })
@@ -100,6 +101,10 @@ pub async fn compact_messages(
                     summarize_content.push_str(": [tool call: ");
                     summarize_content.push_str(name);
                     summarize_content.push_str("]\n");
+                }
+                MessageContent::Image { .. } => {
+                    summarize_content.push_str(role_str);
+                    summarize_content.push_str(": [image]\n");
                 }
                 MessageContent::ToolResult { content, .. } => {
                     summarize_content.push_str("tool result: ");

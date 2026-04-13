@@ -56,6 +56,7 @@ pub async fn run(
             let queued = QueuedMessage {
                 channel: ChannelKind::Telegram,
                 content: schedule.prompt.clone(),
+                images: Vec::new(),
                 sink: ResponseSink::Telegram {
                     chat_id: default_chat_id,
                     thread_id: None,
@@ -108,6 +109,7 @@ pub async fn run(
                 "you have {count} pending task{}. review your task list and make progress where possible.",
                 if count == 1 { "" } else { "s" }
             ),
+            images: Vec::new(),
             sink: ResponseSink::Telegram {
                 chat_id: default_chat_id,
                 thread_id: None,

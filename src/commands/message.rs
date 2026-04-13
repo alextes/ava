@@ -32,6 +32,7 @@ pub(crate) async fn run_message(content: String) -> Result<(), error::Error> {
     let inbound = InboundMessage {
         channel: ChannelKind::Cli,
         content,
+        images: Vec::new(),
     };
 
     if let Some(outbound) = agent.process(&inbound).await? {

@@ -171,23 +171,34 @@ fn convert_messages(system_prompt: &str, messages: &[Message]) -> Vec<ChatMessag
 
         match msg.role {
             Role::User | Role::System => {
-                let mut text_parts = Vec::new();
+                let mut content_parts: Vec<Value> = Vec::new();
                 for block in &msg.content {
                     match block {
-                        MessageContent::Text { text } => text_parts.push(text.clone()),
+                        MessageContent::Text { text } => {
+                            content_parts.push(json!({"type": "text", "text": text}));
+                        }
+                        MessageContent::Image { source } => {
+                            content_parts.push(json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": source.media_type,
+                                    "data": source.data,
+                                }
+                            }));
+                        }
                         MessageContent::ToolResult {
                             tool_use_id,
                             content,
                         } => {
-                            // flush text first
-                            if !text_parts.is_empty() {
+                            // flush content parts first
+                            if !content_parts.is_empty() {
                                 out.push(ChatMessage {
                                     role: "user".into(),
-                                    content: Some(Value::String(text_parts.join("\n"))),
+                                    content: Some(Value::Array(std::mem::take(&mut content_parts))),
                                     tool_calls: None,
                                     tool_call_id: None,
                                 });
-                                text_parts.clear();
                             }
                             out.push(ChatMessage {
                                 role: "tool".into(),
@@ -199,16 +210,21 @@ fn convert_messages(system_prompt: &str, messages: &[Message]) -> Vec<ChatMessag
                         _ => {}
                     }
                 }
-                if !text_parts.is_empty() {
+                if !content_parts.is_empty() {
                     let content = if is_last {
-                        // add cache_control on last message for anthropic models
-                        json!([{
-                            "type": "text",
-                            "text": text_parts.join("\n"),
-                            "cache_control": {"type": "ephemeral"}
-                        }])
+                        // add cache_control on last block for anthropic models
+                        if let Some(last) = content_parts.last_mut() {
+                            last["cache_control"] = json!({"type": "ephemeral"});
+                        }
+                        Value::Array(content_parts)
+                    } else if content_parts.len() == 1
+                        && content_parts[0].get("type") == Some(&Value::String("text".into()))
+                        && content_parts[0].get("cache_control").is_none()
+                    {
+                        // optimize: single text block without cache_control as plain string
+                        content_parts[0]["text"].clone()
                     } else {
-                        Value::String(text_parts.join("\n"))
+                        Value::Array(content_parts)
                     };
                     out.push(ChatMessage {
                         role: "user".into(),

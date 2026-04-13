@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::message::{ChannelKind, OutboundMessage};
+use crate::message::{ChannelKind, ImageSource, OutboundMessage};
 use crate::telegram::TelegramBot;
 use crate::telegram_fmt::markdown_to_telegram_html;
 
@@ -19,6 +19,7 @@ pub enum ResponseSink {
 pub struct QueuedMessage {
     pub channel: ChannelKind,
     pub content: String,
+    pub images: Vec<ImageSource>,
     pub sink: ResponseSink,
 }
 

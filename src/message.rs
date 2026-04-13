@@ -90,6 +90,9 @@ pub enum MessageContent {
     Text {
         text: String,
     },
+    Image {
+        source: ImageSource,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -179,6 +182,8 @@ impl ChannelKind {
 pub struct InboundMessage {
     pub channel: ChannelKind,
     pub content: String,
+    /// images attached to this message (e.g. telegram photos)
+    pub images: Vec<ImageSource>,
 }
 
 /// a message going out from the agent

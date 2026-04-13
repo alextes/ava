@@ -155,21 +155,31 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
     for msg in messages {
         match msg.role {
             Role::User | Role::System => {
-                let mut text_parts = Vec::new();
+                let mut content_parts: Vec<Value> = Vec::new();
                 for block in &msg.content {
                     match block {
-                        MessageContent::Text { text } => text_parts.push(text.clone()),
+                        MessageContent::Text { text } => {
+                            content_parts
+                                .push(serde_json::json!({"type": "input_text", "text": text}));
+                        }
+                        MessageContent::Image { source } => {
+                            let data_uri =
+                                format!("data:{};base64,{}", source.media_type, source.data);
+                            content_parts.push(serde_json::json!({
+                                "type": "input_image",
+                                "image_url": data_uri,
+                            }));
+                        }
                         MessageContent::ToolResult {
                             tool_use_id,
                             content,
                         } => {
-                            // flush any accumulated text first
-                            if !text_parts.is_empty() {
+                            // flush any accumulated content parts first
+                            if !content_parts.is_empty() {
                                 out.push(InputItem::Message {
                                     role: "user".to_string(),
-                                    content: Value::String(text_parts.join("\n")),
+                                    content: Value::Array(std::mem::take(&mut content_parts)),
                                 });
-                                text_parts.clear();
                             }
                             let output = tool_result_content_to_value(content);
                             out.push(InputItem::FunctionCallOutput {
@@ -180,10 +190,18 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
                         _ => {}
                     }
                 }
-                if !text_parts.is_empty() {
+                if !content_parts.is_empty() {
+                    // optimize: single text block can be sent as plain string
+                    let content = if content_parts.len() == 1
+                        && content_parts[0].get("type") == Some(&Value::String("input_text".into()))
+                    {
+                        content_parts[0]["text"].clone()
+                    } else {
+                        Value::Array(content_parts)
+                    };
                     out.push(InputItem::Message {
                         role: "user".to_string(),
-                        content: Value::String(text_parts.join("\n")),
+                        content,
                     });
                 }
             }

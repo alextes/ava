@@ -110,11 +110,18 @@ impl Agent {
         // expand /skill-name invocations before sending to the LLM
         let content = self.expand_skill(&inbound.content);
 
+        // build user content: text + any attached images
+        let mut user_content = vec![MessageContent::text(&content)];
+        for image in &inbound.images {
+            user_content.push(MessageContent::Image {
+                source: image.clone(),
+            });
+        }
+
         // append and persist the new user message
-        let user_content = vec![MessageContent::text(&content)];
         self.db
             .append_message(session_id, "user", &user_content, Some(channel_str))?;
-        messages.push(Message::user(&content));
+        messages.push(Message::user_with_content(user_content));
 
         // inject current timestamp as a system note so the model knows the time
         // without putting it in the system prompt (which would bust the cache).
@@ -872,6 +879,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "hello".into(),
         };
 
@@ -892,6 +900,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "hello".into(),
         };
 
@@ -935,6 +944,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "hello".into(),
         };
 
@@ -994,6 +1004,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "what is my name?".into(),
         };
         agent.process(&inbound).await.unwrap().unwrap();
@@ -1146,6 +1157,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "my name is alex".into(),
         };
 
@@ -1234,6 +1246,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "remember these things".into(),
         };
 
@@ -1302,6 +1315,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "loop forever".into(),
         };
 
@@ -1353,6 +1367,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "loop forever".into(),
         };
 
@@ -1428,6 +1443,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "do many things".into(),
         };
 
@@ -1485,6 +1501,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "run echo hi".into(),
         };
 
@@ -1619,6 +1636,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "hello after crash".into(),
         };
 
@@ -1734,6 +1752,7 @@ mod tests {
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
+            images: Vec::new(),
             content: "distill memories".into(),
         };
 

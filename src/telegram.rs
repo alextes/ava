@@ -79,6 +79,47 @@ impl TelegramBot {
         format!("{}{}/{}", API_BASE, self.token, method)
     }
 
+    fn file_url(&self, file_path: &str) -> String {
+        format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            self.token, file_path
+        )
+    }
+
+    /// get file info from telegram (needed to download files).
+    #[tracing::instrument(skip(self))]
+    pub async fn get_file(&self, file_id: &str) -> Result<FileInfo, Error> {
+        let params = serde_json::json!({ "file_id": file_id });
+        let response: ApiResponse<FileInfo> = self
+            .client
+            .post(self.api_url("getFile"))
+            .json(&params)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            response
+                .result
+                .ok_or_else(|| Error::Telegram("getFile returned no result".into()))
+        } else {
+            Err(Error::Telegram(
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".into()),
+            ))
+        }
+    }
+
+    /// download a file from telegram by its file_path (obtained via get_file).
+    #[tracing::instrument(skip(self))]
+    pub async fn download_file(&self, file_path: &str) -> Result<Vec<u8>, Error> {
+        let url = self.file_url(file_path);
+        let bytes = self.client.get(&url).send().await?.bytes().await?.to_vec();
+        Ok(bytes)
+    }
+
     #[tracing::instrument(skip(self))]
     pub async fn get_updates(&self, offset: Option<i64>) -> Result<Vec<Update>, Error> {
         let params = GetUpdatesParams {
@@ -389,10 +430,34 @@ pub struct Message {
     pub from: Option<User>,
     pub chat: Chat,
     pub text: Option<String>,
+    /// photos attached to this message (multiple sizes of the same image)
+    pub photo: Option<Vec<PhotoSize>>,
+    /// caption text for media messages (photos, videos, etc.)
+    pub caption: Option<String>,
     pub reply_to_message: Option<Box<Message>>,
     pub entities: Option<Vec<MessageEntity>>,
     /// present when the message was sent in a supergroup topic (forum thread)
     pub message_thread_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PhotoSize {
+    pub file_id: String,
+    #[allow(dead_code)]
+    pub file_unique_id: String,
+    #[allow(dead_code)]
+    pub width: i32,
+    #[allow(dead_code)]
+    pub height: i32,
+    #[allow(dead_code)]
+    pub file_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileInfo {
+    #[allow(dead_code)]
+    pub file_id: String,
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

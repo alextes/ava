@@ -8,7 +8,7 @@ use crate::cli::{
 };
 use crate::db::Database;
 use crate::error;
-use crate::message::{ChannelKind, InboundMessage};
+use crate::message::{ChannelKind, ImageSource, InboundMessage};
 use crate::queue::{
     MessageReceiver, QueuedMessage, ResponseSink, message_queue, send_error, send_response,
 };
@@ -304,6 +304,7 @@ async fn agent_loop(
         let inbound = InboundMessage {
             channel: queued.channel,
             content: queued.content,
+            images: queued.images,
         };
 
         match agent.process(&inbound).await {
@@ -436,14 +437,58 @@ async fn telegram_producer(
                 continue;
             }
 
-            // handle text messages
+            // handle messages (text and/or photo)
             let Some(msg) = update.message else {
                 continue;
             };
 
-            let Some(text) = msg.text else {
+            let has_text = msg.text.is_some();
+            let has_photo = msg.photo.is_some();
+
+            // skip messages with neither text nor photo
+            if !has_text && !has_photo {
                 continue;
+            }
+
+            // extract text: prefer msg.text, fall back to caption for photo messages
+            let text = if let Some(ref t) = msg.text {
+                t.clone()
+            } else {
+                msg.caption.clone().unwrap_or_default()
             };
+
+            // download photo if present
+            let mut images = Vec::new();
+            if let Some(ref photos) = msg.photo {
+                // telegram sends multiple sizes; pick the largest (last in array)
+                if let Some(largest) = photos.last() {
+                    match bot.get_file(&largest.file_id).await {
+                        Ok(file_info) => {
+                            if let Some(ref file_path) = file_info.file_path {
+                                match bot.download_file(file_path).await {
+                                    Ok(bytes) => {
+                                        use base64::Engine;
+                                        let data = base64::engine::general_purpose::STANDARD
+                                            .encode(&bytes);
+                                        // telegram compresses photos to jpeg
+                                        images.push(ImageSource {
+                                            source_type: "base64".into(),
+                                            media_type: "image/jpeg".into(),
+                                            data,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(%e, "failed to download telegram photo");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(%e, "failed to get telegram file info");
+                        }
+                    }
+                }
+            }
 
             let chat_id = msg.chat.id;
             let user_id = msg.from.as_ref().map(|u| u.id);
@@ -477,6 +522,11 @@ async fn telegram_producer(
             let _ = db.upsert_channel(chat_id, chat_type, msg.chat.title.as_deref());
 
             // buffer message for context (all authorized messages, not just those that trigger the agent)
+            let buffer_text = if text.is_empty() {
+                "[photo]".to_string()
+            } else {
+                text.clone()
+            };
             let user_name = username.clone().unwrap_or_else(|| {
                 user_id
                     .map(|id| format!("user_{id}"))
@@ -487,7 +537,7 @@ async fn telegram_producer(
                 BufferedMessage {
                     user_name,
                     user_id,
-                    text: text.clone(),
+                    text: buffer_text,
                     received_at: std::time::Instant::now(),
                 },
             );
@@ -510,7 +560,8 @@ async fn telegram_producer(
                     "evaluated group message trigger"
                 );
 
-                if !mentioned && !replied_to && !named {
+                // photos sent as replies to the bot count as addressed
+                if !mentioned && !replied_to && !named && !has_photo {
                     tracing::debug!(
                         chat_id,
                         thread_id,
@@ -537,6 +588,7 @@ async fn telegram_producer(
             let queued = QueuedMessage {
                 channel: ChannelKind::Telegram,
                 content,
+                images,
                 sink: ResponseSink::Telegram {
                     chat_id,
                     thread_id: msg.message_thread_id,
@@ -644,6 +696,8 @@ mod tests {
                 title: None,
             },
             text: Some("hi".into()),
+            photo: None,
+            caption: None,
             reply_to_message: None,
             entities: None,
             message_thread_id: None,
@@ -663,6 +717,8 @@ mod tests {
                 title: None,
             },
             text: Some("hi".into()),
+            photo: None,
+            caption: None,
             reply_to_message: None,
             entities: None,
             message_thread_id: None,
