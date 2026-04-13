@@ -8,7 +8,11 @@ use crate::telegram_fmt::markdown_to_telegram_html;
 
 /// routes agent responses back to the originating channel
 pub enum ResponseSink {
-    Telegram { chat_id: i64, bot: Arc<TelegramBot> },
+    Telegram {
+        chat_id: i64,
+        thread_id: Option<i64>,
+        bot: Arc<TelegramBot>,
+    },
 }
 
 /// a message queued for sequential agent processing
@@ -28,7 +32,11 @@ pub fn message_queue(buffer: usize) -> (MessageSender, MessageReceiver) {
 /// send a response back through the appropriate channel
 pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
     match sink {
-        ResponseSink::Telegram { chat_id, bot } => {
+        ResponseSink::Telegram {
+            chat_id,
+            thread_id,
+            bot,
+        } => {
             // send voice message if present
             if let Some(voice_bytes) = outbound.voice
                 && let Err(e) = bot.send_voice(chat_id, voice_bytes).await
@@ -39,7 +47,7 @@ pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
             // send text response (always — voice is supplementary)
             if !outbound.content.is_empty() {
                 let html = markdown_to_telegram_html(&outbound.content);
-                if let Err(e) = bot.send_message(chat_id, &html).await {
+                if let Err(e) = bot.send_message(chat_id, &html, thread_id).await {
                     tracing::error!(%e, chat_id, "failed to send telegram response");
                 }
             }
