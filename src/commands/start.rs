@@ -695,7 +695,7 @@ async fn telegram_producer(
                     Some(_) => format!("[recent messages in #{group_name} > topic]"),
                     None => format!("[recent messages in #{group_name}]"),
                 };
-                match chat_buffer.format_context(chat_id, thread_id) {
+                match chat_buffer.drain_context(chat_id, thread_id) {
                     Some(ctx) => format!("{context_header}\n{ctx}\n\n{from_line}\n{cleaned}"),
                     None => format!("{from_line}\n{cleaned}"),
                 }

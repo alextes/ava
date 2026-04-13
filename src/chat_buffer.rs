@@ -93,6 +93,31 @@ impl ChatBuffer {
         }
         Some(lines.join("\n"))
     }
+
+    /// drain a chat/thread's buffer, returning formatted text and clearing the
+    /// buffer. messages are only injected into the agent's context once — new
+    /// messages that arrive after the drain accumulate for the next trigger.
+    pub fn drain_context(&self, chat_id: i64, thread_id: Option<i64>) -> Option<String> {
+        let mut chats = self.chats.lock().unwrap();
+        let buf = chats.get_mut(&(chat_id, thread_id))?;
+
+        // prune stale
+        let cutoff = Instant::now() - MAX_AGE;
+        while buf.front().is_some_and(|m| m.received_at < cutoff) {
+            buf.pop_front();
+        }
+
+        if buf.is_empty() {
+            return None;
+        }
+
+        let messages: Vec<_> = buf.drain(..).collect();
+        let mut lines = Vec::with_capacity(messages.len());
+        for msg in &messages {
+            lines.push(format!("{}: {}", msg.user_name, msg.text));
+        }
+        Some(lines.join("\n"))
+    }
 }
 
 #[cfg(test)]
@@ -201,5 +226,24 @@ mod tests {
         assert_eq!(ctx, "alice: hello\nbob: hi there");
 
         assert!(buf.format_context(999, None).is_none());
+    }
+
+    #[test]
+    fn test_drain_context_clears_buffer() {
+        let buf = ChatBuffer::new();
+        buf.push(100, None, msg("alice", "hello"));
+        buf.push(100, None, msg("bob", "hi"));
+
+        let ctx = buf.drain_context(100, None).unwrap();
+        assert_eq!(ctx, "alice: hello\nbob: hi");
+
+        // buffer is now empty
+        assert!(buf.drain_context(100, None).is_none());
+        assert!(buf.snapshot(100, None).is_empty());
+
+        // new messages still accumulate
+        buf.push(100, None, msg("charlie", "hey"));
+        let ctx2 = buf.drain_context(100, None).unwrap();
+        assert_eq!(ctx2, "charlie: hey");
     }
 }
