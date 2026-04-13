@@ -770,6 +770,149 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_mixed_response_function_and_apply_patch() {
+        let json = r#"{
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "making changes"}]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_fn1",
+                    "name": "exec",
+                    "arguments": "{\"command\":\"ls\"}"
+                },
+                {
+                    "type": "apply_patch_call",
+                    "id": "apc_1",
+                    "call_id": "call_ap1",
+                    "status": "completed",
+                    "operation": {
+                        "type": "create_file",
+                        "path": "new.txt",
+                        "diff": "+hello"
+                    }
+                }
+            ],
+            "status": "completed"
+        }"#;
+
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.output.len(), 3);
+
+        // check each item type was parsed correctly
+        assert!(matches!(response.output[0], OutputItem::Message { .. }));
+        assert!(matches!(
+            response.output[1],
+            OutputItem::FunctionCall { .. }
+        ));
+        assert!(matches!(
+            response.output[2],
+            OutputItem::ApplyPatchCall { .. }
+        ));
+    }
+
+    #[test]
+    fn test_parse_multiple_apply_patch_calls() {
+        let json = r#"{
+            "output": [
+                {
+                    "type": "apply_patch_call",
+                    "id": "apc_1",
+                    "call_id": "call_1",
+                    "status": "completed",
+                    "operation": {"type": "update_file", "path": "a.rs", "diff": "@@\n-old\n+new"}
+                },
+                {
+                    "type": "apply_patch_call",
+                    "id": "apc_2",
+                    "call_id": "call_2",
+                    "status": "completed",
+                    "operation": {"type": "create_file", "path": "b.rs", "diff": "+content"}
+                },
+                {
+                    "type": "apply_patch_call",
+                    "id": "apc_3",
+                    "call_id": "call_3",
+                    "status": "completed",
+                    "operation": {"type": "delete_file", "path": "c.rs"}
+                }
+            ],
+            "status": "completed"
+        }"#;
+
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.output.len(), 3);
+
+        // all three should be ApplyPatchCall with correct operations
+        if let OutputItem::ApplyPatchCall { operation, .. } = &response.output[0] {
+            assert_eq!(operation.op_type, "update_file");
+        } else {
+            panic!("expected ApplyPatchCall");
+        }
+        if let OutputItem::ApplyPatchCall { operation, .. } = &response.output[1] {
+            assert_eq!(operation.op_type, "create_file");
+        } else {
+            panic!("expected ApplyPatchCall");
+        }
+        if let OutputItem::ApplyPatchCall { operation, .. } = &response.output[2] {
+            assert_eq!(operation.op_type, "delete_file");
+            assert!(operation.diff.is_none());
+        } else {
+            panic!("expected ApplyPatchCall");
+        }
+    }
+
+    #[test]
+    fn test_multiple_apply_patch_results_roundtrip() {
+        // two apply_patch calls followed by their results
+        let messages = vec![
+            Message::assistant_with_content(vec![
+                MessageContent::text("editing two files"),
+                MessageContent::tool_use(
+                    "call_1",
+                    APPLY_PATCH_TOOL_NAME,
+                    serde_json::json!({"operation": "update_file", "path": "a.rs", "diff": "@@\n-old\n+new"}),
+                ),
+                MessageContent::tool_use(
+                    "call_2",
+                    APPLY_PATCH_TOOL_NAME,
+                    serde_json::json!({"operation": "create_file", "path": "b.rs", "diff": "+content"}),
+                ),
+            ]),
+            Message::user_with_content(vec![
+                MessageContent::tool_result("call_1", "ok"),
+                MessageContent::tool_result("call_2", "ok"),
+            ]),
+        ];
+
+        let result = convert_messages(&messages);
+
+        // should have: assistant text, apply_patch_call x2, apply_patch_call_output x2
+        let call_count = result
+            .iter()
+            .filter(|i| matches!(i, InputItem::ApplyPatchCall { .. }))
+            .count();
+        let output_count = result
+            .iter()
+            .filter(|i| matches!(i, InputItem::ApplyPatchCallOutput { .. }))
+            .count();
+        assert_eq!(call_count, 2, "should have 2 apply_patch_call items");
+        assert_eq!(
+            output_count, 2,
+            "should have 2 apply_patch_call_output items"
+        );
+
+        // verify no function_call items leaked in
+        let fn_count = result
+            .iter()
+            .filter(|i| matches!(i, InputItem::FunctionCall { .. }))
+            .count();
+        assert_eq!(fn_count, 0, "apply_patch should not produce function_call");
+    }
+
+    #[test]
     fn test_parse_api_error() {
         let json = r#"{"error":{"message":"invalid api key"}}"#;
         let error: ApiError = serde_json::from_str(json).unwrap();

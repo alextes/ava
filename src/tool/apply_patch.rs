@@ -718,6 +718,169 @@ mod tests {
         assert_eq!(normalize("\u{201C}quoted\u{201D}"), "\"quoted\"");
     }
 
+    // --- multi-line changes ---
+
+    #[test]
+    fn test_apply_update_multi_line_replacement() {
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(
+            &dir,
+            "multi_line.txt",
+            "fn main() {\n    let x = 1;\n    let y = 2;\n    let z = 3;\n}\n",
+        );
+
+        let diff = "\
+@@
+ fn main() {
+-    let x = 1;
+-    let y = 2;
+-    let z = 3;
++    let x = 10;
++    let y = 20;
++    let z = 30;
++    let w = 40;
+ }";
+
+        let result = apply_update(path.to_str().unwrap(), diff);
+        assert_eq!(result, "ok");
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content,
+            "fn main() {\n    let x = 10;\n    let y = 20;\n    let z = 30;\n    let w = 40;\n}\n"
+        );
+    }
+
+    // --- no context patch ---
+
+    #[test]
+    fn test_apply_update_no_context() {
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(&dir, "nocontext.txt", "aaa\nbbb\nccc\n");
+
+        // patch with no context lines, just old/new
+        let diff = "\
+@@
+-bbb
++BBB";
+
+        let result = apply_update(path.to_str().unwrap(), diff);
+        assert_eq!(result, "ok");
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "aaa\nBBB\nccc\n");
+    }
+
+    // --- pure insertion (no removal) applied end-to-end ---
+
+    #[test]
+    fn test_apply_update_pure_insertion() {
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(&dir, "insert.txt", "line 1\nline 2\nline 3\n");
+
+        let diff = "\
+@@
+ line 1
++inserted after line 1
+ line 2";
+
+        let result = apply_update(path.to_str().unwrap(), diff);
+        assert_eq!(result, "ok");
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "line 1\ninserted after line 1\nline 2\nline 3\n");
+    }
+
+    // --- pure deletion (no insertion) applied end-to-end ---
+
+    #[test]
+    fn test_apply_update_pure_deletion() {
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(&dir, "delete_line.txt", "keep\nremove me\nkeep too\n");
+
+        let diff = "\
+@@
+ keep
+-remove me
+ keep too";
+
+        let result = apply_update(path.to_str().unwrap(), diff);
+        assert_eq!(result, "ok");
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "keep\nkeep too\n");
+    }
+
+    // --- file without trailing newline ---
+
+    #[test]
+    fn test_apply_update_no_trailing_newline() {
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(&dir, "no_newline.txt", "line 1\nline 2\nline 3");
+
+        let diff = "\
+@@
+ line 1
+-line 2
++line 2 changed
+ line 3";
+
+        let result = apply_update(path.to_str().unwrap(), diff);
+        assert_eq!(result, "ok");
+
+        let content = fs::read_to_string(&path).unwrap();
+        // should preserve lack of trailing newline
+        assert_eq!(content, "line 1\nline 2 changed\nline 3");
+    }
+
+    // --- unicode normalized matching end-to-end ---
+
+    #[test]
+    fn test_apply_update_unicode_normalized_match() {
+        let dir = TempDir::new().unwrap();
+        // file uses smart quotes
+        let path = temp_file(
+            &dir,
+            "unicode.txt",
+            "say \u{201C}hello\u{201D}\nkeep this\n",
+        );
+
+        // patch uses regular quotes
+        let diff = "\
+@@
+ say \"hello\"
+-keep this
++changed this";
+
+        let result = apply_update(path.to_str().unwrap(), diff);
+        assert_eq!(result, "ok");
+    }
+
+    // --- adjacent hunks sharing context ---
+
+    #[test]
+    fn test_apply_update_adjacent_changes() {
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(&dir, "adjacent.txt", "a\nb\nc\nd\ne\n");
+
+        // two changes with only one line of context between them
+        let diff = "\
+@@
+ a
+-b
++B
+ c
+-d
++D
+ e";
+
+        let result = apply_update(path.to_str().unwrap(), diff);
+        assert_eq!(result, "ok");
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "a\nB\nc\nD\ne\n");
+    }
+
     // --- text_editor_function_schema ---
 
     #[test]
