@@ -44,7 +44,7 @@ impl Database {
     pub fn identity_name(&self) -> Result<Option<String>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT content FROM memory WHERE kind = ?1 AND key = ?2 ORDER BY id DESC LIMIT 1",
+            "SELECT content FROM memories WHERE kind = ?1 AND key = ?2 ORDER BY id DESC LIMIT 1",
             rusqlite::params![MemoryKind::Identity.as_str(), "name"],
             |row| row.get(0),
         )
