@@ -10,7 +10,7 @@ pub const COMPLETE_TOOL_NAME: &str = "complete";
 pub fn complete_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: COMPLETE_TOOL_NAME,
-        description: "signal that background work is done. call this to finish processing without sending a message to the user. only use for scheduled/background tasks where the user doesn't need a notification.",
+        description: "finish processing without sending a reply. use this when: (1) a background/scheduled task completes silently, (2) you were mentioned in a group chat but have nothing useful to add, or (3) the message doesn't need a response. include a reason for logging.",
         input_schema: json!({
             "type": "object",
             "properties": {
