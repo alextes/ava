@@ -314,6 +314,7 @@ async fn agent_loop(
                     user_name: label,
                     user_id: None,
                     text: truncated,
+                    images: vec![],
                     received_at: std::time::Instant::now(),
                 },
             );
@@ -643,6 +644,7 @@ async fn telegram_producer(
                     user_name,
                     user_id,
                     text: buffer_text,
+                    images: images.clone(),
                     received_at: std::time::Instant::now(),
                 },
             );
@@ -696,7 +698,12 @@ async fn telegram_producer(
                     None => format!("[recent messages in #{group_name}]"),
                 };
                 match chat_buffer.drain_context(chat_id, thread_id) {
-                    Some(ctx) => format!("{context_header}\n{ctx}\n\n{from_line}\n{cleaned}"),
+                    Some((ctx, buffer_images)) => {
+                        // include images from recent buffer messages so the agent
+                        // can see photos that were sent before it was mentioned
+                        images.extend(buffer_images);
+                        format!("{context_header}\n{ctx}\n\n{from_line}\n{cleaned}")
+                    }
                     None => format!("{from_line}\n{cleaned}"),
                 }
             } else {

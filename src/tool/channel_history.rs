@@ -124,7 +124,7 @@ fn get_history(chat_buffer: Option<&ChatBuffer>, chat_id: i64, thread_id: Option
     };
 
     match buf.format_context(chat_id, thread_id) {
-        Some(ctx) => ctx,
+        Some((ctx, _images)) => ctx,
         None => format!("no recent messages buffered for chat_id {chat_id}."),
     }
 }

@@ -6,6 +6,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::message::ImageSource;
+
 /// composite key: (chat_id, thread_id). thread_id is None for non-topic chats.
 type BufferKey = (i64, Option<i64>);
 
@@ -16,12 +18,14 @@ pub struct BufferedMessage {
     pub user_name: String,
     pub user_id: Option<i64>,
     pub text: String,
+    pub images: Vec<ImageSource>,
     pub received_at: Instant,
 }
 
 /// per-chat ring buffer configuration.
 const MAX_MESSAGES_PER_CHAT: usize = 50;
 const MAX_AGE: Duration = Duration::from_secs(30 * 60); // 30 minutes
+const SIZE_WARNING_BYTES: usize = 100 * 1024 * 1024; // 100 MiB
 
 /// shared buffer holding recent messages for all chats/threads.
 pub struct ChatBuffer {
@@ -52,6 +56,20 @@ impl ChatBuffer {
         }
 
         buf.push_back(msg);
+
+        // warn if total buffer size is getting large (images can be heavy)
+        let total_bytes: usize = chats
+            .values()
+            .flat_map(|buf| buf.iter())
+            .map(|m| m.text.len() + m.images.iter().map(|i| i.data.len()).sum::<usize>())
+            .sum();
+        if total_bytes > SIZE_WARNING_BYTES {
+            tracing::warn!(
+                total_mib = total_bytes / (1024 * 1024),
+                "chat buffer size exceeds {}MiB",
+                SIZE_WARNING_BYTES / (1024 * 1024),
+            );
+        }
     }
 
     /// get a snapshot of recent messages for a chat/thread.
@@ -80,24 +98,47 @@ impl ChatBuffer {
             .collect()
     }
 
-    /// format a chat/thread's buffer as readable text for the agent.
-    pub fn format_context(&self, chat_id: i64, thread_id: Option<i64>) -> Option<String> {
+    /// format a chat/thread's buffer as readable text + images for the agent.
+    /// returns (text_context, images) where images are from recent buffer messages.
+    pub fn format_context(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Option<(String, Vec<ImageSource>)> {
         let messages = self.snapshot(chat_id, thread_id);
         if messages.is_empty() {
             return None;
         }
 
         let mut lines = Vec::with_capacity(messages.len());
+        let mut images = Vec::new();
         for msg in &messages {
-            lines.push(format!("{}: {}", msg.user_name, msg.text));
+            let text = if msg.images.is_empty() {
+                msg.text.clone()
+            } else {
+                let label = if msg.text.is_empty() {
+                    "[photo]".to_string()
+                } else {
+                    format!("{} [+photo]", msg.text)
+                };
+                images.extend(msg.images.iter().cloned());
+                label
+            };
+            lines.push(format!("{}: {text}", msg.user_name));
         }
-        Some(lines.join("\n"))
+        Some((lines.join("\n"), images))
     }
 
     /// drain a chat/thread's buffer, returning formatted text and clearing the
     /// buffer. messages are only injected into the agent's context once — new
     /// messages that arrive after the drain accumulate for the next trigger.
-    pub fn drain_context(&self, chat_id: i64, thread_id: Option<i64>) -> Option<String> {
+    /// drain and format a chat/thread's buffer as text + images for the agent.
+    /// clears the buffer so messages are only injected once.
+    pub fn drain_context(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Option<(String, Vec<ImageSource>)> {
         let mut chats = self.chats.lock().unwrap();
         let buf = chats.get_mut(&(chat_id, thread_id))?;
 
@@ -113,10 +154,22 @@ impl ChatBuffer {
 
         let messages: Vec<_> = buf.drain(..).collect();
         let mut lines = Vec::with_capacity(messages.len());
+        let mut images = Vec::new();
         for msg in &messages {
-            lines.push(format!("{}: {}", msg.user_name, msg.text));
+            let text = if msg.images.is_empty() {
+                msg.text.clone()
+            } else {
+                let label = if msg.text.is_empty() {
+                    "[photo]".to_string()
+                } else {
+                    format!("{} [+photo]", msg.text)
+                };
+                images.extend(msg.images.iter().cloned());
+                label
+            };
+            lines.push(format!("{}: {text}", msg.user_name));
         }
-        Some(lines.join("\n"))
+        Some((lines.join("\n"), images))
     }
 }
 
@@ -129,6 +182,7 @@ mod tests {
             user_name: name.into(),
             user_id: Some(1),
             text: text.into(),
+            images: vec![],
             received_at: Instant::now(),
         }
     }
@@ -190,6 +244,7 @@ mod tests {
                 user_name: "old".into(),
                 user_id: Some(1),
                 text: "ancient".into(),
+                images: vec![],
                 received_at: Instant::now() - Duration::from_secs(31 * 60),
             });
         }
@@ -222,8 +277,9 @@ mod tests {
         buf.push(100, None, msg("alice", "hello"));
         buf.push(100, None, msg("bob", "hi there"));
 
-        let ctx = buf.format_context(100, None).unwrap();
+        let (ctx, imgs) = buf.format_context(100, None).unwrap();
         assert_eq!(ctx, "alice: hello\nbob: hi there");
+        assert!(imgs.is_empty());
 
         assert!(buf.format_context(999, None).is_none());
     }
@@ -234,8 +290,9 @@ mod tests {
         buf.push(100, None, msg("alice", "hello"));
         buf.push(100, None, msg("bob", "hi"));
 
-        let ctx = buf.drain_context(100, None).unwrap();
+        let (ctx, imgs) = buf.drain_context(100, None).unwrap();
         assert_eq!(ctx, "alice: hello\nbob: hi");
+        assert!(imgs.is_empty());
 
         // buffer is now empty
         assert!(buf.drain_context(100, None).is_none());
@@ -243,7 +300,8 @@ mod tests {
 
         // new messages still accumulate
         buf.push(100, None, msg("charlie", "hey"));
-        let ctx2 = buf.drain_context(100, None).unwrap();
+        let (ctx2, imgs2) = buf.drain_context(100, None).unwrap();
         assert_eq!(ctx2, "charlie: hey");
+        assert!(imgs2.is_empty());
     }
 }
