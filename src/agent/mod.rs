@@ -111,11 +111,18 @@ impl Agent {
         let content = self.expand_skill(&inbound.content);
 
         // build user content: text + any attached images
-        let mut user_content = vec![MessageContent::text(&content)];
+        let mut user_content = Vec::new();
+        if !content.is_empty() {
+            user_content.push(MessageContent::text(&content));
+        }
         for image in &inbound.images {
             user_content.push(MessageContent::Image {
                 source: image.clone(),
             });
+        }
+        // ensure we have at least some content (photo-only messages get a placeholder)
+        if user_content.is_empty() {
+            user_content.push(MessageContent::text("[photo]"));
         }
 
         // append and persist the new user message
