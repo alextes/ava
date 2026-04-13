@@ -129,14 +129,38 @@ impl Agent {
 
         // inject current timestamp as a system note so the model knows the time
         // without putting it in the system prompt (which would bust the cache).
-        let time_note = format!(
-            "[system: current date and time is {}]",
-            Utc::now().format("%Y-%m-%d %H:%M UTC")
-        );
-        let time_content = vec![MessageContent::text(&time_note)];
-        self.db
-            .append_message(session_id, "system", &time_content, None)?;
-        messages.push(Message::user(&time_note));
+        // only inject if the last time note is >5 minutes old (or absent).
+        let now = Utc::now();
+        let should_inject_time = {
+            let last_time = messages.iter().rev().find_map(|m| {
+                m.content.iter().find_map(|c| {
+                    if let MessageContent::Text { text } = c {
+                        text.strip_prefix("[system: current date and time is ")
+                            .and_then(|s| s.strip_suffix(']'))
+                            .and_then(|s| {
+                                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M UTC").ok()
+                            })
+                            .map(|naive| naive.and_utc())
+                    } else {
+                        None
+                    }
+                })
+            });
+            match last_time {
+                Some(t) => now.signed_duration_since(t).num_seconds() >= 300,
+                None => true,
+            }
+        };
+        if should_inject_time {
+            let time_note = format!(
+                "[system: current date and time is {}]",
+                now.format("%Y-%m-%d %H:%M UTC")
+            );
+            let time_content = vec![MessageContent::text(&time_note)];
+            self.db
+                .append_message(session_id, "system", &time_content, None)?;
+            messages.push(Message::user(&time_note));
+        }
 
         let system_prompt = self.system_prompt(session_id)?;
         let tools = self.all_tool_definitions().await;
