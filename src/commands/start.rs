@@ -22,11 +22,21 @@ struct BotIdentity {
 
 impl BotIdentity {
     /// check if a message is directed at the bot via @mention entities.
-    fn is_mentioned_in_entities(&self, entities: &[crate::telegram::MessageEntity]) -> bool {
+    fn is_mentioned_in_entities(
+        &self,
+        text: &str,
+        entities: &[crate::telegram::MessageEntity],
+    ) -> bool {
         entities.iter().any(|e| {
-            e.entity_type == "mention"
-                || (e.entity_type == "text_mention"
-                    && e.user.as_ref().is_some_and(|u| u.id == self.id))
+            if e.entity_type == "mention" {
+                let start = e.offset as usize;
+                let end = start.saturating_add(e.length as usize);
+                text.get(start..end).is_some_and(|mention| {
+                    mention.eq_ignore_ascii_case(&format!("@{}", self.username))
+                })
+            } else {
+                e.entity_type == "text_mention" && e.user.as_ref().is_some_and(|u| u.id == self.id)
+            }
         })
     }
 
@@ -587,7 +597,7 @@ async fn telegram_producer(
             // mention-only filter for group chats
             let content = if is_group {
                 let entities = msg.entities.as_deref().unwrap_or_default();
-                let mentioned = bot_identity.is_mentioned_in_entities(entities);
+                let mentioned = bot_identity.is_mentioned_in_entities(&text, entities);
                 let replied_to = bot_identity.is_reply_to_bot(msg.reply_to_message.as_deref());
                 let display_name = runtime.telegram_display_name();
                 let named = bot_identity.is_named_in_text(&text, &display_name);
@@ -669,7 +679,8 @@ mod tests {
             length: 8,
             user: None,
         }];
-        assert!(b.is_mentioned_in_entities(&entities));
+        assert!(b.is_mentioned_in_entities("@ren_bot hi", &entities));
+        assert!(!b.is_mentioned_in_entities("@someone hi", &entities));
 
         let text_mention = vec![MessageEntity {
             entity_type: "text_mention".into(),
@@ -681,7 +692,7 @@ mod tests {
                 is_bot: Some(true),
             }),
         }];
-        assert!(b.is_mentioned_in_entities(&text_mention));
+        assert!(b.is_mentioned_in_entities("ren", &text_mention));
 
         // wrong user id
         let wrong_user = vec![MessageEntity {
@@ -694,9 +705,9 @@ mod tests {
                 is_bot: None,
             }),
         }];
-        assert!(!b.is_mentioned_in_entities(&wrong_user));
+        assert!(!b.is_mentioned_in_entities("ren", &wrong_user));
 
-        assert!(!b.is_mentioned_in_entities(&[]));
+        assert!(!b.is_mentioned_in_entities("hello", &[]));
     }
 
     #[test]
