@@ -110,7 +110,7 @@ impl Agent {
         // expand /skill-name invocations before sending to the LLM
         let content = self.expand_skill(&inbound.content);
 
-        // build user content: text + any attached images
+        // build user content: text (if non-empty) + any attached images
         let mut user_content = Vec::new();
         if !content.is_empty() {
             user_content.push(MessageContent::text(&content));
@@ -119,10 +119,6 @@ impl Agent {
             user_content.push(MessageContent::Image {
                 source: image.clone(),
             });
-        }
-        // ensure we have at least some content (photo-only messages get a placeholder)
-        if user_content.is_empty() {
-            user_content.push(MessageContent::text("[photo]"));
         }
 
         // append and persist the new user message
