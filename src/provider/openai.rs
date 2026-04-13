@@ -990,6 +990,217 @@ mod tests {
         assert_eq!(fn_count, 0, "apply_patch should not produce function_call");
     }
 
+    /// end-to-end wire format test: simulate a realistic API response containing
+    /// all three apply_patch operation types, run them through the full pipeline
+    /// (parse response → build ToolCalls → simulate results → convert to input
+    /// items → serialize to JSON), then validate the serialized JSON matches what
+    /// the OpenAI API actually accepts.
+    ///
+    /// this catches wire-format issues like missing required fields, wrong field
+    /// names, unexpected null values, and id prefix constraints that unit tests
+    /// on internal types miss.
+    #[test]
+    fn test_apply_patch_wire_format_full_roundtrip() {
+        // step 1: parse a realistic API response with all three operation types
+        let api_json = r#"{
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "making changes"}]
+                },
+                {
+                    "type": "apply_patch_call",
+                    "id": "apc_create_abc",
+                    "call_id": "call_create_1",
+                    "status": "completed",
+                    "operation": {
+                        "type": "create_file",
+                        "path": "new.txt",
+                        "diff": "+line one\n+line two\n"
+                    }
+                },
+                {
+                    "type": "apply_patch_call",
+                    "id": "apc_update_def",
+                    "call_id": "call_update_2",
+                    "status": "completed",
+                    "operation": {
+                        "type": "update_file",
+                        "path": "existing.rs",
+                        "diff": "@@\n context\n-old line\n+new line\n"
+                    }
+                },
+                {
+                    "type": "apply_patch_call",
+                    "id": "apc_delete_ghi",
+                    "call_id": "call_delete_3",
+                    "status": "completed",
+                    "operation": {
+                        "type": "delete_file",
+                        "path": "obsolete.txt"
+                    }
+                }
+            ],
+            "status": "completed"
+        }"#;
+
+        let api_response: ApiResponse = serde_json::from_str(api_json).unwrap();
+
+        // step 2: extract ToolCalls (same as Provider::complete does)
+        let mut tool_calls = Vec::new();
+        for item in api_response.output {
+            match item {
+                OutputItem::ApplyPatchCall {
+                    id,
+                    call_id,
+                    status,
+                    operation,
+                } => {
+                    let mut input = serde_json::json!({
+                        "apc_id": id,
+                        "apc_status": status,
+                        "operation": operation.op_type,
+                        "path": operation.path,
+                    });
+                    if let Some(diff) = operation.diff {
+                        input["diff"] = serde_json::Value::String(diff);
+                    }
+                    tool_calls.push(ToolCall {
+                        id: call_id,
+                        name: APPLY_PATCH_TOOL_NAME.to_string(),
+                        input,
+                    });
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(tool_calls.len(), 3);
+
+        // step 3: simulate tool results and build messages (same as agent loop)
+        let mut assistant_content: Vec<MessageContent> =
+            vec![MessageContent::text("making changes")];
+        for tc in &tool_calls {
+            assistant_content.push(MessageContent::tool_use(&tc.id, &tc.name, tc.input.clone()));
+        }
+        let mut user_content = Vec::new();
+        user_content.push(MessageContent::tool_result("call_create_1", "ok"));
+        user_content.push(MessageContent::tool_result("call_update_2", "ok"));
+        user_content.push(MessageContent::tool_result("call_delete_3", "ok"));
+
+        let messages = vec![
+            Message::assistant_with_content(assistant_content),
+            Message::user_with_content(user_content),
+        ];
+
+        // step 4: convert to input items (same as convert_messages in complete())
+        let input_items = convert_messages(&messages);
+
+        // step 5: serialize each item to JSON and validate the wire format
+
+        // collect by type for easier assertion
+        let mut apc_calls: Vec<Value> = Vec::new();
+        let mut apc_outputs: Vec<Value> = Vec::new();
+        for item in &input_items {
+            let json = serde_json::to_value(item).unwrap();
+            match json["type"].as_str() {
+                Some("apply_patch_call") => apc_calls.push(json),
+                Some("apply_patch_call_output") => apc_outputs.push(json),
+                _ => {}
+            }
+        }
+        assert_eq!(apc_calls.len(), 3, "should have 3 apply_patch_call items");
+        assert_eq!(
+            apc_outputs.len(),
+            3,
+            "should have 3 apply_patch_call_output items"
+        );
+
+        // --- validate apply_patch_call wire format ---
+
+        // create_file call
+        let create_call = &apc_calls[0];
+        assert_eq!(create_call["type"], "apply_patch_call");
+        assert_eq!(create_call["id"], "apc_create_abc", "id must be preserved");
+        assert!(
+            create_call["id"].as_str().unwrap().starts_with("apc_"),
+            "id must start with apc_"
+        );
+        assert_eq!(create_call["call_id"], "call_create_1");
+        assert_eq!(
+            create_call["status"], "completed",
+            "status is required on apply_patch_call"
+        );
+        assert_eq!(create_call["operation"]["type"], "create_file");
+        assert_eq!(create_call["operation"]["path"], "new.txt");
+        assert!(
+            create_call["operation"]["diff"].is_string(),
+            "create_file should have diff"
+        );
+
+        // update_file call
+        let update_call = &apc_calls[1];
+        assert_eq!(update_call["id"], "apc_update_def");
+        assert_eq!(update_call["status"], "completed");
+        assert_eq!(update_call["operation"]["type"], "update_file");
+        assert!(
+            update_call["operation"]["diff"].is_string(),
+            "update_file should have diff"
+        );
+
+        // delete_file call — must NOT have a diff field
+        let delete_call = &apc_calls[2];
+        assert_eq!(delete_call["id"], "apc_delete_ghi");
+        assert_eq!(delete_call["status"], "completed");
+        assert_eq!(delete_call["operation"]["type"], "delete_file");
+        assert_eq!(delete_call["operation"]["path"], "obsolete.txt");
+        assert!(
+            delete_call["operation"].get("diff").is_none(),
+            "delete_file must NOT have a diff field — API rejects it as unknown parameter"
+        );
+
+        // verify no unexpected fields leak into any call
+        for call in &apc_calls {
+            let obj = call.as_object().unwrap();
+            let allowed_top = ["type", "id", "call_id", "status", "operation"];
+            for key in obj.keys() {
+                assert!(
+                    allowed_top.contains(&key.as_str()),
+                    "unexpected top-level field in apply_patch_call: {key}"
+                );
+            }
+        }
+
+        // --- validate apply_patch_call_output wire format ---
+
+        for output in &apc_outputs {
+            assert_eq!(output["type"], "apply_patch_call_output");
+            assert!(
+                output["call_id"].is_string(),
+                "call_id is required on output"
+            );
+            assert!(
+                output["status"].as_str() == Some("completed")
+                    || output["status"].as_str() == Some("failed"),
+                "status must be completed or failed"
+            );
+
+            let obj = output.as_object().unwrap();
+            let allowed_top = ["type", "call_id", "status", "output"];
+            for key in obj.keys() {
+                assert!(
+                    allowed_top.contains(&key.as_str()),
+                    "unexpected field in apply_patch_call_output: {key}"
+                );
+            }
+        }
+
+        // successful results should not have output field (or it's null)
+        assert!(
+            apc_outputs[0].get("output").is_none() || apc_outputs[0]["output"].is_null(),
+            "successful result should omit output"
+        );
+    }
+
     #[test]
     fn test_parse_api_error() {
         let json = r#"{"error":{"message":"invalid api key"}}"#;
