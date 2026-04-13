@@ -30,10 +30,25 @@ pub fn restart_requested() -> bool {
 /// on success this function never returns. on failure it clears the flag
 /// and returns an error so the caller can continue running.
 #[cfg(unix)]
+fn resolve_restart_exe() -> Result<std::path::PathBuf, std::io::Error> {
+    if let Ok(path) = std::env::var("AVA_EXEC_PATH") {
+        return Ok(std::path::PathBuf::from(path));
+    }
+
+    let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if source_dir.join("Cargo.toml").exists() {
+        return Ok(source_dir.join("target/release/ava"));
+    }
+
+    let exe = std::env::current_exe()?;
+    let exe_str = exe.to_string_lossy();
+    Ok(std::path::PathBuf::from(exe_str.trim_end_matches(" (deleted)")))
+}
+
 pub fn do_exec_restart() -> Result<std::convert::Infallible, std::io::Error> {
     use std::os::unix::process::CommandExt;
 
-    let exe = std::env::current_exe()?;
+    let exe = resolve_restart_exe()?;
     tracing::info!(?exe, "exec'ing into new binary");
 
     let err = std::process::Command::new(&exe)

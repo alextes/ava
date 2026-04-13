@@ -7,10 +7,14 @@ pub(crate) fn run_restart(foreground: bool) {
         std::process::exit(1);
     }
 
-    let exe = std::env::current_exe().unwrap_or_else(|e| {
-        eprintln!("failed to determine current executable: {e}");
-        std::process::exit(1);
-    });
+    let exe = if let Ok(path) = std::env::var("AVA_EXEC_PATH") {
+        std::path::PathBuf::from(path)
+    } else {
+        std::env::current_exe().unwrap_or_else(|e| {
+            eprintln!("failed to determine current executable: {e}");
+            std::process::exit(1);
+        })
+    };
 
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("start");
