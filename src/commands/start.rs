@@ -12,13 +12,12 @@ use crate::message::{ChannelKind, ImageSource, InboundMessage};
 use crate::queue::{
     MessageReceiver, QueuedMessage, ResponseSink, message_queue, send_error, send_response,
 };
+use crate::runtime::RuntimeState;
 use crate::telegram::TelegramBot;
 
 struct BotIdentity {
     id: i64,
     username: String,
-    /// optional display name for fuzzy matching (from TELEGRAM_BOT_NAME env var)
-    display_name: String,
 }
 
 impl BotIdentity {
@@ -32,12 +31,12 @@ impl BotIdentity {
     }
 
     /// check if the bot's name appears in the message text (case-insensitive).
-    fn is_named_in_text(&self, text: &str) -> bool {
+    fn is_named_in_text(&self, text: &str, display_name: &str) -> bool {
         let lower = text.to_lowercase();
         if !self.username.is_empty() && lower.contains(&self.username.to_lowercase()) {
             return true;
         }
-        if !self.display_name.is_empty() && lower.contains(&self.display_name.to_lowercase()) {
+        if !display_name.is_empty() && lower.contains(&display_name.to_lowercase()) {
             return true;
         }
         false
@@ -136,6 +135,8 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     let mcp_clone = mcp.clone();
     let skills_clone = Arc::clone(&skills);
     let chat_buffer_clone = Arc::clone(&chat_buffer);
+    let runtime = Arc::new(RuntimeState::new(String::new()));
+    let runtime_clone = Arc::clone(&runtime);
     let agent_handle = tokio::spawn(async move {
         agent_loop(
             rx,
@@ -145,6 +146,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             mcp_clone,
             skills_clone,
             chat_buffer_clone,
+            runtime_clone,
         )
         .await;
     });
@@ -160,7 +162,12 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         let bot_identity = bot.get_me().await?;
         let bot_id = bot_identity.id;
         let bot_username = bot_identity.username.clone().unwrap_or_default();
-        let bot_name = std::env::var("TELEGRAM_BOT_NAME").unwrap_or_default();
+        let bot_name = db
+            .identity_name()
+            .unwrap_or(None)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| std::env::var("TELEGRAM_BOT_NAME").unwrap_or_default());
+        runtime.set_telegram_display_name(bot_name.clone());
         tracing::info!(bot_id, %bot_username, "fetched bot identity");
 
         let allowed_users = db.list_allowed_users().unwrap_or_default();
@@ -193,10 +200,10 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             Arc::clone(&pending),
             Arc::clone(&db),
             Arc::clone(&chat_buffer),
+            Arc::clone(&runtime),
             BotIdentity {
                 id: bot_id,
                 username: bot_username,
-                display_name: bot_name,
             },
         )));
     } else {
@@ -239,6 +246,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn agent_loop(
     mut rx: MessageReceiver,
     db: Arc<Database>,
@@ -247,6 +255,7 @@ async fn agent_loop(
     mcp: Option<Arc<crate::mcp::manager::McpManager>>,
     skills: Arc<Vec<crate::skill::Skill>>,
     chat_buffer: Arc<ChatBuffer>,
+    runtime: Arc<RuntimeState>,
 ) {
     while let Some(queued) = rx.recv().await {
         if let Some(("switch", args)) = parse_slash_command(&queued.content) {
@@ -297,7 +306,8 @@ async fn agent_loop(
 
         let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone())
             .with_skills(Arc::clone(&skills))
-            .with_chat_buffer(Arc::clone(&chat_buffer));
+            .with_chat_buffer(Arc::clone(&chat_buffer))
+            .with_runtime(Arc::clone(&runtime));
         if let Some(ref mcp) = mcp {
             agent = agent.with_mcp(Arc::clone(mcp));
         }
@@ -368,6 +378,7 @@ async fn telegram_producer(
     pending: Arc<PendingApprovals>,
     db: Arc<Database>,
     chat_buffer: Arc<ChatBuffer>,
+    runtime: Arc<RuntimeState>,
     bot_identity: BotIdentity,
 ) {
     let mut offset: Option<i64> = None;
@@ -568,7 +579,8 @@ async fn telegram_producer(
                 let entities = msg.entities.as_deref().unwrap_or_default();
                 let mentioned = bot_identity.is_mentioned_in_entities(entities);
                 let replied_to = bot_identity.is_reply_to_bot(msg.reply_to_message.as_deref());
-                let named = bot_identity.is_named_in_text(&text);
+                let display_name = runtime.telegram_display_name();
+                let named = bot_identity.is_named_in_text(&text, &display_name);
                 let thread_id = msg.message_thread_id;
 
                 tracing::info!(
@@ -634,7 +646,6 @@ mod tests {
         BotIdentity {
             id: 123,
             username: "ren_bot".into(),
-            display_name: "ren".into(),
         }
     }
 
@@ -680,10 +691,10 @@ mod tests {
     #[test]
     fn test_is_named_in_text() {
         let b = bot();
-        assert!(b.is_named_in_text("hey ren, what's up?"));
-        assert!(b.is_named_in_text("Hey Ren, what's up?"));
-        assert!(b.is_named_in_text("@ren_bot do something"));
-        assert!(!b.is_named_in_text("hello everyone"));
+        assert!(b.is_named_in_text("hey ren, what's up?", "ren"));
+        assert!(b.is_named_in_text("Hey Ren, what's up?", "ren"));
+        assert!(b.is_named_in_text("@ren_bot do something", "ren"));
+        assert!(!b.is_named_in_text("hello everyone", "ren"));
     }
 
     #[test]

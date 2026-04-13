@@ -15,6 +15,7 @@ use crate::message::{
     ContentBlock, InboundMessage, Message, MessageContent, OutboundMessage, Role, ToolResultContent,
 };
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider, SETUP_SYSTEM_PROMPT};
+use crate::runtime::RuntimeState;
 use crate::skill::Skill;
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall, ToolDefinition};
 
@@ -30,6 +31,7 @@ pub struct Agent {
     skills: Arc<Vec<Skill>>,
     vault_secrets: Arc<RwLock<Vec<String>>>,
     chat_buffer: Option<Arc<crate::chat_buffer::ChatBuffer>>,
+    runtime: Option<Arc<RuntimeState>>,
 }
 
 impl Agent {
@@ -48,6 +50,7 @@ impl Agent {
             skills: Arc::new(Vec::new()),
             vault_secrets: Arc::new(RwLock::new(tool::load_vault_secrets())),
             chat_buffer: None,
+            runtime: None,
         }
     }
 
@@ -63,6 +66,11 @@ impl Agent {
 
     pub fn with_chat_buffer(mut self, buf: Arc<crate::chat_buffer::ChatBuffer>) -> Self {
         self.chat_buffer = Some(buf);
+        self
+    }
+
+    pub fn with_runtime(mut self, runtime: Arc<RuntimeState>) -> Self {
+        self.runtime = Some(runtime);
         self
     }
 
@@ -640,6 +648,7 @@ impl Agent {
             &self.skills,
             call,
             self.chat_buffer.as_deref(),
+            self.runtime.as_deref(),
         )
         .await?;
 

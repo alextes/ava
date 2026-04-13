@@ -4,6 +4,7 @@ use super::{ToolCallResult, ToolDefinition};
 use crate::db::{Database, MemoryKind};
 use crate::error::Error;
 use crate::message::MessageContent;
+use crate::runtime::RuntimeState;
 
 pub const COMPLETE_SETUP_TOOL_NAME: &str = "complete_setup";
 
@@ -32,6 +33,7 @@ struct CompleteSetupInput {
 
 pub(super) fn handle_complete_setup(
     db: &Database,
+    runtime: Option<&RuntimeState>,
     call_id: &str,
     input: &serde_json::Value,
 ) -> Result<ToolCallResult, Error> {
@@ -64,6 +66,9 @@ pub(super) fn handle_complete_setup(
 
     // store the name as an identity trait
     db.remember(MemoryKind::Identity, name, None, Some("name"))?;
+    if let Some(runtime) = runtime {
+        runtime.set_telegram_display_name(name);
+    }
 
     // mark setup as complete
     db.mark_setup_complete()?;
@@ -99,7 +104,7 @@ mod tests {
     fn test_handle_complete_setup() {
         let db = Database::open_in_memory().unwrap();
         let input = json!({"name": "ren"});
-        let result = handle_complete_setup(&db, "test_id", &input).unwrap();
+        let result = handle_complete_setup(&db, None, "test_id", &input).unwrap();
 
         let text = match &result.content {
             MessageContent::ToolResult { content, .. } => content.as_display_str(),
@@ -120,7 +125,7 @@ mod tests {
     fn test_handle_complete_setup_empty_name() {
         let db = Database::open_in_memory().unwrap();
         let input = json!({"name": "  "});
-        let result = handle_complete_setup(&db, "test_id", &input).unwrap();
+        let result = handle_complete_setup(&db, None, "test_id", &input).unwrap();
 
         let text = match &result.content {
             MessageContent::ToolResult { content, .. } => content.as_display_str(),

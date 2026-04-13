@@ -4,6 +4,7 @@ use serde_json::json;
 use crate::db::{Database, MemoryKind};
 use crate::error::Error;
 use crate::message::MessageContent;
+use crate::runtime::RuntimeState;
 
 use super::{ToolCall, ToolCallResult, ToolDefinition};
 
@@ -123,6 +124,7 @@ pub(crate) fn recall_definition() -> ToolDefinition {
 pub(crate) async fn handle_remember(
     db: &Database,
     call: &ToolCall,
+    runtime: Option<&RuntimeState>,
 ) -> Result<ToolCallResult, Error> {
     match serde_json::from_value::<RememberInput>(call.input.clone()) {
         Ok(input) => {
@@ -147,6 +149,12 @@ pub(crate) async fn handle_remember(
                 input.category.as_deref(),
                 input.key.as_deref(),
             )?;
+            if kind == MemoryKind::Identity
+                && input.key.as_deref() == Some("name")
+                && let Some(runtime) = runtime
+            {
+                runtime.set_telegram_display_name(input.content.clone());
+            }
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, format!("ok (id={id})")),
                 switch_provider: None,
