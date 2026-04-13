@@ -77,7 +77,12 @@ enum InputItem {
     #[serde(rename = "function_call_output")]
     FunctionCallOutput { call_id: String, output: Value },
     #[serde(rename = "apply_patch_call")]
-    ApplyPatchCall { call_id: String, operation: Value },
+    ApplyPatchCall {
+        id: String,
+        call_id: String,
+        status: String,
+        operation: Value,
+    },
     #[serde(rename = "apply_patch_call_output")]
     ApplyPatchCallOutput {
         call_id: String,
@@ -124,7 +129,9 @@ enum OutputItem {
     },
     #[serde(rename = "apply_patch_call")]
     ApplyPatchCall {
+        id: String,
         call_id: String,
+        status: String,
         operation: ApplyPatchOperation,
     },
     #[serde(other)]
@@ -265,15 +272,28 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
                             if name == APPLY_PATCH_TOOL_NAME {
                                 // re-send as apply_patch_call (not function_call) so the
                                 // API has context for the corresponding apply_patch_call_output.
-                                // we reconstruct the operation from the stored input.
+                                // we reconstruct from the stored input which includes apc_id
+                                // and apc_status from the original response.
                                 apply_patch_ids.insert(id.clone());
+                                let apc_id = input
+                                    .get("apc_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(id)
+                                    .to_string();
+                                let apc_status = input
+                                    .get("apc_status")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("completed")
+                                    .to_string();
                                 let operation = serde_json::json!({
                                     "type": input.get("operation").and_then(|v| v.as_str()).unwrap_or("update_file"),
                                     "path": input.get("path").and_then(|v| v.as_str()).unwrap_or(""),
                                     "diff": input.get("diff").and_then(|v| v.as_str()),
                                 });
                                 out.push(InputItem::ApplyPatchCall {
+                                    id: apc_id,
                                     call_id: id.clone(),
+                                    status: apc_status,
                                     operation,
                                 });
                             } else {
@@ -446,11 +466,18 @@ impl Provider for OpenAiProvider {
                         input,
                     });
                 }
-                OutputItem::ApplyPatchCall { call_id, operation } => {
+                OutputItem::ApplyPatchCall {
+                    id,
+                    call_id,
+                    status,
+                    operation,
+                } => {
                     tool_calls.push(ToolCall {
                         id: call_id,
                         name: APPLY_PATCH_TOOL_NAME.to_string(),
                         input: serde_json::json!({
+                            "apc_id": id,
+                            "apc_status": status,
                             "operation": operation.op_type,
                             "path": operation.path,
                             "diff": operation.diff,
@@ -690,8 +717,16 @@ mod tests {
 
         let response: ApiResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.output.len(), 1);
-        if let OutputItem::ApplyPatchCall { call_id, operation } = &response.output[0] {
+        if let OutputItem::ApplyPatchCall {
+            id,
+            call_id,
+            status,
+            operation,
+        } = &response.output[0]
+        {
+            assert_eq!(id, "apc_123");
             assert_eq!(call_id, "call_xyz");
+            assert_eq!(status, "completed");
             assert_eq!(operation.op_type, "update_file");
             assert_eq!(operation.path, "src/main.rs");
             assert!(operation.diff.as_ref().unwrap().contains("Begin Patch"));
@@ -702,12 +737,18 @@ mod tests {
 
     #[test]
     fn test_apply_patch_message_roundtrip() {
-        // simulate: assistant emits apply_patch tool use, user returns tool result
+        // simulate: assistant emits apply_patch tool use, user returns tool result.
+        // input includes apc_id/apc_status from the original API response.
         let messages = vec![
             Message::assistant_with_content(vec![MessageContent::tool_use(
                 "call_xyz",
                 APPLY_PATCH_TOOL_NAME,
-                serde_json::json!({"operation": "update_file", "path": "src/main.rs"}),
+                serde_json::json!({
+                    "apc_id": "apc_123",
+                    "apc_status": "completed",
+                    "operation": "update_file",
+                    "path": "src/main.rs"
+                }),
             )]),
             Message::user_with_content(vec![MessageContent::tool_result("call_xyz", "ok")]),
         ];
@@ -729,7 +770,9 @@ mod tests {
             .expect("should have ApplyPatchCall input item");
         let call_json = serde_json::to_value(call_item).unwrap();
         assert_eq!(call_json["type"], "apply_patch_call");
+        assert_eq!(call_json["id"], "apc_123");
         assert_eq!(call_json["call_id"], "call_xyz");
+        assert_eq!(call_json["status"], "completed");
         assert_eq!(call_json["operation"]["type"], "update_file");
         assert_eq!(call_json["operation"]["path"], "src/main.rs");
 
@@ -751,7 +794,7 @@ mod tests {
             Message::assistant_with_content(vec![MessageContent::tool_use(
                 "call_fail",
                 APPLY_PATCH_TOOL_NAME,
-                serde_json::json!({"operation": "update_file", "path": "x.rs"}),
+                serde_json::json!({"apc_id": "apc_f", "apc_status": "completed", "operation": "update_file", "path": "x.rs"}),
             )]),
             Message::user_with_content(vec![MessageContent::tool_result(
                 "call_fail",
@@ -873,12 +916,12 @@ mod tests {
                 MessageContent::tool_use(
                     "call_1",
                     APPLY_PATCH_TOOL_NAME,
-                    serde_json::json!({"operation": "update_file", "path": "a.rs", "diff": "@@\n-old\n+new"}),
+                    serde_json::json!({"apc_id": "apc_1", "apc_status": "completed", "operation": "update_file", "path": "a.rs", "diff": "@@\n-old\n+new"}),
                 ),
                 MessageContent::tool_use(
                     "call_2",
                     APPLY_PATCH_TOOL_NAME,
-                    serde_json::json!({"operation": "create_file", "path": "b.rs", "diff": "+content"}),
+                    serde_json::json!({"apc_id": "apc_2", "apc_status": "completed", "operation": "create_file", "path": "b.rs", "diff": "+content"}),
                 ),
             ]),
             Message::user_with_content(vec![
