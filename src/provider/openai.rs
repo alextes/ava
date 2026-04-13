@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::error::Error;
 use crate::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
 use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
-use crate::tool::ToolDefinition;
+use crate::tool::{APPLY_PATCH_TOOL_NAME, BuiltInKind, ToolDefinition};
 
 const API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.4";
@@ -60,7 +60,7 @@ struct ApiRequest<'a> {
     instructions: &'a str,
     input: Vec<InputItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<FunctionTool>,
+    tools: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,15 +76,13 @@ enum InputItem {
     },
     #[serde(rename = "function_call_output")]
     FunctionCallOutput { call_id: String, output: Value },
-}
-
-#[derive(Debug, Serialize)]
-struct FunctionTool {
-    #[serde(rename = "type")]
-    tool_type: String,
-    name: String,
-    description: String,
-    parameters: Value,
+    #[serde(rename = "apply_patch_call_output")]
+    ApplyPatchCallOutput {
+        call_id: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
 }
 
 // -- response types --
@@ -122,8 +120,22 @@ enum OutputItem {
         name: String,
         arguments: String,
     },
+    #[serde(rename = "apply_patch_call")]
+    ApplyPatchCall {
+        call_id: String,
+        operation: ApplyPatchOperation,
+    },
     #[serde(other)]
     Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplyPatchOperation {
+    #[serde(rename = "type")]
+    op_type: String,
+    path: String,
+    #[serde(default)]
+    diff: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +163,8 @@ struct ApiErrorDetail {
 
 fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
     let mut out = Vec::new();
+    // track which call IDs are for apply_patch so we can emit the right output type
+    let mut apply_patch_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for msg in messages {
         match msg.role {
@@ -181,11 +195,35 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
                                     content: Value::Array(std::mem::take(&mut content_parts)),
                                 });
                             }
-                            let output = tool_result_content_to_value(content);
-                            out.push(InputItem::FunctionCallOutput {
-                                call_id: tool_use_id.clone(),
-                                output,
-                            });
+                            if apply_patch_ids.contains(tool_use_id) {
+                                let output_text = match content {
+                                    ToolResultContent::Text(s) => s.clone(),
+                                    ToolResultContent::Blocks(blocks) => blocks
+                                        .iter()
+                                        .filter_map(|b| match b {
+                                            ContentBlock::Text { text } => Some(text.as_str()),
+                                            _ => None,
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                };
+                                let succeeded = output_text == "ok";
+                                out.push(InputItem::ApplyPatchCallOutput {
+                                    call_id: tool_use_id.clone(),
+                                    status: if succeeded {
+                                        "completed".to_string()
+                                    } else {
+                                        "failed".to_string()
+                                    },
+                                    output: if succeeded { None } else { Some(output_text) },
+                                });
+                            } else {
+                                let output = tool_result_content_to_value(content);
+                                out.push(InputItem::FunctionCallOutput {
+                                    call_id: tool_use_id.clone(),
+                                    output,
+                                });
+                            }
                         }
                         _ => {}
                     }
@@ -222,11 +260,18 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
                                 });
                                 text_parts.clear();
                             }
-                            out.push(InputItem::FunctionCall {
-                                call_id: id.clone(),
-                                name: name.clone(),
-                                arguments: serde_json::to_string(input).unwrap_or_default(),
-                            });
+                            if name == APPLY_PATCH_TOOL_NAME {
+                                // apply_patch calls don't get re-sent as input items —
+                                // the API already knows about them from the prior response.
+                                // just track the ID for the result mapping.
+                                apply_patch_ids.insert(id.clone());
+                            } else {
+                                out.push(InputItem::FunctionCall {
+                                    call_id: id.clone(),
+                                    name: name.clone(),
+                                    arguments: serde_json::to_string(input).unwrap_or_default(),
+                                });
+                            }
                         }
                         _ => {}
                     }
@@ -269,7 +314,7 @@ fn tool_result_content_to_value(content: &ToolResultContent) -> Value {
     }
 }
 
-fn convert_tools(definitions: &[ToolDefinition]) -> Vec<FunctionTool> {
+fn convert_tools(definitions: &[ToolDefinition]) -> Vec<Value> {
     definitions
         .iter()
         .filter_map(|def| match def {
@@ -277,23 +322,29 @@ fn convert_tools(definitions: &[ToolDefinition]) -> Vec<FunctionTool> {
                 name,
                 description,
                 input_schema,
-            } => Some(FunctionTool {
-                tool_type: "function".to_string(),
-                name: (*name).to_string(),
-                description: (*description).to_string(),
-                parameters: input_schema.clone(),
-            }),
+            } => Some(serde_json::json!({
+                "type": "function",
+                "name": *name,
+                "description": *description,
+                "parameters": input_schema,
+            })),
             ToolDefinition::Dynamic {
                 name,
                 description,
                 input_schema,
-            } => Some(FunctionTool {
-                tool_type: "function".to_string(),
-                name: name.clone(),
-                description: description.clone(),
-                parameters: input_schema.clone(),
-            }),
-            ToolDefinition::BuiltIn { .. } => None,
+            } => Some(serde_json::json!({
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": input_schema,
+            })),
+            ToolDefinition::BuiltIn { kind } => match kind {
+                BuiltInKind::OpenAiApplyPatch => Some(serde_json::json!({
+                    "type": kind.api_type(),
+                })),
+                // skip non-openai built-ins
+                _ => None,
+            },
         })
         .collect()
 }
@@ -382,6 +433,17 @@ impl Provider for OpenAiProvider {
                         id: call_id,
                         name,
                         input,
+                    });
+                }
+                OutputItem::ApplyPatchCall { call_id, operation } => {
+                    tool_calls.push(ToolCall {
+                        id: call_id,
+                        name: APPLY_PATCH_TOOL_NAME.to_string(),
+                        input: serde_json::json!({
+                            "operation": operation.op_type,
+                            "path": operation.path,
+                            "diff": operation.diff,
+                        }),
                     });
                 }
                 OutputItem::Other => {}
@@ -514,18 +576,24 @@ mod tests {
             .count();
         let tools = convert_tools(&definitions);
 
-        // built-in tools should be filtered out
-        assert_eq!(tools.len(), custom_count);
+        // custom tools + apply_patch built-in (anthropic text_editor is filtered out)
+        assert_eq!(tools.len(), custom_count + 1);
         assert!(tools.len() < definitions.len());
 
-        let json = serde_json::to_value(&tools[0]).unwrap();
-        assert_eq!(json["type"], "function");
-        assert!(json["name"].is_string());
-        assert!(json["parameters"].is_object());
+        // first tool should be a function tool
+        assert_eq!(tools[0]["type"], "function");
+        assert!(tools[0]["name"].is_string());
+        assert!(tools[0]["parameters"].is_object());
 
-        // verify no tool is named after the built-in text editor
+        // verify apply_patch is included as a native built-in
+        let has_apply_patch = tools.iter().any(|t| t["type"] == "apply_patch");
+        assert!(has_apply_patch, "apply_patch should be in the tool list");
+
+        // verify no tool is named after the anthropic text editor
         for tool in &tools {
-            assert_ne!(tool.name, "str_replace_based_edit_tool");
+            if let Some(name) = tool.get("name").and_then(|n| n.as_str()) {
+                assert_ne!(name, "str_replace_based_edit_tool");
+            }
         }
     }
 
@@ -590,6 +658,93 @@ mod tests {
         assert_eq!(parse_status("completed"), StopReason::EndTurn);
         assert_eq!(parse_status("incomplete"), StopReason::MaxTokens);
         assert_eq!(parse_status("unknown"), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn test_parse_apply_patch_call_response() {
+        let json = r#"{
+            "output": [{
+                "type": "apply_patch_call",
+                "id": "apc_123",
+                "call_id": "call_xyz",
+                "status": "completed",
+                "operation": {
+                    "type": "update_file",
+                    "path": "src/main.rs",
+                    "diff": "*** Begin Patch\n*** Update File: src/main.rs\n@@\n context\n-old\n+new\n*** End Patch"
+                }
+            }],
+            "status": "completed"
+        }"#;
+
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.output.len(), 1);
+        if let OutputItem::ApplyPatchCall { call_id, operation } = &response.output[0] {
+            assert_eq!(call_id, "call_xyz");
+            assert_eq!(operation.op_type, "update_file");
+            assert_eq!(operation.path, "src/main.rs");
+            assert!(operation.diff.as_ref().unwrap().contains("Begin Patch"));
+        } else {
+            panic!("expected ApplyPatchCall output");
+        }
+    }
+
+    #[test]
+    fn test_apply_patch_message_roundtrip() {
+        // simulate: assistant emits apply_patch tool use, user returns tool result
+        let messages = vec![
+            Message::assistant_with_content(vec![MessageContent::tool_use(
+                "call_xyz",
+                APPLY_PATCH_TOOL_NAME,
+                serde_json::json!({"operation": "update_file", "path": "src/main.rs"}),
+            )]),
+            Message::user_with_content(vec![MessageContent::tool_result("call_xyz", "ok")]),
+        ];
+
+        let result = convert_messages(&messages);
+
+        // apply_patch tool use should NOT appear as a function_call
+        assert!(
+            !result
+                .iter()
+                .any(|item| matches!(item, InputItem::FunctionCall { .. })),
+            "apply_patch should not be serialized as function_call"
+        );
+
+        // the tool result should be an ApplyPatchCallOutput
+        let output_item = result
+            .iter()
+            .find(|item| matches!(item, InputItem::ApplyPatchCallOutput { .. }))
+            .expect("should have ApplyPatchCallOutput");
+        let json = serde_json::to_value(output_item).unwrap();
+        assert_eq!(json["type"], "apply_patch_call_output");
+        assert_eq!(json["call_id"], "call_xyz");
+        assert_eq!(json["status"], "completed");
+        assert!(json.get("output").is_none() || json["output"].is_null());
+    }
+
+    #[test]
+    fn test_apply_patch_failed_result() {
+        let messages = vec![
+            Message::assistant_with_content(vec![MessageContent::tool_use(
+                "call_fail",
+                APPLY_PATCH_TOOL_NAME,
+                serde_json::json!({"operation": "update_file", "path": "x.rs"}),
+            )]),
+            Message::user_with_content(vec![MessageContent::tool_result(
+                "call_fail",
+                "could not find matching location",
+            )]),
+        ];
+
+        let result = convert_messages(&messages);
+        let output_item = result
+            .iter()
+            .find(|item| matches!(item, InputItem::ApplyPatchCallOutput { .. }))
+            .expect("should have ApplyPatchCallOutput");
+        let json = serde_json::to_value(output_item).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["output"], "could not find matching location");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::error::Error;
 use crate::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
 use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
-use crate::tool::ToolDefinition;
+use crate::tool::{BuiltInKind, ToolDefinition, text_editor_function_schema};
 
 const API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
@@ -324,8 +324,22 @@ fn convert_tools(definitions: &[ToolDefinition]) -> Vec<ChatTool> {
                     parameters: input_schema.clone(),
                 },
             }),
-            // built-in tools (text_editor) are anthropic-specific, skip for chat completions
-            ToolDefinition::BuiltIn { .. } => None,
+            ToolDefinition::BuiltIn { kind } => match kind {
+                // expose the text editor as a regular function tool for openrouter models
+                BuiltInKind::AnthropicTextEditor => {
+                    let (name, description, parameters) = text_editor_function_schema();
+                    Some(ChatTool {
+                        tool_type: "function".into(),
+                        function: ChatToolDef {
+                            name: name.to_string(),
+                            description: description.to_string(),
+                            parameters,
+                        },
+                    })
+                }
+                // openai-specific built-ins can't be used through chat completions
+                _ => None,
+            },
         })
         .collect()
 }
@@ -494,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_tools_skips_builtin() {
+    fn test_convert_tools_includes_text_editor_as_function() {
         let definitions = vec![
             ToolDefinition::Custom {
                 name: "remember",
@@ -502,13 +516,17 @@ mod tests {
                 input_schema: json!({"type": "object"}),
             },
             ToolDefinition::BuiltIn {
-                tool_type: "text_editor_20250728",
-                name: "str_replace_based_edit_tool",
+                kind: crate::tool::BuiltInKind::AnthropicTextEditor,
+            },
+            ToolDefinition::BuiltIn {
+                kind: crate::tool::BuiltInKind::OpenAiApplyPatch,
             },
         ];
         let tools = convert_tools(&definitions);
-        assert_eq!(tools.len(), 1);
+        // remember + text_editor (as function), apply_patch is skipped
+        assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].function.name, "remember");
+        assert_eq!(tools[1].function.name, "str_replace_based_edit_tool");
     }
 
     #[test]

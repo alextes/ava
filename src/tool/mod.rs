@@ -1,3 +1,4 @@
+mod apply_patch;
 mod browser;
 mod channel_history;
 mod compact;
@@ -26,6 +27,8 @@ use crate::mcp::manager::McpManager;
 use crate::message::MessageContent;
 use crate::provider::AnyProvider;
 
+pub use apply_patch::APPLY_PATCH_TOOL_NAME;
+pub(crate) use apply_patch::text_editor_function_schema;
 pub use browser::BROWSER_TOOL_NAME;
 pub use channel_history::CHANNEL_HISTORY_TOOL_NAME;
 pub use compact::COMPACT_CONTEXT_TOOL_NAME;
@@ -57,6 +60,33 @@ pub struct ToolCall {
     pub input: serde_json::Value,
 }
 
+/// provider-specific built-in tools that the model knows natively (no schema needed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltInKind {
+    /// anthropic's native text editor (`text_editor_20250728`).
+    AnthropicTextEditor,
+    /// openai's native apply_patch tool.
+    OpenAiApplyPatch,
+}
+
+impl BuiltInKind {
+    /// the API type string sent to the provider.
+    pub fn api_type(&self) -> &'static str {
+        match self {
+            Self::AnthropicTextEditor => "text_editor_20250728",
+            Self::OpenAiApplyPatch => "apply_patch",
+        }
+    }
+
+    /// the tool name used for dispatch.
+    pub fn tool_name(&self) -> &'static str {
+        match self {
+            Self::AnthropicTextEditor => TEXT_EDITOR_TOOL_NAME,
+            Self::OpenAiApplyPatch => APPLY_PATCH_TOOL_NAME,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ToolDefinition {
     Custom {
@@ -65,8 +95,7 @@ pub enum ToolDefinition {
         input_schema: serde_json::Value,
     },
     BuiltIn {
-        tool_type: &'static str,
-        name: &'static str,
+        kind: BuiltInKind,
     },
     /// dynamically defined tool (e.g. from an MCP server).
     Dynamic {
@@ -80,7 +109,7 @@ impl ToolDefinition {
     pub fn name(&self) -> &str {
         match self {
             Self::Custom { name, .. } => name,
-            Self::BuiltIn { name, .. } => name,
+            Self::BuiltIn { kind } => kind.tool_name(),
             Self::Dynamic { name, .. } => name,
         }
     }
@@ -123,7 +152,7 @@ const VAULT_DENY_MSG: &str = "access denied: ~/.ava/vault/ is a protected area t
 /// this runs before approval — no rules can override it.
 pub fn check_vault_deny(tool_call: &ToolCall) -> Option<ToolCallResult> {
     let dominated = match tool_call.name.as_str() {
-        TEXT_EDITOR_TOOL_NAME | GREP_TOOL_NAME | GLOB_TOOL_NAME => {
+        TEXT_EDITOR_TOOL_NAME | APPLY_PATCH_TOOL_NAME | GREP_TOOL_NAME | GLOB_TOOL_NAME => {
             let path = tool_call
                 .input
                 .get("path")
@@ -187,6 +216,8 @@ pub fn requires_approval(tool_call: &ToolCall) -> bool {
                 !workspace::is_inside_workspace(path)
             }
         }
+        // apply_patch always mutates files
+        APPLY_PATCH_TOOL_NAME => true,
         GREP_TOOL_NAME | GLOB_TOOL_NAME => {
             let path = tool_call
                 .input
@@ -222,6 +253,14 @@ pub fn approval_summary(call: &ToolCall) -> String {
             }
         }
         TEXT_EDITOR_TOOL_NAME => format!("{cmd}: {path}"),
+        APPLY_PATCH_TOOL_NAME => {
+            let op = call
+                .input
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("patch");
+            format!("{op}: {path}")
+        }
         GREP_TOOL_NAME => {
             let pattern = call
                 .input
@@ -281,8 +320,10 @@ pub fn tool_definitions(setup_mode: bool) -> Vec<ToolDefinition> {
         channel_history::channel_history_definition(),
         manage_access::manage_access_definition(),
         ToolDefinition::BuiltIn {
-            tool_type: "text_editor_20250728",
-            name: TEXT_EDITOR_TOOL_NAME,
+            kind: BuiltInKind::AnthropicTextEditor,
+        },
+        ToolDefinition::BuiltIn {
+            kind: BuiltInKind::OpenAiApplyPatch,
         },
         activate_skill_definition(),
     ]
@@ -374,6 +415,16 @@ pub async fn handle_tool_call(
         }
         TEXT_EDITOR_TOOL_NAME => {
             let result = filesystem::handle_text_editor(call).await;
+            Ok(ToolCallResult {
+                content: MessageContent::tool_result(&call.id, result),
+                switch_provider: None,
+                complete: false,
+                compact: false,
+                voice: None,
+            })
+        }
+        APPLY_PATCH_TOOL_NAME => {
+            let result = apply_patch::handle_apply_patch(call).await;
             Ok(ToolCallResult {
                 content: MessageContent::tool_result(&call.id, result),
                 switch_provider: None,

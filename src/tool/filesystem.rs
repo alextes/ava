@@ -40,7 +40,7 @@ pub(super) async fn handle_text_editor(call: &ToolCall) -> String {
 }
 
 /// resolve path relative to cwd, reject `..` components
-fn validate_path(path: &str) -> Result<PathBuf, String> {
+pub(super) fn validate_path(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     let resolved = if p.is_absolute() {
         p
@@ -61,7 +61,7 @@ fn validate_path(path: &str) -> Result<PathBuf, String> {
 }
 
 /// resolve path and verify the file exists on disk
-fn validate_existing_path(path: &str) -> Result<PathBuf, String> {
+pub(super) fn validate_existing_path(path: &str) -> Result<PathBuf, String> {
     let resolved = validate_path(path)?;
     if !resolved.exists() {
         return Err(format!("path does not exist: {}", resolved.display()));

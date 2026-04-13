@@ -10,8 +10,8 @@ use crate::db::{
 use crate::error::Error;
 use crate::telegram::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramBot};
 use crate::tool::{
-    ApprovalDecision, Approver, GLOB_TOOL_NAME, GREP_TOOL_NAME, MANAGE_RULES_TOOL_NAME,
-    TEXT_EDITOR_TOOL_NAME, ToolCall, references_sensitive_env,
+    APPLY_PATCH_TOOL_NAME, ApprovalDecision, Approver, GLOB_TOOL_NAME, GREP_TOOL_NAME,
+    MANAGE_RULES_TOOL_NAME, TEXT_EDITOR_TOOL_NAME, ToolCall, references_sensitive_env,
 };
 
 /// auto-approves all tool calls (used for CLI)
@@ -194,6 +194,7 @@ impl Approver for TelegramApprover {
     async fn request_approval(&self, tool_call: &ToolCall) -> Result<ApprovalDecision, Error> {
         let is_rule_add = tool_call.name == MANAGE_RULES_TOOL_NAME;
         let is_text_editor = tool_call.name == TEXT_EDITOR_TOOL_NAME;
+        let is_apply_patch = tool_call.name == APPLY_PATCH_TOOL_NAME;
         let is_read_tool = tool_call.name == GREP_TOOL_NAME
             || tool_call.name == GLOB_TOOL_NAME
             || (is_text_editor
@@ -233,7 +234,8 @@ impl Approver for TelegramApprover {
         // the substituted content executes unchecked by pattern matching.
         let has_substitution = contains_command_substitution(command);
         let mut uncovered_segments: Vec<String> = Vec::new();
-        if !is_rule_add && !is_text_editor && !is_read_tool && !has_substitution {
+        if !is_rule_add && !is_text_editor && !is_apply_patch && !is_read_tool && !has_substitution
+        {
             let coverage = self.db.check_command_coverage(command)?;
             if coverage.fully_covered {
                 tracing::debug!(command, "auto-approved by stored rules");
@@ -242,8 +244,8 @@ impl Approver for TelegramApprover {
             uncovered_segments = coverage.uncovered_segments;
         }
 
-        // for text editor write commands, check edit rules by path
-        if is_text_editor && !is_read_tool {
+        // for text editor write commands and apply_patch, check edit rules by path
+        if (is_text_editor && !is_read_tool) || is_apply_patch {
             let path = tool_call
                 .input
                 .get("path")
@@ -326,6 +328,19 @@ impl Approver for TelegramApprover {
                 _ => {}
             }
             (text, true)
+        } else if is_apply_patch {
+            let path = tool_call
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            let op = tool_call
+                .input
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("patch");
+            let text = format!("apply_patch {op}: {path}");
+            (text, true)
         } else {
             let has_sensitive = references_sensitive_env(command);
             let cwd = tool_call
@@ -386,7 +401,7 @@ impl Approver for TelegramApprover {
                     text: format!("always: {pattern}"),
                     callback_data: format!("exec:{nonce}:always:{idx}"),
                 });
-            } else if is_text_editor {
+            } else if is_text_editor || is_apply_patch {
                 let path = tool_call
                     .input
                     .get("path")
