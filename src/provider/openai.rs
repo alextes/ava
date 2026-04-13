@@ -76,6 +76,8 @@ enum InputItem {
     },
     #[serde(rename = "function_call_output")]
     FunctionCallOutput { call_id: String, output: Value },
+    #[serde(rename = "apply_patch_call")]
+    ApplyPatchCall { call_id: String, operation: Value },
     #[serde(rename = "apply_patch_call_output")]
     ApplyPatchCallOutput {
         call_id: String,
@@ -261,10 +263,19 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
                                 text_parts.clear();
                             }
                             if name == APPLY_PATCH_TOOL_NAME {
-                                // apply_patch calls don't get re-sent as input items —
-                                // the API already knows about them from the prior response.
-                                // just track the ID for the result mapping.
+                                // re-send as apply_patch_call (not function_call) so the
+                                // API has context for the corresponding apply_patch_call_output.
+                                // we reconstruct the operation from the stored input.
                                 apply_patch_ids.insert(id.clone());
+                                let operation = serde_json::json!({
+                                    "type": input.get("operation").and_then(|v| v.as_str()).unwrap_or("update_file"),
+                                    "path": input.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "diff": input.get("diff").and_then(|v| v.as_str()),
+                                });
+                                out.push(InputItem::ApplyPatchCall {
+                                    call_id: id.clone(),
+                                    operation,
+                                });
                             } else {
                                 out.push(InputItem::FunctionCall {
                                     call_id: id.clone(),
@@ -710,6 +721,17 @@ mod tests {
                 .any(|item| matches!(item, InputItem::FunctionCall { .. })),
             "apply_patch should not be serialized as function_call"
         );
+
+        // apply_patch tool use should appear as an apply_patch_call input item
+        let call_item = result
+            .iter()
+            .find(|item| matches!(item, InputItem::ApplyPatchCall { .. }))
+            .expect("should have ApplyPatchCall input item");
+        let call_json = serde_json::to_value(call_item).unwrap();
+        assert_eq!(call_json["type"], "apply_patch_call");
+        assert_eq!(call_json["call_id"], "call_xyz");
+        assert_eq!(call_json["operation"]["type"], "update_file");
+        assert_eq!(call_json["operation"]["path"], "src/main.rs");
 
         // the tool result should be an ApplyPatchCallOutput
         let output_item = result
