@@ -82,9 +82,13 @@ fn list_channels(db: &Database, chat_buffer: Option<&ChatBuffer>) -> String {
         return "no channels registered.".into();
     }
 
-    let buffer_counts: std::collections::HashMap<i64, usize> = chat_buffer
-        .map(|buf| buf.active_chats().into_iter().collect())
-        .unwrap_or_default();
+    // aggregate buffer counts by chat_id (sum across threads)
+    let mut buffer_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    if let Some(buf) = chat_buffer {
+        for ((chat_id, _thread_id), count) in buf.active_chats() {
+            *buffer_counts.entry(chat_id).or_default() += count;
+        }
+    }
 
     let mut output = String::new();
     for ch in &channels {
@@ -110,7 +114,8 @@ fn get_history(chat_buffer: Option<&ChatBuffer>, chat_id: i64) -> String {
         return "no message buffer available.".into();
     };
 
-    match buf.format_context(chat_id) {
+    // try without thread_id first (non-topic chats or general thread)
+    match buf.format_context(chat_id, None) {
         Some(ctx) => ctx,
         None => format!("no recent messages buffered for chat_id {chat_id}."),
     }

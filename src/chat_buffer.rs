@@ -1,9 +1,13 @@
 //! per-chat ring buffer for recent messages.
 //! shared between the telegram producer (writes) and the agent (reads).
+//! keyed by (chat_id, thread_id) so supergroup topics are tracked separately.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// composite key: (chat_id, thread_id). thread_id is None for non-topic chats.
+type BufferKey = (i64, Option<i64>);
 
 /// a single buffered message.
 #[allow(dead_code)]
@@ -19,9 +23,9 @@ pub struct BufferedMessage {
 const MAX_MESSAGES_PER_CHAT: usize = 50;
 const MAX_AGE: Duration = Duration::from_secs(30 * 60); // 30 minutes
 
-/// shared buffer holding recent messages for all chats.
+/// shared buffer holding recent messages for all chats/threads.
 pub struct ChatBuffer {
-    chats: Mutex<HashMap<i64, VecDeque<BufferedMessage>>>,
+    chats: Mutex<HashMap<BufferKey, VecDeque<BufferedMessage>>>,
 }
 
 impl ChatBuffer {
@@ -31,10 +35,10 @@ impl ChatBuffer {
         }
     }
 
-    /// add a message to a chat's ring buffer. prunes stale entries.
-    pub fn push(&self, chat_id: i64, msg: BufferedMessage) {
+    /// add a message to a chat/thread's ring buffer. prunes stale entries.
+    pub fn push(&self, chat_id: i64, thread_id: Option<i64>, msg: BufferedMessage) {
         let mut chats = self.chats.lock().unwrap();
-        let buf = chats.entry(chat_id).or_default();
+        let buf = chats.entry((chat_id, thread_id)).or_default();
 
         // prune old messages
         let cutoff = Instant::now() - MAX_AGE;
@@ -50,10 +54,10 @@ impl ChatBuffer {
         buf.push_back(msg);
     }
 
-    /// get a snapshot of recent messages for a chat.
-    pub fn snapshot(&self, chat_id: i64) -> Vec<BufferedMessage> {
+    /// get a snapshot of recent messages for a chat/thread.
+    pub fn snapshot(&self, chat_id: i64, thread_id: Option<i64>) -> Vec<BufferedMessage> {
         let mut chats = self.chats.lock().unwrap();
-        let Some(buf) = chats.get_mut(&chat_id) else {
+        let Some(buf) = chats.get_mut(&(chat_id, thread_id)) else {
             return Vec::new();
         };
 
@@ -66,19 +70,19 @@ impl ChatBuffer {
         buf.iter().cloned().collect()
     }
 
-    /// list all chat_ids that have buffered messages (with count).
-    pub fn active_chats(&self) -> Vec<(i64, usize)> {
+    /// list all (chat_id, thread_id) pairs that have buffered messages (with count).
+    pub fn active_chats(&self) -> Vec<(BufferKey, usize)> {
         let chats = self.chats.lock().unwrap();
         chats
             .iter()
             .filter(|(_, buf)| !buf.is_empty())
-            .map(|(&chat_id, buf)| (chat_id, buf.len()))
+            .map(|(key, buf)| (*key, buf.len()))
             .collect()
     }
 
-    /// format a chat's buffer as readable text for the agent.
-    pub fn format_context(&self, chat_id: i64) -> Option<String> {
-        let messages = self.snapshot(chat_id);
+    /// format a chat/thread's buffer as readable text for the agent.
+    pub fn format_context(&self, chat_id: i64, thread_id: Option<i64>) -> Option<String> {
+        let messages = self.snapshot(chat_id, thread_id);
         if messages.is_empty() {
             return None;
         }
@@ -107,29 +111,43 @@ mod tests {
     #[test]
     fn test_push_and_snapshot() {
         let buf = ChatBuffer::new();
-        buf.push(100, msg("alice", "hello"));
-        buf.push(100, msg("bob", "hi"));
-        buf.push(200, msg("charlie", "hey"));
+        buf.push(100, None, msg("alice", "hello"));
+        buf.push(100, None, msg("bob", "hi"));
+        buf.push(200, None, msg("charlie", "hey"));
 
-        let snap = buf.snapshot(100);
+        let snap = buf.snapshot(100, None);
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].user_name, "alice");
         assert_eq!(snap[1].user_name, "bob");
 
-        let snap2 = buf.snapshot(200);
+        let snap2 = buf.snapshot(200, None);
         assert_eq!(snap2.len(), 1);
 
         // nonexistent chat
-        assert!(buf.snapshot(999).is_empty());
+        assert!(buf.snapshot(999, None).is_empty());
+    }
+
+    #[test]
+    fn test_thread_isolation() {
+        let buf = ChatBuffer::new();
+        buf.push(100, Some(1), msg("alice", "in thread 1"));
+        buf.push(100, Some(2), msg("bob", "in thread 2"));
+        buf.push(100, None, msg("charlie", "no thread"));
+
+        assert_eq!(buf.snapshot(100, Some(1)).len(), 1);
+        assert_eq!(buf.snapshot(100, Some(2)).len(), 1);
+        assert_eq!(buf.snapshot(100, None).len(), 1);
+        assert_eq!(buf.snapshot(100, Some(1))[0].text, "in thread 1");
+        assert_eq!(buf.snapshot(100, Some(2))[0].text, "in thread 2");
     }
 
     #[test]
     fn test_max_size_enforcement() {
         let buf = ChatBuffer::new();
         for i in 0..60 {
-            buf.push(100, msg("user", &format!("msg {i}")));
+            buf.push(100, None, msg("user", &format!("msg {i}")));
         }
-        let snap = buf.snapshot(100);
+        let snap = buf.snapshot(100, None);
         assert_eq!(snap.len(), MAX_MESSAGES_PER_CHAT);
         // oldest should be pruned, newest kept
         assert_eq!(snap.last().unwrap().text, "msg 59");
@@ -142,7 +160,7 @@ mod tests {
         // manually insert an old message
         {
             let mut chats = buf.chats.lock().unwrap();
-            let deque = chats.entry(100).or_default();
+            let deque = chats.entry((100, None)).or_default();
             deque.push_back(BufferedMessage {
                 user_name: "old".into(),
                 user_id: Some(1),
@@ -151,8 +169,8 @@ mod tests {
             });
         }
 
-        buf.push(100, msg("new", "recent"));
-        let snap = buf.snapshot(100);
+        buf.push(100, None, msg("new", "recent"));
+        let snap = buf.snapshot(100, None);
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].user_name, "new");
     }
@@ -160,24 +178,28 @@ mod tests {
     #[test]
     fn test_active_chats() {
         let buf = ChatBuffer::new();
-        buf.push(100, msg("a", "x"));
-        buf.push(200, msg("b", "y"));
-        buf.push(200, msg("c", "z"));
+        buf.push(100, None, msg("a", "x"));
+        buf.push(200, Some(5), msg("b", "y"));
+        buf.push(200, Some(5), msg("c", "z"));
 
         let mut active = buf.active_chats();
-        active.sort_by_key(|(id, _)| *id);
-        assert_eq!(active, vec![(100, 1), (200, 2)]);
+        active.sort_by_key(|((chat_id, _), _)| *chat_id);
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].0, (100, None));
+        assert_eq!(active[0].1, 1);
+        assert_eq!(active[1].0, (200, Some(5)));
+        assert_eq!(active[1].1, 2);
     }
 
     #[test]
     fn test_format_context() {
         let buf = ChatBuffer::new();
-        buf.push(100, msg("alice", "hello"));
-        buf.push(100, msg("bob", "hi there"));
+        buf.push(100, None, msg("alice", "hello"));
+        buf.push(100, None, msg("bob", "hi there"));
 
-        let ctx = buf.format_context(100).unwrap();
+        let ctx = buf.format_context(100, None).unwrap();
         assert_eq!(ctx, "alice: hello\nbob: hi there");
 
-        assert!(buf.format_context(999).is_none());
+        assert!(buf.format_context(999, None).is_none());
     }
 }

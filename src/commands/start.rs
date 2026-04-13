@@ -587,8 +587,10 @@ async fn telegram_producer(
                     .map(|id| format!("user_{id}"))
                     .unwrap_or_else(|| "unknown".into())
             });
+            let thread_id = msg.message_thread_id;
             chat_buffer.push(
                 chat_id,
+                thread_id,
                 BufferedMessage {
                     user_name,
                     user_id,
@@ -597,6 +599,12 @@ async fn telegram_producer(
                 },
             );
 
+            // build sender identity prefix
+            let sender_name = username
+                .as_deref()
+                .unwrap_or_else(|| user_id.map(|_| "unknown").unwrap_or("unknown"));
+            let chat_title = msg.chat.title.as_deref();
+
             // mention-only filter for group chats
             let content = if is_group {
                 let entities = msg.entities.as_deref().unwrap_or_default();
@@ -604,7 +612,6 @@ async fn telegram_producer(
                 let replied_to = bot_identity.is_reply_to_bot(msg.reply_to_message.as_deref());
                 let display_name = runtime.telegram_display_name();
                 let named = bot_identity.is_named_in_text(&text, &display_name);
-                let thread_id = msg.message_thread_id;
 
                 tracing::info!(
                     chat_id,
@@ -628,17 +635,24 @@ async fn telegram_producer(
                     continue;
                 }
 
-                // strip @mention from text and prepend buffer context
+                // build identity + context prefix
                 let cleaned = bot_identity.strip_mention(&text);
-                match chat_buffer.format_context(chat_id) {
-                    Some(ctx) => format!(
-                        "[recent chat history]\n{ctx}\n\n[message addressed to you]\n{cleaned}"
-                    ),
-                    None => cleaned.into_owned(),
+                let group_name = chat_title.unwrap_or("group");
+                let from_line = match thread_id {
+                    Some(_tid) => format!("[from: {sender_name} in #{group_name} (topic)]"),
+                    None => format!("[from: {sender_name} in #{group_name}]"),
+                };
+                let context_header = match thread_id {
+                    Some(_) => format!("[recent messages in #{group_name} > topic]"),
+                    None => format!("[recent messages in #{group_name}]"),
+                };
+                match chat_buffer.format_context(chat_id, thread_id) {
+                    Some(ctx) => format!("{context_header}\n{ctx}\n\n{from_line}\n{cleaned}"),
+                    None => format!("{from_line}\n{cleaned}"),
                 }
             } else {
-                // DMs: pass through as-is
-                text
+                // DMs: include sender identity
+                format!("[from: {sender_name} (DM)]\n{text}")
             };
 
             // push to queue
