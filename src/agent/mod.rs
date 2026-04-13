@@ -2,6 +2,7 @@ mod compaction;
 pub(crate) mod context;
 mod prompt;
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
@@ -143,11 +144,22 @@ impl Agent {
         let mut switched_provider: Option<AnyProvider> = None;
         let mut last_input_tokens: Option<u32> = None;
         let mut compaction_count: u32 = 0;
-        let mut crossed_60pct = match self.db.session_usage(session_id)? {
-            Some((input_tokens, context_window)) if context_window > 0 => {
-                (input_tokens as f64 / context_window as f64 * 100.0) >= 60.0
+        // track which one-shot context warning thresholds (20, 40, 60) have fired.
+        // derive initial state from DB so we don't re-fire on session resume.
+        let mut fired_thresholds: BTreeSet<u32> = {
+            let initial_pct = match self.db.session_usage(session_id)? {
+                Some((input_tokens, context_window)) if context_window > 0 => {
+                    input_tokens as f64 / context_window as f64 * 100.0
+                }
+                _ => 0.0,
+            };
+            let mut set = BTreeSet::new();
+            for &t in &[20, 40, 60] {
+                if initial_pct >= t as f64 {
+                    set.insert(t);
+                }
             }
-            _ => false,
+            set
         };
         let mut pending_voice: Option<Vec<u8>> = None;
 
@@ -440,19 +452,48 @@ impl Agent {
                 )));
             }
 
-            // inject context usage at key thresholds: first round (baseline),
-            // once when crossing 60% (heads up), and every round at 80%+ (approaching compaction at 90%).
-            let should_inject_context = tool_rounds == 1
-                || (ctx.usage_percent >= 60.0 && !crossed_60pct)
-                || ctx.usage_percent >= 80.0;
-            if ctx.usage_percent >= 60.0 {
-                crossed_60pct = true;
-            }
-            if should_inject_context {
-                system_notes.push(MessageContent::text(format!(
-                    "[context: {:.0}% of window used ({}/{} tokens)]",
-                    ctx.usage_percent, ctx.input_tokens, ctx.context_window
-                )));
+            // tiered context warnings: one-shot at 20/40/60%, every round at 80%+.
+            // round 1 gets a bare info line unless a threshold applies.
+            let pct = ctx.usage_percent;
+            let tokens_info = format!("{}/{}", ctx.input_tokens, ctx.context_window);
+
+            let context_msg: Option<String> = if pct >= 80.0 {
+                fired_thresholds.extend(&[20, 40, 60]);
+                Some(format!(
+                    "[context: {pct:.0}% used ({tokens_info} tokens). \
+                     approaching auto-compaction at 90%. consider triggering \
+                     compaction at the earliest opportunity.]"
+                ))
+            } else if pct >= 60.0 && !fired_thresholds.contains(&60) {
+                fired_thresholds.extend(&[20, 40, 60]);
+                Some(format!(
+                    "[context: {pct:.0}% used ({tokens_info} tokens). \
+                     significant context in use. unless the current task absolutely \
+                     requires all prior context, consider compacting now before continuing.]"
+                ))
+            } else if pct >= 40.0 && !fired_thresholds.contains(&40) {
+                fired_thresholds.extend(&[20, 40]);
+                Some(format!(
+                    "[context: {pct:.0}% used ({tokens_info} tokens). \
+                     if there are multiple disjoint tasks in context, consider \
+                     compacting now to reduce costs.]"
+                ))
+            } else if pct >= 20.0 && !fired_thresholds.contains(&20) {
+                fired_thresholds.insert(20);
+                Some(format!(
+                    "[context: {pct:.0}% used ({tokens_info} tokens). \
+                     token costs increase with context size. if all context is relevant \
+                     to the current task, continue freely. if context spans multiple \
+                     completed tasks, consider running compaction when the current task finishes.]"
+                ))
+            } else if tool_rounds == 1 {
+                Some(format!("[context: {pct:.0}% used ({tokens_info} tokens)]"))
+            } else {
+                None
+            };
+
+            if let Some(msg) = context_msg {
+                system_notes.push(MessageContent::text(msg));
             }
 
             if !system_notes.is_empty() {
