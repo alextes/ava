@@ -278,8 +278,8 @@ fn convert_messages(messages: &[Message]) -> Vec<InputItem> {
                                 let apc_id = input
                                     .get("apc_id")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or(id)
-                                    .to_string();
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| format!("apc_{id}"));
                                 let apc_status = input
                                     .get("apc_status")
                                     .and_then(|v| v.as_str())
@@ -833,8 +833,8 @@ mod tests {
             .find(|item| matches!(item, InputItem::ApplyPatchCall { .. }))
             .expect("should have ApplyPatchCall");
         let json = serde_json::to_value(call_item).unwrap();
-        // id falls back to call_id, status falls back to "completed"
-        assert_eq!(json["id"], "call_old");
+        // id falls back to "apc_" + call_id (API requires apc_ prefix), status to "completed"
+        assert_eq!(json["id"], "apc_call_old");
         assert_eq!(json["status"], "completed");
         assert_eq!(json["call_id"], "call_old");
         assert_eq!(json["operation"]["type"], "update_file");
