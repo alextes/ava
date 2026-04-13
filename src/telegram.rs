@@ -108,13 +108,19 @@ impl TelegramBot {
     }
 
     #[tracing::instrument(skip(self, text), fields(chat_id))]
-    pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), Error> {
+    pub async fn send_message(
+        &self,
+        chat_id: i64,
+        text: &str,
+        thread_id: Option<i64>,
+    ) -> Result<(), Error> {
         // try HTML parse mode first
         let params = SendMessageParams {
             chat_id,
             text,
             parse_mode: Some("HTML"),
             reply_markup: None,
+            message_thread_id: thread_id,
         };
 
         let response: ApiResponse<serde_json::Value> = self
@@ -141,6 +147,7 @@ impl TelegramBot {
             text,
             parse_mode: None,
             reply_markup: None,
+            message_thread_id: thread_id,
         };
 
         let response: ApiResponse<serde_json::Value> = self
@@ -175,6 +182,7 @@ impl TelegramBot {
             text,
             parse_mode: None,
             reply_markup: Some(reply_markup),
+            message_thread_id: None,
         };
 
         let response: ApiResponse<SentMessage> = self
@@ -320,6 +328,8 @@ struct SendMessageParams<'a> {
     parse_mode: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_markup: Option<InlineKeyboardMarkup>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_thread_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -381,6 +391,8 @@ pub struct Message {
     pub text: Option<String>,
     pub reply_to_message: Option<Box<Message>>,
     pub entities: Option<Vec<MessageEntity>>,
+    /// present when the message was sent in a supergroup topic (forum thread)
+    pub message_thread_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

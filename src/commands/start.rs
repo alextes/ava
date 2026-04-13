@@ -285,7 +285,7 @@ async fn agent_loop(
         };
 
         let approver = match &queued.sink {
-            ResponseSink::Telegram { chat_id, bot } => {
+            ResponseSink::Telegram { chat_id, bot, .. } => {
                 AnyApprover::Telegram(TelegramApprover::new(
                     Arc::clone(bot),
                     *chat_id,
@@ -467,7 +467,7 @@ async fn telegram_producer(
                 if !user_allowed {
                     tracing::warn!(?user_id, "rejecting DM from non-whitelisted user");
                     let _ = bot
-                        .send_message(chat_id, "DM not available for this user.")
+                        .send_message(chat_id, "DM not available for this user.", None)
                         .await;
                     continue;
                 }
@@ -523,6 +523,7 @@ async fn telegram_producer(
                 content,
                 sink: ResponseSink::Telegram {
                     chat_id,
+                    thread_id: msg.message_thread_id,
                     bot: Arc::clone(&bot),
                 },
             };
@@ -629,6 +630,7 @@ mod tests {
             text: Some("hi".into()),
             reply_to_message: None,
             entities: None,
+            message_thread_id: None,
         };
         assert!(b.is_reply_to_bot(Some(&bot_msg)));
 
@@ -647,6 +649,7 @@ mod tests {
             text: Some("hi".into()),
             reply_to_message: None,
             entities: None,
+            message_thread_id: None,
         };
         assert!(!b.is_reply_to_bot(Some(&other_msg)));
         assert!(!b.is_reply_to_bot(None));

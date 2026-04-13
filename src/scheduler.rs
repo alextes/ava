@@ -58,6 +58,7 @@ pub async fn run(
                 content: schedule.prompt.clone(),
                 sink: ResponseSink::Telegram {
                     chat_id: default_chat_id,
+                    thread_id: None,
                     bot: Arc::clone(&bot),
                 },
             };
@@ -109,6 +110,7 @@ pub async fn run(
             ),
             sink: ResponseSink::Telegram {
                 chat_id: default_chat_id,
+                thread_id: None,
                 bot: Arc::clone(&bot),
             },
         };
