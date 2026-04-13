@@ -498,9 +498,25 @@ async fn telegram_producer(
                 let mentioned = bot_identity.is_mentioned_in_entities(entities);
                 let replied_to = bot_identity.is_reply_to_bot(msg.reply_to_message.as_deref());
                 let named = bot_identity.is_named_in_text(&text);
+                let thread_id = msg.message_thread_id;
+
+                tracing::info!(
+                    chat_id,
+                    thread_id,
+                    mentioned,
+                    replied_to,
+                    named,
+                    text = %text,
+                    "evaluated group message trigger"
+                );
 
                 if !mentioned && !replied_to && !named {
-                    tracing::debug!(chat_id, "group message not addressed to bot, skipping");
+                    tracing::debug!(
+                        chat_id,
+                        thread_id,
+                        text = %text,
+                        "group message not addressed to bot, skipping"
+                    );
                     continue;
                 }
 
