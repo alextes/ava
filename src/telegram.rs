@@ -217,13 +217,14 @@ impl TelegramBot {
         chat_id: i64,
         text: &str,
         reply_markup: InlineKeyboardMarkup,
+        thread_id: Option<i64>,
     ) -> Result<i64, Error> {
         let params = SendMessageParams {
             chat_id,
             text,
             parse_mode: None,
             reply_markup: Some(reply_markup),
-            message_thread_id: None,
+            message_thread_id: thread_id,
         };
 
         let response: ApiResponse<SentMessage> = self

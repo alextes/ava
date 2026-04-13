@@ -314,14 +314,17 @@ async fn agent_loop(
         };
 
         let approver = match &queued.sink {
-            ResponseSink::Telegram { chat_id, bot, .. } => {
-                AnyApprover::Telegram(TelegramApprover::new(
-                    Arc::clone(bot),
-                    *chat_id,
-                    Arc::clone(&pending),
-                    Arc::clone(&db),
-                ))
-            }
+            ResponseSink::Telegram {
+                chat_id,
+                thread_id,
+                bot,
+            } => AnyApprover::Telegram(TelegramApprover::new(
+                Arc::clone(bot),
+                *chat_id,
+                *thread_id,
+                Arc::clone(&pending),
+                Arc::clone(&db),
+            )),
         };
 
         let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone())

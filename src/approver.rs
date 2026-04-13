@@ -67,6 +67,7 @@ impl PendingApprovals {
 pub struct TelegramApprover {
     bot: Arc<TelegramBot>,
     chat_id: i64,
+    thread_id: Option<i64>,
     pending: Arc<PendingApprovals>,
     db: Arc<Database>,
 }
@@ -75,12 +76,14 @@ impl TelegramApprover {
     pub fn new(
         bot: Arc<TelegramBot>,
         chat_id: i64,
+        thread_id: Option<i64>,
         pending: Arc<PendingApprovals>,
         db: Arc<Database>,
     ) -> Self {
         Self {
             bot,
             chat_id,
+            thread_id,
             pending,
             db,
         }
@@ -481,7 +484,7 @@ impl Approver for TelegramApprover {
 
         let message_id = self
             .bot
-            .send_message_with_keyboard(self.chat_id, &text, keyboard)
+            .send_message_with_keyboard(self.chat_id, &text, keyboard, self.thread_id)
             .await?;
 
         // create oneshot channel
@@ -688,7 +691,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(EXEC_TOOL_NAME, json!({"command": "cargo test --release"}));
         let decision = approver.request_approval(&call).await.unwrap();
@@ -705,7 +708,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, Arc::clone(&db));
+        let approver = TelegramApprover::new(bot, 123, None, pending, Arc::clone(&db));
 
         // "rm -rf /" won't match "cargo test *" — would proceed to prompt
         // but since we have a fake bot token, the send_message_with_keyboard call will fail
@@ -723,7 +726,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         // this matches "cargo *" but contains command substitution — should NOT auto-approve
         let call = make_call(
@@ -742,7 +745,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(
             EXEC_TOOL_NAME,
@@ -760,7 +763,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(
             EXEC_TOOL_NAME,
@@ -777,7 +780,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(
             EXEC_TOOL_NAME,
@@ -795,7 +798,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         // grep outside workspace with matching read rule
         let call = make_call(
@@ -814,7 +817,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         // edit rule grants read access
         let call = make_call(
@@ -833,7 +836,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         // read rule should NOT auto-approve writes
         let call = make_call(
@@ -853,7 +856,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(
             TEXT_EDITOR_TOOL_NAME,
@@ -871,7 +874,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(EXEC_TOOL_NAME, json!({"command": "cargo test | grep FAIL"}));
         let result = approver.request_approval(&call).await;
@@ -886,7 +889,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(
             EXEC_TOOL_NAME,
@@ -903,7 +906,7 @@ mod tests {
 
         let bot = Arc::new(TelegramBot::new("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
-        let approver = TelegramApprover::new(bot, 123, pending, db);
+        let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
         let call = make_call(
             EXEC_TOOL_NAME,
