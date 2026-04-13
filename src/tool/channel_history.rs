@@ -7,29 +7,38 @@ use crate::message::MessageContent;
 
 use super::{ToolCallResult, ToolDefinition};
 
-pub const CHANNEL_HISTORY_TOOL_NAME: &str = "channel_history";
+pub const CHANNEL_HISTORY_TOOL_NAME: &str = "channel_short_history";
 
 #[derive(Debug, Deserialize)]
 struct ChannelHistoryInput {
     action: String,
     chat_id: Option<i64>,
+    thread_id: Option<i64>,
 }
 
 pub fn channel_history_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: CHANNEL_HISTORY_TOOL_NAME,
-        description: "view recent message history from your channels. action=list: show all channels with active buffers (chat_id, title, type, message count). action=get: retrieve recent messages for a specific channel by chat_id.",
+        description: "peek at recent messages in your channels. this is an in-memory buffer, not a \
+            full history — it holds at most 50 messages or 30 minutes, whichever is less, and \
+            messages are cleared once injected into your context on trigger. use action=list to \
+            see channels with buffered messages, action=get to read a specific channel's buffer. \
+            use thread_id for supergroup topics.",
         input_schema: json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": ["list", "get"],
-                    "description": "list channels or get history for a specific channel"
+                    "description": "list channels or get recent messages for a specific channel"
                 },
                 "chat_id": {
                     "type": "integer",
-                    "description": "chat_id of the channel to retrieve history for (required for action=get)"
+                    "description": "chat_id of the channel (required for action=get)"
+                },
+                "thread_id": {
+                    "type": "integer",
+                    "description": "thread_id (topic) within a supergroup. omit for non-topic messages or DMs."
                 }
             },
             "required": ["action"]
@@ -60,7 +69,7 @@ pub fn handle_channel_history(
     let result = match parsed.action.as_str() {
         "list" => list_channels(db, chat_buffer),
         "get" => match parsed.chat_id {
-            Some(id) => get_history(chat_buffer, id),
+            Some(id) => get_history(chat_buffer, id, parsed.thread_id),
             None => "error: chat_id is required for action=get".into(),
         },
         other => format!("unknown action: {other}. use 'list' or 'get'."),
@@ -109,13 +118,12 @@ fn list_channels(db: &Database, chat_buffer: Option<&ChatBuffer>) -> String {
     output.trim_end().to_string()
 }
 
-fn get_history(chat_buffer: Option<&ChatBuffer>, chat_id: i64) -> String {
+fn get_history(chat_buffer: Option<&ChatBuffer>, chat_id: i64, thread_id: Option<i64>) -> String {
     let Some(buf) = chat_buffer else {
         return "no message buffer available.".into();
     };
 
-    // try without thread_id first (non-topic chats or general thread)
-    match buf.format_context(chat_id, None) {
+    match buf.format_context(chat_id, thread_id) {
         Some(ctx) => ctx,
         None => format!("no recent messages buffered for chat_id {chat_id}."),
     }
