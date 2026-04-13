@@ -9,6 +9,7 @@ mod filesystem;
 mod manage_access;
 mod memory;
 mod search;
+mod send_file;
 mod setup;
 mod speak;
 mod tasks;
@@ -40,6 +41,7 @@ pub(crate) use exec::{load_vault_secrets, scrub_vault_secrets};
 pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use manage_access::MANAGE_ACCESS_TOOL_NAME;
 pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
+pub use send_file::SEND_FILE_TOOL_NAME;
 pub use setup::COMPLETE_SETUP_TOOL_NAME;
 pub use speak::SPEAK_TOOL_NAME;
 pub use tasks::TASKS_TOOL_NAME;
@@ -124,6 +126,16 @@ pub struct ToolCallResult {
     pub compact: bool,
     /// OGG Opus audio bytes produced by the speak tool
     pub voice: Option<Vec<u8>>,
+    /// file attachment produced by the send_file tool
+    pub attachment: Option<FileAttachment>,
+}
+
+/// a file to send as a telegram document attachment.
+#[derive(Debug, Clone)]
+pub struct FileAttachment {
+    pub bytes: Vec<u8>,
+    pub filename: String,
+    pub caption: Option<String>,
 }
 
 // --- approver trait ---
@@ -183,6 +195,7 @@ pub fn check_vault_deny(tool_call: &ToolCall) -> Option<ToolCallResult> {
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         })
     } else {
         None
@@ -318,6 +331,7 @@ pub fn tool_definitions(setup_mode: bool) -> Vec<ToolDefinition> {
         search::glob_definition(),
         browser::browser_definition(),
         speak::speak_definition(),
+        send_file::send_file_definition(),
         channel_history::channel_history_definition(),
         manage_access::manage_access_definition(),
         ToolDefinition::BuiltIn {
@@ -373,6 +387,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         WEB_SEARCH_TOOL_NAME => {
@@ -383,6 +398,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         WEB_FETCH_TOOL_NAME => {
@@ -393,6 +409,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         GREP_TOOL_NAME => {
@@ -403,6 +420,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         GLOB_TOOL_NAME => {
@@ -413,6 +431,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         TEXT_EDITOR_TOOL_NAME => {
@@ -423,6 +442,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         APPLY_PATCH_TOOL_NAME => {
@@ -433,8 +453,10 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
+        SEND_FILE_TOOL_NAME => Ok(send_file::handle_send_file(call)),
         BROWSER_TOOL_NAME => {
             let content = browser::handle_browser(call).await;
             Ok(ToolCallResult {
@@ -443,6 +465,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         SPEAK_TOOL_NAME => Ok(speak::handle_speak(call).await),
@@ -487,6 +510,7 @@ pub async fn handle_tool_call(
                                 complete: false,
                                 compact: false,
                                 voice: None,
+                                attachment: None,
                             })
                         }
                         Err(err) => Ok(ToolCallResult {
@@ -498,6 +522,7 @@ pub async fn handle_tool_call(
                             complete: false,
                             compact: false,
                             voice: None,
+                            attachment: None,
                         }),
                     }
                 }
@@ -507,6 +532,7 @@ pub async fn handle_tool_call(
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 }),
             }
         }
@@ -525,6 +551,7 @@ pub async fn handle_tool_call(
                                 complete: false,
                                 compact: false,
                                 voice: None,
+                                attachment: None,
                             });
                         }
                         let mut output = String::new();
@@ -540,6 +567,7 @@ pub async fn handle_tool_call(
                             complete: false,
                             compact: false,
                             voice: None,
+                            attachment: None,
                         })
                     }
                     "add" => match input.pattern {
@@ -554,6 +582,7 @@ pub async fn handle_tool_call(
                                 complete: false,
                                 compact: false,
                                 voice: None,
+                                attachment: None,
                             })
                         }
                         _ => Ok(ToolCallResult {
@@ -565,6 +594,7 @@ pub async fn handle_tool_call(
                             complete: false,
                             compact: false,
                             voice: None,
+                            attachment: None,
                         }),
                     },
                     "delete" => match input.id {
@@ -577,6 +607,7 @@ pub async fn handle_tool_call(
                                 complete: false,
                                 compact: false,
                                 voice: None,
+                                attachment: None,
                             })
                         }
                         None => Ok(ToolCallResult {
@@ -585,6 +616,7 @@ pub async fn handle_tool_call(
                             complete: false,
                             compact: false,
                             voice: None,
+                            attachment: None,
                         }),
                     },
                     other => Ok(ToolCallResult {
@@ -596,6 +628,7 @@ pub async fn handle_tool_call(
                         complete: false,
                         compact: false,
                         voice: None,
+                        attachment: None,
                     }),
                 },
                 Err(err) => Ok(ToolCallResult {
@@ -604,6 +637,7 @@ pub async fn handle_tool_call(
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 }),
             }
         }
@@ -626,6 +660,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         _ => {
@@ -639,6 +674,7 @@ pub async fn handle_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
     }
@@ -723,6 +759,7 @@ async fn handle_mcp_tool_call(
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         });
     };
 
@@ -738,6 +775,7 @@ async fn handle_mcp_tool_call(
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         });
     };
 
@@ -765,6 +803,7 @@ async fn handle_mcp_tool_call(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             })
         }
         Err(e) => Ok(ToolCallResult {
@@ -773,6 +812,7 @@ async fn handle_mcp_tool_call(
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         }),
     }
 }

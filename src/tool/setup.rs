@@ -46,6 +46,7 @@ pub(super) fn handle_complete_setup(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             });
         }
     };
@@ -61,6 +62,7 @@ pub(super) fn handle_complete_setup(
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         });
     }
 
@@ -87,6 +89,7 @@ pub(super) fn handle_complete_setup(
         complete: false,
         compact: false,
         voice: None,
+        attachment: None,
     })
 }
 

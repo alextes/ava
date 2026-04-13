@@ -265,6 +265,7 @@ async fn agent_loop(
                 crate::message::OutboundMessage {
                     content: msg,
                     voice: None,
+                    attachments: vec![],
                 },
             )
             .await;
@@ -278,6 +279,7 @@ async fn agent_loop(
                 crate::message::OutboundMessage {
                     content: msg,
                     voice: None,
+                    attachments: vec![],
                 },
             )
             .await;

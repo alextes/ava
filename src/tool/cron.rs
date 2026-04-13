@@ -70,6 +70,7 @@ pub fn handle_cron(db: &Database, call_id: &str, input: &serde_json::Value) -> T
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             };
         }
     };
@@ -84,6 +85,7 @@ pub fn handle_cron(db: &Database, call_id: &str, input: &serde_json::Value) -> T
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         },
     }
 }
@@ -98,6 +100,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             };
         }
     };
@@ -111,6 +114,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             };
         }
     };
@@ -129,6 +133,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 };
             }
         };
@@ -145,6 +150,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 };
             }
         };
@@ -171,6 +177,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 };
             }
         }
@@ -184,6 +191,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         };
     };
 
@@ -203,6 +211,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             }
         }
         Err(e) => ToolCallResult {
@@ -211,6 +220,7 @@ fn handle_schedule(db: &Database, call_id: &str, input: &CronInput) -> ToolCallR
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         },
     }
 }
@@ -225,6 +235,7 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 };
             }
             let mut output = String::new();
@@ -248,6 +259,7 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             }
         }
         Err(e) => ToolCallResult {
@@ -256,6 +268,7 @@ fn handle_list(db: &Database, call_id: &str) -> ToolCallResult {
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         },
     }
 }
@@ -270,6 +283,7 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             };
         }
     };
@@ -281,6 +295,7 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         },
         Ok(false) => ToolCallResult {
             content: MessageContent::tool_result(call_id, "not found"),
@@ -288,6 +303,7 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         },
         Err(e) => ToolCallResult {
             content: MessageContent::tool_result(call_id, format!("error: {e}")),
@@ -295,6 +311,7 @@ fn handle_cancel(db: &Database, call_id: &str, input: &CronInput) -> ToolCallRes
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         },
     }
 }

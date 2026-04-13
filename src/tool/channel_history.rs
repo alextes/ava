@@ -52,6 +52,7 @@ pub fn handle_channel_history(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             };
         }
     };
@@ -71,6 +72,7 @@ pub fn handle_channel_history(
         complete: false,
         compact: false,
         voice: None,
+        attachment: None,
     }
 }
 

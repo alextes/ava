@@ -61,6 +61,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             };
         }
     };
@@ -78,6 +79,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         complete: false,
                         compact: false,
                         voice: None,
+                        attachment: None,
                     },
                     Err(err) => ToolCallResult {
                         content: MessageContent::tool_result(
@@ -88,6 +90,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         complete: false,
                         compact: false,
                         voice: None,
+                        attachment: None,
                     },
                 }
             }
@@ -97,6 +100,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             },
         },
         "list" => {
@@ -110,6 +114,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                             complete: false,
                             compact: false,
                             voice: None,
+                            attachment: None,
                         };
                     }
                     let mut output = String::new();
@@ -129,6 +134,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         complete: false,
                         compact: false,
                         voice: None,
+                        attachment: None,
                     }
                 }
                 Err(err) => ToolCallResult {
@@ -140,6 +146,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 },
             }
         }
@@ -162,6 +169,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                         complete: false,
                         compact: false,
                         voice: None,
+                        attachment: None,
                     }
                 }
                 Ok(None) => ToolCallResult {
@@ -170,6 +178,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 },
                 Err(err) => ToolCallResult {
                     content: MessageContent::tool_result(
@@ -180,6 +189,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 },
             },
             None => ToolCallResult {
@@ -188,6 +198,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             },
         },
         "done" => match parsed.id {
@@ -198,6 +209,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 },
                 Ok(false) => ToolCallResult {
                     content: MessageContent::tool_result(call_id, "task not found or already done"),
@@ -205,6 +217,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 },
                 Err(err) => ToolCallResult {
                     content: MessageContent::tool_result(
@@ -215,6 +228,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                     complete: false,
                     compact: false,
                     voice: None,
+                    attachment: None,
                 },
             },
             None => ToolCallResult {
@@ -223,6 +237,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             },
         },
         other => ToolCallResult {
@@ -231,6 +246,7 @@ pub fn handle_tasks(db: &Database, call_id: &str, input: &serde_json::Value) -> 
             complete: false,
             compact: false,
             voice: None,
+            attachment: None,
         },
     }
 }

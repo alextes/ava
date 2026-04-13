@@ -45,6 +45,21 @@ pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
                 tracing::error!(%e, chat_id, "failed to send voice message");
             }
 
+            // send file attachments
+            for attachment in outbound.attachments {
+                if let Err(e) = bot
+                    .send_document(
+                        chat_id,
+                        attachment.bytes,
+                        &attachment.filename,
+                        attachment.caption.as_deref(),
+                    )
+                    .await
+                {
+                    tracing::error!(%e, chat_id, filename = %attachment.filename, "failed to send document");
+                }
+            }
+
             // send text response (always — voice is supplementary)
             if !outbound.content.is_empty() {
                 let html = markdown_to_telegram_html(&outbound.content);
@@ -61,6 +76,7 @@ pub async fn send_error(sink: ResponseSink, msg: &str) {
     let outbound = OutboundMessage {
         content: msg.to_string(),
         voice: None,
+        attachments: vec![],
     };
     send_response(sink, outbound).await;
 }

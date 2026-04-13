@@ -40,6 +40,7 @@ fn err_result(call_id: &str, msg: impl Into<String>) -> ToolCallResult {
         complete: false,
         compact: false,
         voice: None,
+        attachment: None,
     }
 }
 
@@ -110,6 +111,7 @@ pub(super) async fn handle_speak(call: &ToolCall) -> ToolCallResult {
         complete: false,
         compact: false,
         voice: Some(ogg_bytes),
+        attachment: None,
     }
 }
 

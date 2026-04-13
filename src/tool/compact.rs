@@ -29,6 +29,7 @@ pub fn handle_compact_context(call_id: &str) -> ToolCallResult {
         complete: false,
         compact: true,
         voice: None,
+        attachment: None,
     }
 }
 

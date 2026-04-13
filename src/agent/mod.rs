@@ -12,7 +12,8 @@ use crate::db::Database;
 use crate::error::Error;
 use crate::mcp::manager::McpManager;
 use crate::message::{
-    ContentBlock, InboundMessage, Message, MessageContent, OutboundMessage, Role, ToolResultContent,
+    ChannelKind, ContentBlock, InboundMessage, Message, MessageContent, OutboundMessage, Role,
+    ToolResultContent,
 };
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider, SETUP_SYSTEM_PROMPT};
 use crate::runtime::RuntimeState;
@@ -21,6 +22,8 @@ use crate::tool::{self, ApprovalDecision, Approver, ToolCall, ToolDefinition};
 
 const MAX_TOOL_ROUNDS: u32 = 40;
 const WARNING_ROUND: u32 = 32;
+const TELEGRAM_MAX_MESSAGE_LEN: usize = 4096;
+const MAX_LENGTH_RETRIES: u32 = 2;
 
 pub struct Agent {
     provider: AnyProvider,
@@ -194,6 +197,8 @@ impl Agent {
             set
         };
         let mut pending_voice: Option<Vec<u8>> = None;
+        let mut pending_attachments: Vec<crate::tool::FileAttachment> = Vec::new();
+        let mut length_retries: u32 = 0;
 
         loop {
             // compact context if approaching the model's limit
@@ -232,6 +237,7 @@ impl Agent {
                             — please start a new session."
                             .into(),
                         voice: None,
+                        attachments: vec![],
                     }));
                 }
                 Err(Error::RateLimited(ref msg)) => {
@@ -243,6 +249,7 @@ impl Agent {
                              details: {msg}"
                         ),
                         voice: None,
+                        attachments: vec![],
                     }));
                 }
                 Err(Error::BudgetExhausted(ref msg)) => {
@@ -332,6 +339,38 @@ impl Agent {
             }
 
             if response.tool_calls.is_empty() {
+                // check telegram message length limit before persisting
+                if inbound.channel == ChannelKind::Telegram
+                    && !response.content.is_empty()
+                    && length_retries < MAX_LENGTH_RETRIES
+                {
+                    let html = crate::telegram_fmt::markdown_to_telegram_html(&response.content);
+                    if html.len() > TELEGRAM_MAX_MESSAGE_LEN {
+                        length_retries += 1;
+                        tracing::info!(
+                            html_len = html.len(),
+                            retry = length_retries,
+                            "response too long for telegram, asking agent to retry"
+                        );
+                        // add the too-long response to in-memory context (not persisted)
+                        // so the agent can see what it wrote and rework it
+                        messages.push(Message::assistant_with_content(vec![MessageContent::text(
+                            &response.content,
+                        )]));
+                        let feedback = format!(
+                            "[system: your response is {} characters after formatting, \
+                             but telegram's limit is {}. either rewrite it much shorter, \
+                             or write the full content to a file (e.g. /tmp/response.md) \
+                             and use the send_file tool to share it with the user \
+                             alongside a brief summary message.]",
+                            html.len(),
+                            TELEGRAM_MAX_MESSAGE_LEN,
+                        );
+                        messages.push(Message::user(&feedback));
+                        continue;
+                    }
+                }
+
                 // persist the final assistant response (skip empty content to avoid API rejection)
                 if !response.content.is_empty() {
                     let assistant_content = vec![MessageContent::text(&response.content)];
@@ -342,6 +381,7 @@ impl Agent {
                 return Ok(Some(OutboundMessage {
                     content: response.content,
                     voice: pending_voice.take(),
+                    attachments: std::mem::take(&mut pending_attachments),
                 }));
             }
 
@@ -402,13 +442,32 @@ impl Agent {
                     }
                 };
 
+                // check length — if too long and on telegram, send error instead
+                let send_content = if inbound.channel == ChannelKind::Telegram {
+                    let html = crate::telegram_fmt::markdown_to_telegram_html(&final_content);
+                    if html.len() > TELEGRAM_MAX_MESSAGE_LEN {
+                        format!(
+                            "sorry, my response was too long for telegram ({} chars, \
+                             limit is {}). send a follow-up and i'll try to be more \
+                             concise, or ask me to write it to a file.",
+                            html.len(),
+                            TELEGRAM_MAX_MESSAGE_LEN,
+                        )
+                    } else {
+                        final_content.clone()
+                    }
+                } else {
+                    final_content.clone()
+                };
+
                 let final_blocks = vec![MessageContent::text(&final_content)];
                 self.db
                     .append_message(session_id, "assistant", &final_blocks, None)?;
 
                 return Ok(Some(OutboundMessage {
-                    content: final_content,
+                    content: send_content,
                     voice: pending_voice.take(),
+                    attachments: std::mem::take(&mut pending_attachments),
                 }));
             }
 
@@ -457,6 +516,9 @@ impl Agent {
                 }
                 if let Some(voice_bytes) = result.voice {
                     pending_voice = Some(voice_bytes);
+                }
+                if let Some(attachment) = result.attachment {
+                    pending_attachments.push(attachment);
                 }
                 tool_results.push(result.content);
             }
@@ -586,6 +648,7 @@ impl Agent {
                         complete: false,
                         compact: false,
                         voice: None,
+                        attachment: None,
                     });
                 }
                 Err(e) => return Err(e),
@@ -629,6 +692,7 @@ impl Agent {
                         complete: false,
                         compact: false,
                         voice: None,
+                        attachment: None,
                     });
                 }
             }
@@ -871,6 +935,13 @@ impl Agent {
             "\n\n## tool budget\nyou have a budget of {MAX_TOOL_ROUNDS} tool rounds per user \
              message. after exhausting the budget you get one final text-only turn. if you need \
              more rounds, tell the user to send a follow-up message."
+        ));
+
+        prompt.push_str(&format!(
+            "\n\n## message length\nresponses are delivered via telegram which has a \
+             {TELEGRAM_MAX_MESSAGE_LEN}-character message limit. for long content, write \
+             it to a file (e.g. /tmp/response.md) and use the send_file tool to share it \
+             with the user alongside a brief summary."
         ));
 
         Ok(prompt)

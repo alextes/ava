@@ -309,6 +309,48 @@ impl TelegramBot {
         }
     }
 
+    /// send a file as a telegram document attachment.
+    #[tracing::instrument(skip(self, file_bytes), fields(chat_id, filename, bytes_len = file_bytes.len()))]
+    pub async fn send_document(
+        &self,
+        chat_id: i64,
+        file_bytes: Vec<u8>,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> Result<i64, Error> {
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")
+            .map_err(|e| Error::Telegram(format!("failed to build multipart: {e}")))?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", part);
+
+        if let Some(caption) = caption {
+            form = form.text("caption", caption.to_string());
+        }
+
+        let response: ApiResponse<SentMessage> = self
+            .client
+            .post(self.api_url("sendDocument"))
+            .multipart(form)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            Ok(response.result.map(|m| m.message_id).unwrap_or_default())
+        } else {
+            Err(Error::Telegram(
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".into()),
+            ))
+        }
+    }
+
     #[tracing::instrument(skip(self, text), fields(chat_id, message_id))]
     pub async fn edit_message_text(
         &self,

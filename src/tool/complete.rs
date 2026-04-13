@@ -46,6 +46,7 @@ pub fn handle_complete(call_id: &str, input: &serde_json::Value) -> ToolCallResu
         complete: true,
         compact: false,
         voice: None,
+        attachment: None,
     }
 }
 

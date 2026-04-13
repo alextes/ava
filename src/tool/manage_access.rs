@@ -50,6 +50,7 @@ pub fn handle_manage_access(
                 complete: false,
                 compact: false,
                 voice: None,
+                attachment: None,
             };
         }
     };
@@ -113,5 +114,6 @@ pub fn handle_manage_access(
         complete: false,
         compact: false,
         voice: None,
+        attachment: None,
     }
 }
