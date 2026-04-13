@@ -39,7 +39,9 @@ pub(super) async fn handle_text_editor(call: &ToolCall) -> String {
     }
 }
 
-/// resolve path relative to cwd, reject `..` components
+/// resolve path relative to cwd, canonicalizing `..` components.
+/// the approval system (requires_approval + check_vault_deny) handles security
+/// for out-of-workspace and vault paths, so we don't need to reject `..` here.
 pub(super) fn validate_path(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     let resolved = if p.is_absolute() {
@@ -50,14 +52,19 @@ pub(super) fn validate_path(path: &str) -> Result<PathBuf, String> {
             .join(&p)
     };
 
-    // reject .. components
+    // canonicalize .. components by building a normalized path.
+    // we don't use std::fs::canonicalize because the path may not exist yet (create).
+    let mut normalized = PathBuf::new();
     for component in resolved.components() {
-        if matches!(component, Component::ParentDir) {
-            return Err("path must not contain '..' components".to_string());
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component),
         }
     }
 
-    Ok(resolved)
+    Ok(normalized)
 }
 
 /// resolve path and verify the file exists on disk
@@ -400,9 +407,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_path_rejects_traversal() {
+    fn test_validate_path_resolves_traversal() {
         let result = validate_path("/tmp/../etc/passwd");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains(".."));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("/etc/passwd"));
+    }
+
+    #[test]
+    fn test_validate_path_resolves_relative_traversal() {
+        // ../foo from /a/b/c should resolve to /a/b/foo
+        let result = validate_path("/a/b/c/../foo");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("/a/b/foo"));
     }
 }
