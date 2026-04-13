@@ -3,13 +3,15 @@ schema_version: 9
 id: ava-2qrp
 title: fix compaction not persisting to DB across turns
 priority: P2
-status: open
+status: done
 deps: []
 tags:
 - core
 - session
 owner: null
 created_at: 2026-04-12T17:07:09.794971156Z
+started_at: 2026-04-12T17:08:22.448084Z
+completed_at: 2026-04-12T17:30:31.889266Z
 ---
 
 compaction works in-memory for the current turn but is ineffective across turns because load_messages() reloads all messages from DB on every new request.
