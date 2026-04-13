@@ -15,6 +15,22 @@ pub enum ResponseSink {
     },
 }
 
+impl ResponseSink {
+    /// the chat id this response will be sent to.
+    pub fn chat_id(&self) -> i64 {
+        match self {
+            ResponseSink::Telegram { chat_id, .. } => *chat_id,
+        }
+    }
+
+    /// the thread id (topic) this response will be sent to.
+    pub fn thread_id(&self) -> Option<i64> {
+        match self {
+            ResponseSink::Telegram { thread_id, .. } => *thread_id,
+        }
+    }
+}
+
 /// a message queued for sequential agent processing
 pub struct QueuedMessage {
     pub channel: ChannelKind,

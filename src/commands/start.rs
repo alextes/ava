@@ -291,8 +291,37 @@ async fn agent_loop(
     runtime: Arc<RuntimeState>,
 ) {
     while let Some(queued) = rx.recv().await {
+        let chat_id = queued.sink.chat_id();
+        let thread_id = queued.sink.thread_id();
+
+        // helper: buffer a bot response so it appears in chat history context
+        let buffer_bot_reply = |text: &str| {
+            if text.is_empty() {
+                return;
+            }
+            let bot_name = runtime.telegram_display_name();
+            let label = if bot_name.is_empty() {
+                "bot".to_string()
+            } else {
+                bot_name
+            };
+            // truncate long responses to avoid dominating the ring buffer
+            let truncated: String = text.chars().take(500).collect();
+            chat_buffer.push(
+                chat_id,
+                thread_id,
+                BufferedMessage {
+                    user_name: label,
+                    user_id: None,
+                    text: truncated,
+                    received_at: std::time::Instant::now(),
+                },
+            );
+        };
+
         if let Some(("switch", args)) = parse_slash_command(&queued.content) {
             let msg = handle_switch_command(args, client.clone(), &db);
+            buffer_bot_reply(&msg);
             send_response(
                 queued.sink,
                 crate::message::OutboundMessage {
@@ -307,6 +336,7 @@ async fn agent_loop(
 
         if let Some(("rules", args)) = parse_slash_command(&queued.content) {
             let msg = handle_rules_command(args, &db);
+            buffer_bot_reply(&msg);
             send_response(
                 queued.sink,
                 crate::message::OutboundMessage {
@@ -377,7 +407,10 @@ async fn agent_loop(
         }
 
         match result {
-            Ok(Some(outbound)) => send_response(queued.sink, outbound).await,
+            Ok(Some(outbound)) => {
+                buffer_bot_reply(&outbound.content);
+                send_response(queued.sink, outbound).await;
+            }
             Ok(None) => tracing::debug!("agent completed silently"),
             Err(error::Error::RateLimited(ref msg)) => {
                 tracing::warn!(%msg, "rate limited");
