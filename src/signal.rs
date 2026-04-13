@@ -42,7 +42,9 @@ fn resolve_restart_exe() -> Result<std::path::PathBuf, std::io::Error> {
 
     let exe = std::env::current_exe()?;
     let exe_str = exe.to_string_lossy();
-    Ok(std::path::PathBuf::from(exe_str.trim_end_matches(" (deleted)")))
+    Ok(std::path::PathBuf::from(
+        exe_str.trim_end_matches(" (deleted)"),
+    ))
 }
 
 pub fn do_exec_restart() -> Result<std::convert::Infallible, std::io::Error> {
