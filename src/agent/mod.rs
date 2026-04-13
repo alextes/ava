@@ -2060,4 +2060,233 @@ mod tests {
             .unwrap();
         assert!(!prompt.contains("## available skills"));
     }
+
+    #[tokio::test]
+    async fn test_telegram_too_long_response_triggers_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let seen_feedback = Arc::new(std::sync::Mutex::new(false));
+        let seen_feedback_clone = seen_feedback.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // first call: return response that's way over 4096 chars
+                    Ok(ProviderResponse {
+                        content: "a]".repeat(3000), // ~6000 chars, >4096 after HTML
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    })
+                } else {
+                    // second call: check that feedback was injected
+                    let last_msg = msgs.last().unwrap();
+                    for block in &last_msg.content {
+                        if let MessageContent::Text { text } = block {
+                            if text.contains("[system: your response is") {
+                                *seen_feedback_clone.lock().unwrap() = true;
+                            }
+                        }
+                    }
+                    Ok(ProviderResponse {
+                        content: "short response".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Telegram, // must be telegram for length check
+            images: Vec::new(),
+            content: "write something long".into(),
+        };
+
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+        assert_eq!(outbound.content, "short response");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "provider should be called twice"
+        );
+        assert!(
+            *seen_feedback.lock().unwrap(),
+            "feedback message about length should have been injected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_telegram_too_long_no_retry_on_cli() {
+        // the length check should NOT trigger on CLI channel
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                Ok(ProviderResponse {
+                    content: "x".repeat(5000),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: Usage::default(),
+                })
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli, // CLI — no length limit
+            images: Vec::new(),
+            content: "write something long".into(),
+        };
+
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+        assert_eq!(
+            outbound.content.len(),
+            5000,
+            "CLI should return full response without retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_file_produces_attachment() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        // create a temp file to send
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp_path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(&tmp_path, b"hello from send_file").unwrap();
+        let tmp_path_clone = tmp_path.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Ok(ProviderResponse {
+                        content: "sending file".into(),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: vec![tool::ToolCall {
+                            id: "call_sf".into(),
+                            name: "send_file".into(),
+                            input: serde_json::json!({
+                                "path": tmp_path_clone,
+                                "caption": "test attachment"
+                            }),
+                        }],
+                        usage: Usage::default(),
+                    })
+                } else {
+                    Ok(ProviderResponse {
+                        content: "file sent".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            images: Vec::new(),
+            content: "send me a file".into(),
+        };
+
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+        assert_eq!(outbound.content, "file sent");
+        assert_eq!(outbound.attachments.len(), 1);
+        assert_eq!(outbound.attachments[0].bytes, b"hello from send_file");
+        assert_eq!(
+            outbound.attachments[0].caption.as_deref(),
+            Some("test attachment")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_budget_exhausted_too_long_sends_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n <= MAX_TOOL_ROUNDS as usize {
+                    // exhaust budget with tool calls
+                    Ok(ProviderResponse {
+                        content: format!("round {n}"),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: vec![tool::ToolCall {
+                            id: format!("call_{n}"),
+                            name: "remember".into(),
+                            input: serde_json::json!({
+                                "content": format!("event {n}"),
+                                "kind": "episode"
+                            }),
+                        }],
+                        usage: Usage::default(),
+                    })
+                } else {
+                    // final text-only turn: return very long response
+                    Ok(ProviderResponse {
+                        content: "x".repeat(5000),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Telegram, // must be telegram
+            images: Vec::new(),
+            content: "loop forever".into(),
+        };
+
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+        // should get error message, not the 5000-char response
+        assert!(
+            outbound.content.contains("sorry, my response was too long"),
+            "expected error message, got: {}",
+            &outbound.content[..100.min(outbound.content.len())]
+        );
+        assert!(outbound.content.len() < TELEGRAM_MAX_MESSAGE_LEN);
+    }
 }
