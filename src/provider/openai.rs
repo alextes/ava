@@ -1049,29 +1049,27 @@ mod tests {
         // step 2: extract ToolCalls (same as Provider::complete does)
         let mut tool_calls = Vec::new();
         for item in api_response.output {
-            match item {
-                OutputItem::ApplyPatchCall {
-                    id,
-                    call_id,
-                    status,
-                    operation,
-                } => {
-                    let mut input = serde_json::json!({
-                        "apc_id": id,
-                        "apc_status": status,
-                        "operation": operation.op_type,
-                        "path": operation.path,
-                    });
-                    if let Some(diff) = operation.diff {
-                        input["diff"] = serde_json::Value::String(diff);
-                    }
-                    tool_calls.push(ToolCall {
-                        id: call_id,
-                        name: APPLY_PATCH_TOOL_NAME.to_string(),
-                        input,
-                    });
+            if let OutputItem::ApplyPatchCall {
+                id,
+                call_id,
+                status,
+                operation,
+            } = item
+            {
+                let mut input = serde_json::json!({
+                    "apc_id": id,
+                    "apc_status": status,
+                    "operation": operation.op_type,
+                    "path": operation.path,
+                });
+                if let Some(diff) = operation.diff {
+                    input["diff"] = serde_json::Value::String(diff);
                 }
-                _ => {}
+                tool_calls.push(ToolCall {
+                    id: call_id,
+                    name: APPLY_PATCH_TOOL_NAME.to_string(),
+                    input,
+                });
             }
         }
         assert_eq!(tool_calls.len(), 3);
@@ -1082,10 +1080,11 @@ mod tests {
         for tc in &tool_calls {
             assistant_content.push(MessageContent::tool_use(&tc.id, &tc.name, tc.input.clone()));
         }
-        let mut user_content = Vec::new();
-        user_content.push(MessageContent::tool_result("call_create_1", "ok"));
-        user_content.push(MessageContent::tool_result("call_update_2", "ok"));
-        user_content.push(MessageContent::tool_result("call_delete_3", "ok"));
+        let user_content = vec![
+            MessageContent::tool_result("call_create_1", "ok"),
+            MessageContent::tool_result("call_update_2", "ok"),
+            MessageContent::tool_result("call_delete_3", "ok"),
+        ];
 
         let messages = vec![
             Message::assistant_with_content(assistant_content),

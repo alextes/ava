@@ -12,6 +12,7 @@ mod mcp;
 mod message;
 mod provider;
 mod queue;
+mod runtime;
 mod scheduler;
 mod secrets;
 mod signal;
