@@ -2085,10 +2085,10 @@ mod tests {
                     // second call: check that feedback was injected
                     let last_msg = msgs.last().unwrap();
                     for block in &last_msg.content {
-                        if let MessageContent::Text { text } = block {
-                            if text.contains("[system: your response is") {
-                                *seen_feedback_clone.lock().unwrap() = true;
-                            }
+                        if let MessageContent::Text { text } = block
+                            && text.contains("[system: your response is")
+                        {
+                            *seen_feedback_clone.lock().unwrap() = true;
                         }
                     }
                     Ok(ProviderResponse {
