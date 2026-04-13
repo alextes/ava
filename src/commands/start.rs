@@ -162,13 +162,21 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         let bot_identity = bot.get_me().await?;
         let bot_id = bot_identity.id;
         let bot_username = bot_identity.username.clone().unwrap_or_default();
-        let bot_name = db
-            .identity_name()
-            .unwrap_or(None)
+        let db_identity_name = db.identity_name().unwrap_or(None);
+        let env_bot_name = std::env::var("TELEGRAM_BOT_NAME").unwrap_or_default();
+        let bot_name = db_identity_name
+            .clone()
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| std::env::var("TELEGRAM_BOT_NAME").unwrap_or_default());
+            .unwrap_or_else(|| env_bot_name.clone());
         runtime.set_telegram_display_name(bot_name.clone());
-        tracing::info!(bot_id, %bot_username, "fetched bot identity");
+        tracing::info!(
+            bot_id,
+            %bot_username,
+            db_identity_name = ?db_identity_name,
+            env_bot_name = %env_bot_name,
+            resolved_display_name = %bot_name,
+            "fetched bot identity"
+        );
 
         let allowed_users = db.list_allowed_users().unwrap_or_default();
 
@@ -588,6 +596,7 @@ async fn telegram_producer(
                 tracing::info!(
                     chat_id,
                     thread_id,
+                    display_name = %display_name,
                     mentioned,
                     replied_to,
                     named,
