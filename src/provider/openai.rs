@@ -813,6 +813,34 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_patch_replay_without_apc_fields() {
+        // regression test: ToolUse input stored before the apc_id/apc_status fix
+        // should still produce valid apply_patch_call items with defaults
+        let messages = vec![
+            Message::assistant_with_content(vec![MessageContent::tool_use(
+                "call_old",
+                APPLY_PATCH_TOOL_NAME,
+                // no apc_id or apc_status — old format
+                serde_json::json!({"operation": "update_file", "path": "old.rs", "diff": "@@\n-a\n+b"}),
+            )]),
+            Message::user_with_content(vec![MessageContent::tool_result("call_old", "ok")]),
+        ];
+
+        let result = convert_messages(&messages);
+
+        let call_item = result
+            .iter()
+            .find(|item| matches!(item, InputItem::ApplyPatchCall { .. }))
+            .expect("should have ApplyPatchCall");
+        let json = serde_json::to_value(call_item).unwrap();
+        // id falls back to call_id, status falls back to "completed"
+        assert_eq!(json["id"], "call_old");
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["call_id"], "call_old");
+        assert_eq!(json["operation"]["type"], "update_file");
+    }
+
+    #[test]
     fn test_parse_mixed_response_function_and_apply_patch() {
         let json = r#"{
             "output": [
