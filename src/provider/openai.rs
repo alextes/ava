@@ -61,6 +61,7 @@ struct ApiRequest<'a> {
     input: Vec<InputItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Value>,
+    prompt_cache_retention: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,7 +108,15 @@ struct ApiUsage {
     input_tokens: u32,
     output_tokens: u32,
     #[serde(default)]
+    input_tokens_details: Option<InputTokensDetails>,
+    #[serde(default)]
     output_tokens_details: Option<OutputTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -409,6 +418,7 @@ impl Provider for OpenAiProvider {
             instructions: system_prompt,
             input,
             tools,
+            prompt_cache_retention: "24h",
         };
 
         let response = self
@@ -504,10 +514,12 @@ impl Provider for OpenAiProvider {
         let usage = api_response
             .usage
             .map(|u| {
+                let cached_tokens = u.input_tokens_details.and_then(|d| d.cached_tokens);
                 let reasoning_tokens = u.output_tokens_details.and_then(|d| d.reasoning_tokens);
                 Usage {
                     input_tokens: u.input_tokens,
                     output_tokens: u.output_tokens,
+                    cache_read_tokens: cached_tokens,
                     reasoning_tokens,
                     ..Default::default()
                 }
