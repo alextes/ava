@@ -90,17 +90,23 @@ pub fn default_db_path() -> PathBuf {
     PathBuf::from("ava.db")
 }
 
+/// shared lock for tests that mutate process-global env vars.
+///
+/// cargo runs tests in parallel by default, and `std::env::set_var` /
+/// `remove_var` are process-wide — so two tests racing on `AVA_HOME`,
+/// `AVA_DB_PATH`, etc. can clobber each other's state. every test that
+/// touches an env var must take this lock for the duration of the
+/// set → read → unset block.
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // mutex to serialize tests that modify env vars
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_default_db_path_from_env() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
 
         let test_path = "/custom/path/to/db.sqlite";
         // SAFETY: we hold ENV_MUTEX to ensure no concurrent env var access
@@ -119,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_default_db_path_fallback() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
 
         // SAFETY: we hold ENV_MUTEX to ensure no concurrent env var access
         unsafe {

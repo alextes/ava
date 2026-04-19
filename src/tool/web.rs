@@ -277,8 +277,13 @@ mod tests {
         assert!(!requires_approval(&call));
     }
 
+    // hold the env lock across .await — acceptable in a single-threaded
+    // test where the lock just serializes against other env-touching tests.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_web_search_missing_api_key() {
+        let _guard = crate::config::ENV_TEST_LOCK.lock().unwrap();
+
         // ensure the env var is not set for this test
         let _original = std::env::var("BRAVE_SEARCH_API_KEY").ok();
         unsafe {

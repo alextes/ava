@@ -305,6 +305,8 @@ mod tests {
 
     #[test]
     fn test_load_vault_secrets_from_dir() {
+        let _guard = crate::config::ENV_TEST_LOCK.lock().unwrap();
+
         let dir = tempfile::tempdir().unwrap();
         let vault = dir.path().join("vault");
         std::fs::create_dir(&vault).unwrap();
@@ -323,6 +325,8 @@ mod tests {
 
     #[test]
     fn test_load_vault_secrets_no_dir() {
+        let _guard = crate::config::ENV_TEST_LOCK.lock().unwrap();
+
         unsafe { std::env::set_var("AVA_HOME", "/nonexistent_ava_test_xyz") };
         let secrets = load_vault_secrets();
         unsafe { std::env::remove_var("AVA_HOME") };

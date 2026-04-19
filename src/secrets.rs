@@ -169,6 +169,8 @@ mod tests {
 
     #[test]
     fn test_find_env_op_files() {
+        let _guard = crate::config::ENV_TEST_LOCK.lock().unwrap();
+
         let dir = tempfile::tempdir().unwrap();
         let skills = dir.path().join("skills");
         std::fs::create_dir_all(skills.join("gmail")).unwrap();
