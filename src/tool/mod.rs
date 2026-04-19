@@ -10,6 +10,7 @@ mod manage_access;
 mod memory;
 mod search;
 mod send_file;
+mod send_photo;
 mod setup;
 mod speak;
 mod tasks;
@@ -42,6 +43,7 @@ pub use filesystem::TEXT_EDITOR_TOOL_NAME;
 pub use manage_access::MANAGE_ACCESS_TOOL_NAME;
 pub use search::{GLOB_TOOL_NAME, GREP_TOOL_NAME};
 pub use send_file::SEND_FILE_TOOL_NAME;
+pub use send_photo::SEND_PHOTO_TOOL_NAME;
 pub use setup::COMPLETE_SETUP_TOOL_NAME;
 pub use speak::SPEAK_TOOL_NAME;
 pub use tasks::TASKS_TOOL_NAME;
@@ -130,12 +132,20 @@ pub struct ToolCallResult {
     pub attachment: Option<FileAttachment>,
 }
 
-/// a file to send as a telegram document attachment.
+/// whether an attachment should be sent as a document or an inline photo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    Document,
+    Photo,
+}
+
+/// a file to send through a telegram channel.
 #[derive(Debug, Clone)]
 pub struct FileAttachment {
     pub bytes: Vec<u8>,
     pub filename: String,
     pub caption: Option<String>,
+    pub kind: AttachmentKind,
 }
 
 // --- approver trait ---
@@ -332,6 +342,7 @@ pub fn tool_definitions(setup_mode: bool) -> Vec<ToolDefinition> {
         browser::browser_definition(),
         speak::speak_definition(),
         send_file::send_file_definition(),
+        send_photo::send_photo_definition(),
         channel_history::channel_history_definition(),
         manage_access::manage_access_definition(),
         ToolDefinition::BuiltIn {
@@ -457,6 +468,7 @@ pub async fn handle_tool_call(
             })
         }
         SEND_FILE_TOOL_NAME => Ok(send_file::handle_send_file(call)),
+        SEND_PHOTO_TOOL_NAME => Ok(send_photo::handle_send_photo(call)),
         BROWSER_TOOL_NAME => {
             let content = browser::handle_browser(call).await;
             Ok(ToolCallResult {

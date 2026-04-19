@@ -63,16 +63,24 @@ pub async fn send_response(sink: ResponseSink, outbound: OutboundMessage) {
 
             // send file attachments
             for attachment in outbound.attachments {
-                if let Err(e) = bot
-                    .send_document(
-                        chat_id,
-                        attachment.bytes,
-                        &attachment.filename,
-                        attachment.caption.as_deref(),
-                    )
-                    .await
-                {
-                    tracing::error!(%e, chat_id, filename = %attachment.filename, "failed to send document");
+                let filename = attachment.filename.clone();
+                let result = match attachment.kind {
+                    crate::tool::AttachmentKind::Photo => bot
+                        .send_photo(chat_id, attachment.bytes, attachment.caption.as_deref())
+                        .await
+                        .map(|_| ()),
+                    crate::tool::AttachmentKind::Document => bot
+                        .send_document(
+                            chat_id,
+                            attachment.bytes,
+                            &filename,
+                            attachment.caption.as_deref(),
+                        )
+                        .await
+                        .map(|_| ()),
+                };
+                if let Err(e) = result {
+                    tracing::error!(%e, chat_id, %filename, "failed to send attachment");
                 }
             }
 

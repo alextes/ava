@@ -310,6 +310,47 @@ impl TelegramBot {
         }
     }
 
+    /// send an image as an inline telegram photo (renders with preview).
+    #[tracing::instrument(skip(self, photo_bytes), fields(chat_id, bytes_len = photo_bytes.len()))]
+    pub async fn send_photo(
+        &self,
+        chat_id: i64,
+        photo_bytes: Vec<u8>,
+        caption: Option<&str>,
+    ) -> Result<i64, Error> {
+        let part = reqwest::multipart::Part::bytes(photo_bytes)
+            .file_name("photo")
+            .mime_str("application/octet-stream")
+            .map_err(|e| Error::Telegram(format!("failed to build multipart: {e}")))?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("photo", part);
+
+        if let Some(caption) = caption {
+            form = form.text("caption", caption.to_string());
+        }
+
+        let response: ApiResponse<SentMessage> = self
+            .client
+            .post(self.api_url("sendPhoto"))
+            .multipart(form)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.ok {
+            Ok(response.result.map(|m| m.message_id).unwrap_or_default())
+        } else {
+            Err(Error::Telegram(
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".into()),
+            ))
+        }
+    }
+
     /// send a file as a telegram document attachment.
     #[tracing::instrument(skip(self, file_bytes), fields(chat_id, filename, bytes_len = file_bytes.len()))]
     pub async fn send_document(

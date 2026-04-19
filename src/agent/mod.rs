@@ -2227,6 +2227,74 @@ mod tests {
             outbound.attachments[0].caption.as_deref(),
             Some("test attachment")
         );
+        assert_eq!(outbound.attachments[0].kind, tool::AttachmentKind::Document);
+    }
+
+    #[tokio::test]
+    async fn test_send_photo_produces_photo_attachment() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        // create a temp .png file so the extension check passes
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tmp_path = tmp_dir.path().join("shot.png");
+        std::fs::write(&tmp_path, b"fake-png-bytes").unwrap();
+        let tmp_path_str = tmp_path.to_str().unwrap().to_string();
+        let tmp_path_clone = tmp_path_str.clone();
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Ok(ProviderResponse {
+                        content: "sending photo".into(),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: vec![tool::ToolCall {
+                            id: "call_sp".into(),
+                            name: "send_photo".into(),
+                            input: serde_json::json!({
+                                "path": tmp_path_clone,
+                                "caption": "a screenshot"
+                            }),
+                        }],
+                        usage: Usage::default(),
+                    })
+                } else {
+                    Ok(ProviderResponse {
+                        content: "photo sent".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            db,
+            reqwest::Client::new(),
+        );
+
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            images: Vec::new(),
+            content: "send me a photo".into(),
+        };
+
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+        assert_eq!(outbound.content, "photo sent");
+        assert_eq!(outbound.attachments.len(), 1);
+        assert_eq!(outbound.attachments[0].bytes, b"fake-png-bytes");
+        assert_eq!(
+            outbound.attachments[0].caption.as_deref(),
+            Some("a screenshot")
+        );
+        assert_eq!(outbound.attachments[0].kind, tool::AttachmentKind::Photo);
     }
 
     #[tokio::test]
