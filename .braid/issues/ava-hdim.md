@@ -3,14 +3,15 @@ schema_version: 9
 id: ava-hdim
 title: add send_photo tool for inline telegram photos
 priority: P2
-status: doing
+status: done
 deps: []
 tags:
 - tool
 - telegram
-owner: alextes
+owner: null
 created_at: 2026-04-19T05:34:06.57576Z
 started_at: 2026-04-19T05:34:09.11513Z
+completed_at: 2026-04-19T06:09:02.052063Z
 ---
 
 the `send_file` tool (src/tool/send_file.rs) sends attachments via telegram's `sendDocument`, which delivers images as downloadable files rather than inline previews. add a `send_photo` path that uses telegram's `sendPhoto` endpoint so images render inline.
