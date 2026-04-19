@@ -3,14 +3,15 @@ schema_version: 9
 id: ava-1cbh
 title: fix flaky AVA_HOME env-var race in vault/secrets tests
 priority: P2
-status: doing
+status: done
 deps: []
 tags:
 - test
 - bug
-owner: alextes
+owner: null
 created_at: 2026-04-19T06:14:40.237024Z
 started_at: 2026-04-19T06:14:43.954278Z
+completed_at: 2026-04-19T06:17:21.171335Z
 ---
 
 cargo test occasionally fails `tool::exec::tests::test_load_vault_secrets_no_dir` with `assertion failed: secrets.is_empty()`. root cause: three tests mutate process-global AVA_HOME concurrently:
