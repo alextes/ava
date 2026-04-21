@@ -10,6 +10,7 @@ mod db;
 mod error;
 mod mcp;
 mod message;
+mod pricing;
 mod provider;
 mod queue;
 mod runtime;

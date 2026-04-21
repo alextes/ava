@@ -8,6 +8,7 @@ pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
 
 use std::future::Future;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +76,16 @@ pub trait Provider: Send + Sync {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> impl Future<Output = Result<ProviderResponse, Error>> + Send;
+
+    /// how long the prompt cache is expected to stay warm after the most
+    /// recent request. callers use this to detect "cold resume" situations
+    /// where the whole conversation will be re-processed as uncached input.
+    ///
+    /// - anthropic: `Duration::from_secs(300)` (ephemeral, 5 min)
+    /// - openai: `Duration::from_secs(24 * 3600)` (24h retention hint)
+    /// - openrouter: `Duration::ZERO` (no cache control is sent)
+    #[allow(dead_code)] // consumed by the cold-resume prompt in a follow-up commit
+    fn cache_ttl(&self) -> Duration;
 }
 
 // -- AnyProvider enum dispatch --
@@ -169,6 +180,18 @@ impl AnyProvider {
             Self::Test(_) => 200_000,
         }
     }
+
+    /// expected prompt-cache lifetime — see `Provider::cache_ttl`.
+    #[allow(dead_code)] // consumed by the cold-resume prompt in a follow-up commit
+    pub fn cache_ttl(&self) -> Duration {
+        match self {
+            Self::Anthropic(p) => p.cache_ttl(),
+            Self::OpenAi(p) => p.cache_ttl(),
+            Self::OpenRouter(p) => p.cache_ttl(),
+            #[cfg(test)]
+            Self::Test(p) => p.cache_ttl(),
+        }
+    }
 }
 
 impl Provider for AnyProvider {
@@ -185,6 +208,10 @@ impl Provider for AnyProvider {
             #[cfg(test)]
             Self::Test(p) => p.complete(system_prompt, messages, tools).await,
         }
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        AnyProvider::cache_ttl(self)
     }
 }
 
@@ -205,6 +232,10 @@ impl Provider for TestProvider {
         _tools: &[ToolDefinition],
     ) -> Result<ProviderResponse, Error> {
         (self.handler)(system_prompt, messages)
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        Duration::from_secs(300)
     }
 }
 

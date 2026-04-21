@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -532,6 +534,12 @@ impl Provider for OpenAiProvider {
             tool_calls,
             usage,
         })
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        // `prompt_cache_retention: "24h"` — hint to openai to keep the cache
+        // warm for up to 24 hours. no write premium, so leaving it at max.
+        Duration::from_secs(24 * 3600)
     }
 }
 

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -452,6 +454,12 @@ impl Provider for OpenRouterProvider {
             tool_calls,
             usage,
         })
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        // no cache_control is sent on openrouter requests; treat every
+        // resume as cold so callers can apply cost-aware policies.
+        Duration::ZERO
     }
 }
 

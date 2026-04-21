@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -234,6 +236,13 @@ impl Provider for AnthropicProvider {
                 ..Default::default()
             },
         })
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        // default ephemeral cache ttl — 5 minutes.
+        // matches the `cache_control: { type: "ephemeral" }` breakpoints
+        // set on system prompt, last tool, and last message block.
+        Duration::from_secs(5 * 60)
     }
 }
 
