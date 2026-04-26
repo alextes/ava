@@ -351,6 +351,73 @@ impl Database {
         Ok(())
     }
 
+    /// record when a provider completion finished, so the cold-resume detector
+    /// can tell whether the prompt cache has expired since.
+    pub fn set_session_last_completion_at(
+        &self,
+        session_id: i64,
+        epoch_secs: i64,
+    ) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET last_completion_at = ?1 WHERE id = ?2",
+            rusqlite::params![epoch_secs, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// load the recorded last completion timestamp (unix epoch seconds), if any.
+    pub fn session_last_completion_at(&self, session_id: i64) -> Result<Option<i64>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT last_completion_at FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )?;
+        Ok(result)
+    }
+
+    /// reset session state for a "clear context" action: move the compaction
+    /// cursor to past the latest persisted message, drop any saved summary,
+    /// and clear context-usage and completion timestamps. messages remain in
+    /// the db for history purposes but are skipped on subsequent loads.
+    ///
+    /// returns the number of messages that were elided.
+    pub fn clear_session_context(&self, session_id: i64) -> Result<u32, Error> {
+        let conn = self.conn.lock().unwrap();
+
+        // find the highest message id in this session — that's where we move
+        // the compaction cursor to.
+        let max_id: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(id) FROM messages WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+
+        let prior_cursor: Option<i64> = conn
+            .query_row(
+                "SELECT compacted_before_id FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+
+        let cursor = max_id.unwrap_or(0);
+        conn.execute(
+            "UPDATE sessions SET compacted_before_id = ?1, summary = NULL, \
+             last_input_tokens = NULL, last_context_window = NULL, \
+             last_completion_at = NULL WHERE id = ?2",
+            rusqlite::params![cursor, session_id],
+        )?;
+
+        let cleared = (cursor - prior_cursor.unwrap_or(0)).max(0) as u32;
+        Ok(cleared)
+    }
+
     /// load the last context usage snapshot for a session
     pub fn session_usage(&self, session_id: i64) -> Result<Option<(u32, u32)>, Error> {
         let conn = self.conn.lock().unwrap();
@@ -686,6 +753,52 @@ mod tests {
         // advance
         db.set_compaction_cursor(sid, 100).unwrap();
         assert_eq!(db.get_compaction_cursor(sid).unwrap(), Some(100));
+    }
+
+    #[test]
+    fn test_last_completion_at_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        // default is none
+        assert_eq!(db.session_last_completion_at(sid).unwrap(), None);
+
+        db.set_session_last_completion_at(sid, 1_700_000_000)
+            .unwrap();
+        assert_eq!(
+            db.session_last_completion_at(sid).unwrap(),
+            Some(1_700_000_000)
+        );
+    }
+
+    #[test]
+    fn test_clear_session_context_drops_history_and_resets() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        // seed three messages and a summary + usage + completion-at
+        for i in 1..=3 {
+            let role = if i % 2 == 1 { "user" } else { "assistant" };
+            db.append_message(sid, role, &[MessageContent::text(format!("m{i}"))], None)
+                .unwrap();
+        }
+        db.set_session_summary(sid, "old summary").unwrap();
+        db.set_session_usage(sid, 50_000, 200_000).unwrap();
+        db.set_session_last_completion_at(sid, 1_700_000_000)
+            .unwrap();
+
+        let cleared = db.clear_session_context(sid).unwrap();
+        assert!(cleared >= 3, "expected at least 3 elided messages");
+
+        // summary, usage, and completion are gone
+        assert_eq!(db.get_session_summary(sid).unwrap(), None);
+        assert_eq!(db.session_usage(sid).unwrap(), None);
+        assert_eq!(db.session_last_completion_at(sid).unwrap(), None);
+
+        // load_messages now returns nothing because the cursor sits past every
+        // existing message id.
+        let msgs = db.load_messages(sid).unwrap();
+        assert!(msgs.is_empty(), "expected empty after clear, got {msgs:?}");
     }
 
     #[test]

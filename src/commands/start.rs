@@ -6,6 +6,7 @@ use crate::chat_buffer::{BufferedMessage, ChatBuffer};
 use crate::cli::{
     handle_rules_command, handle_switch_command, parse_slash_command, provider_for_session,
 };
+use crate::cold_resume::{ColdResumePrompter, PendingColdResumes};
 use crate::db::Database;
 use crate::error;
 use crate::message::{ChannelKind, ImageSource, InboundMessage};
@@ -105,6 +106,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     let db = Arc::new(Database::open()?);
     let (tx, rx) = message_queue(64);
     let pending = Arc::new(PendingApprovals::new());
+    let pending_cold = Arc::new(PendingColdResumes::new());
 
     // seed whitelists from env vars
     let allowed_user_ids = parse_id_list("TELEGRAM_ALLOWED_IDS");
@@ -156,6 +158,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
     // start agent loop
     let db_clone = Arc::clone(&db);
     let pending_clone = Arc::clone(&pending);
+    let pending_cold_clone = Arc::clone(&pending_cold);
     let client_clone = client.clone();
     let mcp_clone = mcp.clone();
     let skills_clone = Arc::clone(&skills);
@@ -167,6 +170,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             rx,
             db_clone,
             pending_clone,
+            pending_cold_clone,
             client_clone,
             mcp_clone,
             skills_clone,
@@ -231,6 +235,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             bot,
             tx.clone(),
             Arc::clone(&pending),
+            Arc::clone(&pending_cold),
             Arc::clone(&db),
             Arc::clone(&chat_buffer),
             Arc::clone(&runtime),
@@ -284,6 +289,7 @@ async fn agent_loop(
     mut rx: MessageReceiver,
     db: Arc<Database>,
     pending: Arc<PendingApprovals>,
+    pending_cold: Arc<PendingColdResumes>,
     client: reqwest::Client,
     mcp: Option<Arc<crate::mcp::manager::McpManager>>,
     skills: Arc<Vec<crate::skill::Skill>>,
@@ -359,24 +365,36 @@ async fn agent_loop(
             }
         };
 
-        let approver = match &queued.sink {
+        let (approver, cold_prompter) = match &queued.sink {
             ResponseSink::Telegram {
                 chat_id,
                 thread_id,
                 bot,
-            } => AnyApprover::Telegram(TelegramApprover::new(
-                Arc::clone(bot),
-                *chat_id,
-                *thread_id,
-                Arc::clone(&pending),
-                Arc::clone(&db),
-            )),
+            } => {
+                let approver = AnyApprover::Telegram(TelegramApprover::new(
+                    Arc::clone(bot),
+                    *chat_id,
+                    *thread_id,
+                    Arc::clone(&pending),
+                    Arc::clone(&db),
+                ));
+                let cold = ColdResumePrompter::new(
+                    Arc::clone(bot),
+                    *chat_id,
+                    *thread_id,
+                    Arc::clone(&pending_cold),
+                );
+                (approver, Some(cold))
+            }
         };
 
         let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone())
             .with_skills(Arc::clone(&skills))
             .with_chat_buffer(Arc::clone(&chat_buffer))
             .with_runtime(Arc::clone(&runtime));
+        if let Some(cold) = cold_prompter {
+            agent = agent.with_cold_resume_prompter(cold);
+        }
         if let Some(ref mcp) = mcp {
             agent = agent.with_mcp(Arc::clone(mcp));
         }
@@ -444,10 +462,12 @@ async fn agent_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn telegram_producer(
     bot: Arc<TelegramBot>,
     tx: crate::queue::MessageSender,
     pending: Arc<PendingApprovals>,
+    pending_cold: Arc<PendingColdResumes>,
     db: Arc<Database>,
     chat_buffer: Arc<ChatBuffer>,
     runtime: Arc<RuntimeState>,
@@ -528,8 +548,10 @@ async fn telegram_producer(
                         .unwrap_or_default();
 
                     let message_id = callback.message.as_ref().map(|m| m.message_id);
-                    TelegramApprover::handle_callback(
-                        &pending,
+                    // try cold-resume routing first (cheap prefix check). if it
+                    // wasn't a cold-resume callback, fall through to approval.
+                    let handled = crate::cold_resume::handle_callback(
+                        &pending_cold,
                         &bot,
                         &callback.id,
                         data,
@@ -537,6 +559,17 @@ async fn telegram_producer(
                         message_id,
                     )
                     .await;
+                    if !handled {
+                        TelegramApprover::handle_callback(
+                            &pending,
+                            &bot,
+                            &callback.id,
+                            data,
+                            chat_id,
+                            message_id,
+                        )
+                        .await;
+                    }
                 }
                 continue;
             }

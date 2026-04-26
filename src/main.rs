@@ -3,6 +3,7 @@ mod approver;
 mod channel;
 mod chat_buffer;
 mod cli;
+mod cold_resume;
 mod commands;
 mod config;
 mod daemon;

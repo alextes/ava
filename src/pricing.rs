@@ -8,7 +8,8 @@
 //! the lookup returns `None` for unknown models so callers can decide whether
 //! to fall back to a pessimistic default or skip the estimate entirely.
 
-// consumed by the cold-resume prompt flow, landing in a follow-up commit.
+// `base_input_usd_per_mtok` and `estimate_replay_cost_usd` are kept public for
+// future use; only `format_replay_cost` is consumed today.
 #![allow(dead_code)]
 
 /// base input price in USD per million tokens for a `"provider/model"` id.

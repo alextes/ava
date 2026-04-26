@@ -84,7 +84,6 @@ pub trait Provider: Send + Sync {
     /// - anthropic: `Duration::from_secs(300)` (ephemeral, 5 min)
     /// - openai: `Duration::from_secs(24 * 3600)` (24h retention hint)
     /// - openrouter: `Duration::ZERO` (no cache control is sent)
-    #[allow(dead_code)] // consumed by the cold-resume prompt in a follow-up commit
     fn cache_ttl(&self) -> Duration;
 }
 
@@ -182,7 +181,6 @@ impl AnyProvider {
     }
 
     /// expected prompt-cache lifetime — see `Provider::cache_ttl`.
-    #[allow(dead_code)] // consumed by the cold-resume prompt in a follow-up commit
     pub fn cache_ttl(&self) -> Duration {
         match self {
             Self::Anthropic(p) => p.cache_ttl(),

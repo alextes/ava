@@ -223,6 +223,12 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE sessions ADD COLUMN compacted_before_id INTEGER;
     "#,
+    // v15: track when the last provider completion happened, so the cold-resume
+    // prompt can detect when the prompt cache has expired between turns.
+    // stored as unix epoch seconds, nullable until first completion.
+    r#"
+    ALTER TABLE sessions ADD COLUMN last_completion_at INTEGER;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 use chrono::Utc;
 
 use crate::approver::AnyApprover;
+use crate::cold_resume::{ColdResumeDecision, ColdResumePrompter, QUIET_THRESHOLD_TOKENS};
 use crate::db::Database;
 use crate::error::Error;
 use crate::mcp::manager::McpManager;
@@ -15,6 +16,7 @@ use crate::message::{
     ChannelKind, ContentBlock, InboundMessage, Message, MessageContent, OutboundMessage, Role,
     ToolResultContent,
 };
+use crate::pricing;
 use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider, SETUP_SYSTEM_PROMPT};
 use crate::runtime::RuntimeState;
 use crate::skill::Skill;
@@ -35,6 +37,7 @@ pub struct Agent {
     vault_secrets: Arc<RwLock<Vec<String>>>,
     chat_buffer: Option<Arc<crate::chat_buffer::ChatBuffer>>,
     runtime: Option<Arc<RuntimeState>>,
+    cold_resume: Option<ColdResumePrompter>,
 }
 
 impl Agent {
@@ -54,6 +57,7 @@ impl Agent {
             vault_secrets: Arc::new(RwLock::new(tool::load_vault_secrets())),
             chat_buffer: None,
             runtime: None,
+            cold_resume: None,
         }
     }
 
@@ -74,6 +78,11 @@ impl Agent {
 
     pub fn with_runtime(mut self, runtime: Arc<RuntimeState>) -> Self {
         self.runtime = Some(runtime);
+        self
+    }
+
+    pub fn with_cold_resume_prompter(mut self, prompter: ColdResumePrompter) -> Self {
+        self.cold_resume = Some(prompter);
         self
     }
 
@@ -105,6 +114,76 @@ impl Agent {
         format!("[skill: {}]\n{}\n[/skill]\n\n{}", skill.name, body, args)
     }
 
+    /// if the prompt cache has gone cold since the last completion and the
+    /// conversation is large enough to be worth flagging, ask the user whether
+    /// to keep or clear the context. silently noops when:
+    /// - no telegram prompter is wired (cli / autonomous mode)
+    /// - this is a brand-new session (no last_completion_at recorded)
+    /// - the elapsed time is still within the provider's cache ttl
+    /// - the persisted input_tokens are below the quiet threshold (~10k)
+    async fn maybe_prompt_cold_resume(&self, session_id: i64) -> Result<(), Error> {
+        let Some(prompter) = self.cold_resume.as_ref() else {
+            return Ok(());
+        };
+
+        let last_completion = match self.db.session_last_completion_at(session_id)? {
+            Some(secs) => secs,
+            None => return Ok(()),
+        };
+
+        let now_secs = chrono::Utc::now().timestamp();
+        let elapsed_secs = now_secs.saturating_sub(last_completion).max(0) as u64;
+        let elapsed = std::time::Duration::from_secs(elapsed_secs);
+
+        let cache_ttl = self.provider.cache_ttl();
+        if elapsed <= cache_ttl {
+            return Ok(());
+        }
+
+        let (input_tokens, _ctx_window) = match self.db.session_usage(session_id)? {
+            Some(pair) => pair,
+            None => return Ok(()),
+        };
+        if input_tokens < QUIET_THRESHOLD_TOKENS {
+            return Ok(());
+        }
+
+        let model_id = self.provider.model_id();
+        let cost_estimate = pricing::format_replay_cost(&model_id, input_tokens);
+
+        tracing::info!(
+            elapsed_secs = elapsed.as_secs(),
+            cache_ttl_secs = cache_ttl.as_secs(),
+            input_tokens,
+            model = %model_id,
+            cost = %cost_estimate,
+            "cache likely cold, prompting user"
+        );
+
+        match prompter
+            .prompt(input_tokens, elapsed, &cost_estimate, &model_id)
+            .await
+        {
+            Ok(ColdResumeDecision::Keep) => {
+                tracing::info!("cold-resume: user kept context");
+            }
+            Ok(ColdResumeDecision::Clear) => {
+                let cleared = self.db.clear_session_context(session_id)?;
+                tracing::info!(
+                    cleared_messages = cleared,
+                    "cold-resume: user cleared context"
+                );
+            }
+            Err(e) => {
+                // soft-fail: log and continue with full context. better than
+                // breaking the conversation when telegram is flaky.
+                tracing::warn!(%e, "cold-resume prompt failed, defaulting to keep");
+            }
+        }
+
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
     pub async fn process(
         &self,
@@ -112,6 +191,13 @@ impl Agent {
     ) -> Result<Option<OutboundMessage>, Error> {
         let session_id = self.db.active_session()?;
         let channel_str = inbound.channel.as_str();
+
+        // cold-resume check: if the prompt cache has expired since the last
+        // completion *and* the conversation is large enough that replaying it
+        // uncached would be visible on the bill, ask the user how to proceed.
+        // runs before load_messages so the [clear] action's db updates take
+        // effect on this turn's loaded history.
+        self.maybe_prompt_cold_resume(session_id).await?;
 
         // load conversation history (growing window for prompt cache efficiency)
         let mut messages = self.db.load_messages(session_id)?;
@@ -336,6 +422,15 @@ impl Agent {
                     .set_session_usage(session_id, ctx.input_tokens, ctx.context_window)
             {
                 tracing::warn!(%e, "failed to persist context usage");
+            }
+
+            // record completion timestamp so the next user turn can detect
+            // whether the prompt cache has expired in the gap.
+            if let Err(e) = self
+                .db
+                .set_session_last_completion_at(session_id, chrono::Utc::now().timestamp())
+            {
+                tracing::warn!(%e, "failed to persist last_completion_at");
             }
 
             if response.tool_calls.is_empty() {
