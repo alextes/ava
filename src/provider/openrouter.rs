@@ -68,6 +68,20 @@ struct ApiRequest<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatTool>,
     max_tokens: u32,
+    provider: ProviderPrefs,
+}
+
+/// per-request privacy preferences. OR'd with the account-level setting, so
+/// this only tightens — it cannot relax — the account default.
+#[derive(Debug, Serialize)]
+struct ProviderPrefs {
+    /// only route to endpoints with a zero-data-retention policy.
+    zdr: bool,
+    /// `"deny"` skips providers that store inputs/outputs non-transiently or
+    /// may train on them. side effect: some models (notably hosted deepseek)
+    /// may have no eligible endpoint and the request will fail — surface that
+    /// to the user rather than silently relaxing the policy.
+    data_collection: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -372,6 +386,10 @@ impl Provider for OpenRouterProvider {
             messages: chat_messages,
             tools: chat_tools,
             max_tokens: self.max_tokens,
+            provider: ProviderPrefs {
+                zdr: true,
+                data_collection: "deny",
+            },
         };
 
         let response = self
@@ -604,6 +622,23 @@ mod tests {
         let arr = content.as_array().unwrap();
         assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
         assert_eq!(arr[0]["text"], "be helpful");
+    }
+
+    #[test]
+    fn test_request_carries_zdr_and_deny_data_collection() {
+        let req = ApiRequest {
+            model: "anthropic/claude-sonnet-4-6",
+            messages: vec![],
+            tools: vec![],
+            max_tokens: 1024,
+            provider: ProviderPrefs {
+                zdr: true,
+                data_collection: "deny",
+            },
+        };
+        let body = serde_json::to_value(&req).unwrap();
+        assert_eq!(body["provider"]["zdr"], true);
+        assert_eq!(body["provider"]["data_collection"], "deny");
     }
 
     #[test]
