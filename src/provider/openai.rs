@@ -10,8 +10,8 @@ use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
 use crate::tool::{APPLY_PATCH_TOOL_NAME, BuiltInKind, ToolDefinition};
 
 const API_URL: &str = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL: &str = "gpt-5.4";
-pub const ALLOWED_MODELS: &[&str] = &["gpt-5.4", "gpt-5-mini"];
+const DEFAULT_MODEL: &str = "gpt-5.5";
+pub const ALLOWED_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5-mini"];
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct OpenAiProvider {
@@ -47,7 +47,7 @@ impl OpenAiProvider {
 
     pub fn context_window(&self) -> u32 {
         match self.model.as_str() {
-            "gpt-5.4" => 1_050_000,
+            "gpt-5.5" | "gpt-5.4" => 1_050_000,
             _ => 400_000,
         }
     }

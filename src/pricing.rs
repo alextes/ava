@@ -34,13 +34,17 @@ pub fn base_input_usd_per_mtok(model_id: &str) -> Option<f64> {
         "anthropic/claude-haiku-4-5" => Some(1.0),
         "anthropic/claude-haiku-3-5" => Some(0.80),
 
-        // openai — rough estimates pending a confirmed pricing source.
-        // keep conservative so replay-cost estimates err on the high side.
-        "openai/gpt-5.4" => Some(3.0),
+        // openai — values from openai's pricing page (april 2026).
+        // gpt-5.5 doubled the per-token price relative to gpt-5.4.
+        "openai/gpt-5.5" => Some(5.0),
+        "openai/gpt-5.4" => Some(2.5),
         "openai/gpt-5-mini" => Some(0.50),
 
-        // openrouter passes through to underlying providers — we don't
-        // attempt to price every model, caller should treat as unknown.
+        // openrouter — pricing for the few models we know; falls through
+        // to None for the long tail.
+        "openrouter/deepseek/deepseek-v4-pro" => Some(0.435),
+        "openrouter/deepseek/deepseek-v4-flash" => Some(0.14),
+
         _ => None,
     }
 }

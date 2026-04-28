@@ -50,7 +50,8 @@ impl OpenRouterProvider {
             "google/gemini-2.5-flash" | "google/gemini-2.5-pro" => 1_048_576,
             "anthropic/claude-sonnet-4" | "anthropic/claude-opus-4" => 200_000,
             "anthropic/claude-sonnet-4-6" | "anthropic/claude-opus-4-6" => 1_000_000,
-            "openai/gpt-5.4" => 1_050_000,
+            "openai/gpt-5.5" | "openai/gpt-5.4" => 1_050_000,
+            "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash" => 1_048_576,
             "deepseek/deepseek-chat-v3-0324" => 128_000,
             "meta-llama/llama-4-maverick" => 1_048_576,
             _ => 128_000, // conservative default
