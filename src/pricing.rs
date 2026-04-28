@@ -1,9 +1,16 @@
 //! per-model pricing lookup for base input tokens, in USD per million tokens.
 //!
 //! used to estimate the cost of replaying a conversation uncached when the
-//! prompt cache goes cold. values pulled from anthropic's pricing page
-//! (<https://claude.com/pricing>) as of 2026-04. openai gpt-5 family uses
-//! conservative estimates — if precise numbers land, update them here.
+//! prompt cache goes cold. values verified against the providers' pricing
+//! pages as of 2026-04:
+//! - anthropic: <https://platform.claude.com/docs/en/about-claude/pricing>
+//! - openai:   <https://openai.com/api/pricing/>
+//! - openrouter (deepseek): per-model pages on openrouter.ai
+//!
+//! note: opus 4.7 ships with a tokenizer that emits ~35% more tokens for the
+//! same source text vs 4.6, so effective cost is higher despite the unchanged
+//! rate. context-overflow / cold-resume estimates use this rate as-is and
+//! will under-estimate 4.7 spend by that margin.
 //!
 //! the lookup returns `None` for unknown models so callers can decide whether
 //! to fall back to a pessimistic default or skip the estimate entirely.
