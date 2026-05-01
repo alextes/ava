@@ -309,7 +309,7 @@ fn execute_glob(input: &GlobInput) -> String {
     }
 
     // sort newest first
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     let mut output = String::new();
     for (path, _) in &entries {
