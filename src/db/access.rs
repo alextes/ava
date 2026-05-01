@@ -1,4 +1,14 @@
 use crate::error::Error;
+use rusqlite::params;
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnauthorizedDmAttempt {
+    pub user_id: i64,
+    pub username: Option<String>,
+    pub chat_id: i64,
+    pub attempted_at: String,
+}
 
 use super::Database;
 
@@ -86,6 +96,53 @@ impl Database {
         }
         Ok(())
     }
+
+    pub fn record_unauthorized_dm_attempt(
+        &self,
+        user_id: i64,
+        username: Option<&str>,
+        chat_id: i64,
+    ) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO unauthorized_dm_attempts
+                (user_id, username, chat_id, attempted_at)
+            VALUES
+                (?1, ?2, ?3, datetime('now'))
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                chat_id = excluded.chat_id,
+                attempted_at = excluded.attempted_at
+            "#,
+            params![user_id, username, chat_id],
+        )?;
+        Ok(())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn get_unauthorized_dm_attempt(
+        &self,
+        user_id: i64,
+    ) -> Result<Option<UnauthorizedDmAttempt>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT user_id, username, chat_id, attempted_at
+             FROM unauthorized_dm_attempts
+             WHERE user_id = ?1",
+        )?;
+        let mut rows = stmt.query([user_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(UnauthorizedDmAttempt {
+                user_id: row.get(0)?,
+                username: row.get(1)?,
+                chat_id: row.get(2)?,
+                attempted_at: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -128,6 +185,26 @@ mod tests {
         db.remove_allowed_chat(-100123).unwrap();
         assert!(!db.is_chat_allowed(-100123).unwrap());
         assert_eq!(db.list_allowed_chats().unwrap(), vec![-100456]);
+    }
+
+    #[test]
+    fn test_record_unauthorized_dm_attempt_upserts_latest_metadata() {
+        let db = Database::open_in_memory().unwrap();
+
+        db.record_unauthorized_dm_attempt(123, Some("christian"), 123)
+            .unwrap();
+
+        let first = db.get_unauthorized_dm_attempt(123).unwrap().unwrap();
+        assert_eq!(first.user_id, 123);
+        assert_eq!(first.username.as_deref(), Some("christian"));
+        assert_eq!(first.chat_id, 123);
+
+        db.record_unauthorized_dm_attempt(123, Some("chris"), 999)
+            .unwrap();
+
+        let second = db.get_unauthorized_dm_attempt(123).unwrap().unwrap();
+        assert_eq!(second.username.as_deref(), Some("chris"));
+        assert_eq!(second.chat_id, 999);
     }
 
     #[test]
