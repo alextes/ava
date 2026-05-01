@@ -103,15 +103,6 @@ const MIGRATIONS: &[&str] = &[
 
     COMMIT;
     "#,
-    // v16: record unauthorized DM attempts for easier whitelisting
-    r#"
-    CREATE TABLE IF NOT EXISTS unauthorized_dm_attempts (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        chat_id INTEGER NOT NULL,
-        attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    "#,
     // v7: schedules table for cron tool
     r#"
     CREATE TABLE IF NOT EXISTS schedules (
@@ -237,6 +228,15 @@ const MIGRATIONS: &[&str] = &[
     // stored as unix epoch seconds, nullable until first completion.
     r#"
     ALTER TABLE sessions ADD COLUMN last_completion_at INTEGER;
+    "#,
+    // v16: record unauthorized DM attempts for easier whitelisting
+    r#"
+    CREATE TABLE IF NOT EXISTS unauthorized_dm_attempts (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        chat_id INTEGER NOT NULL,
+        attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     "#,
 ];
 
