@@ -647,7 +647,22 @@ async fn telegram_producer(
                     .map(|id| db.is_user_allowed(id).unwrap_or(false))
                     .unwrap_or(false);
                 if !user_allowed {
-                    tracing::warn!(?user_id, "rejecting DM from non-whitelisted user");
+                    if let Some(id) = user_id
+                        && let Err(err) =
+                            db.record_unauthorized_dm_attempt(id, username.as_deref(), chat_id)
+                    {
+                        tracing::warn!(
+                            ?err,
+                            user_id = id,
+                            "failed to record unauthorized DM attempt"
+                        );
+                    }
+                    tracing::warn!(
+                        ?user_id,
+                        username = ?username,
+                        chat_id,
+                        "rejecting DM from non-whitelisted user"
+                    );
                     let _ = bot
                         .send_message(chat_id, "DM not available for this user.", None)
                         .await;
