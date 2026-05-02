@@ -151,6 +151,16 @@ struct ChoiceMessage {
 struct ApiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
+    /// implicit-cache hits reported by upstreams that auto-cache prefixes
+    /// (deepseek, openai). populated even though we don't send `cache_control`.
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -463,6 +473,7 @@ impl Provider for OpenRouterProvider {
             .map(|u| Usage {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
+                cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
                 ..Default::default()
             })
             .unwrap_or_default();
@@ -476,9 +487,13 @@ impl Provider for OpenRouterProvider {
     }
 
     fn cache_ttl(&self) -> Duration {
-        // no cache_control is sent on openrouter requests; treat every
-        // resume as cold so callers can apply cost-aware policies.
-        Duration::ZERO
+        // caching works on openrouter under zdr — their docs treat in-memory
+        // prefix caching as non-retention. anthropic upstreams honor the
+        // `cache_control: ephemeral` markers we send on the system + last-user
+        // messages; deepseek/openai upstreams auto-cache without markers.
+        // 5 min matches anthropic's ephemeral ttl and is a conservative lower
+        // bound for the implicit caches (which typically live longer).
+        Duration::from_secs(5 * 60)
     }
 }
 
@@ -584,6 +599,49 @@ mod tests {
             Some("hello there")
         );
         assert_eq!(response.choices[0].finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn test_parse_response_with_cached_tokens() {
+        let json = r#"{
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 1024,
+                "completion_tokens": 8,
+                "prompt_tokens_details": {"cached_tokens": 768}
+            }
+        }"#;
+
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        let usage = response.usage.expect("usage present");
+        assert_eq!(usage.prompt_tokens, 1024);
+        assert_eq!(
+            usage.prompt_tokens_details.and_then(|d| d.cached_tokens),
+            Some(768)
+        );
+    }
+
+    #[test]
+    fn test_parse_response_without_cached_tokens() {
+        let json = r#"{
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        }"#;
+
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        let usage = response.usage.expect("usage present");
+        assert!(
+            usage
+                .prompt_tokens_details
+                .and_then(|d| d.cached_tokens)
+                .is_none()
+        );
     }
 
     #[test]
