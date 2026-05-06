@@ -121,12 +121,14 @@ pub(crate) fn effective_reasoning_effort(
     model_id: &str,
     explicit: Option<&str>,
 ) -> ReasoningEffort {
-    if let Some(effort) = explicit.and_then(ReasoningEffort::from_user_input) {
+    if let Some(effort) = explicit.and_then(ReasoningEffort::from_user_input)
+        && AnyProvider::supports_reasoning_effort(model_id, effort)
+    {
         return effort;
     }
 
     match db.model_reasoning_preference(session_id, model_id) {
-        Ok(Some(effort)) => effort,
+        Ok(Some(effort)) if AnyProvider::supports_reasoning_effort(model_id, effort) => effort,
         _ => AnyProvider::default_reasoning_effort(model_id),
     }
 }
@@ -308,6 +310,17 @@ mod tests {
     }
 
     #[test]
+    fn test_effective_reasoning_ignores_unsupported_xhigh() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        assert_eq!(
+            effective_reasoning_effort(&db, sid, "openai/gpt-5.4", Some("xhigh")),
+            ReasoningEffort::Medium
+        );
+    }
+
+    #[test]
     fn test_effective_reasoning_uses_default_without_memory() {
         let db = Database::open_in_memory().unwrap();
         let sid = db.active_session().unwrap();
@@ -317,7 +330,7 @@ mod tests {
             ReasoningEffort::Medium
         );
         assert_eq!(
-            effective_reasoning_effort(&db, sid, "openrouter/deepseek/deepseek-chat-v3-0324", None),
+            effective_reasoning_effort(&db, sid, "openrouter/deepseek/deepseek-chat", None),
             ReasoningEffort::None
         );
     }

@@ -250,6 +250,12 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (session_id, model)
     );
     "#,
+    // v18: per-message token usage for history/auditing
+    r#"
+    ALTER TABLE messages ADD COLUMN input_tokens INTEGER;
+    ALTER TABLE messages ADD COLUMN output_tokens INTEGER;
+    ALTER TABLE messages ADD COLUMN reasoning_tokens INTEGER;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

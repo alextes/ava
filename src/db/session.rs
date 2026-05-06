@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::error::Error;
 use crate::message::{Message, MessageContent, Role};
-use crate::provider::ReasoningEffort;
+use crate::provider::{ReasoningEffort, Usage};
 
 use super::Database;
 
@@ -14,6 +14,9 @@ pub struct HistoryMessage {
     pub role: Role,
     pub content: Vec<MessageContent>,
     pub created_at: String,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub reasoning_tokens: Option<u32>,
 }
 
 impl Database {
@@ -107,7 +110,7 @@ impl Database {
     ) -> Result<Vec<HistoryMessage>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at FROM messages
+            "SELECT id, role, content, created_at, input_tokens, output_tokens, reasoning_tokens FROM messages
              WHERE session_id = ?1
              ORDER BY created_at DESC, id DESC
              LIMIT ?2",
@@ -119,12 +122,32 @@ impl Database {
                 let role_str: String = row.get(1)?;
                 let content_json: String = row.get(2)?;
                 let created_at: String = row.get(3)?;
-                Ok((id, role_str, content_json, created_at))
+                let input_tokens: Option<u32> = row.get(4)?;
+                let output_tokens: Option<u32> = row.get(5)?;
+                let reasoning_tokens: Option<u32> = row.get(6)?;
+                Ok((
+                    id,
+                    role_str,
+                    content_json,
+                    created_at,
+                    input_tokens,
+                    output_tokens,
+                    reasoning_tokens,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut result = Vec::with_capacity(rows.len());
-        for (id, role_str, content_json, created_at) in rows {
+        for (
+            id,
+            role_str,
+            content_json,
+            created_at,
+            input_tokens,
+            output_tokens,
+            reasoning_tokens,
+        ) in rows
+        {
             let role = match role_str.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
@@ -138,6 +161,9 @@ impl Database {
                 role,
                 content,
                 created_at,
+                input_tokens,
+                output_tokens,
+                reasoning_tokens,
             });
         }
 
@@ -155,7 +181,7 @@ impl Database {
     ) -> Result<Vec<HistoryMessage>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at FROM messages
+            "SELECT id, role, content, created_at, input_tokens, output_tokens, reasoning_tokens FROM messages
              WHERE session_id = ?1 AND id > ?2
              ORDER BY id ASC",
         )?;
@@ -166,12 +192,32 @@ impl Database {
                 let role_str: String = row.get(1)?;
                 let content_json: String = row.get(2)?;
                 let created_at: String = row.get(3)?;
-                Ok((id, role_str, content_json, created_at))
+                let input_tokens: Option<u32> = row.get(4)?;
+                let output_tokens: Option<u32> = row.get(5)?;
+                let reasoning_tokens: Option<u32> = row.get(6)?;
+                Ok((
+                    id,
+                    role_str,
+                    content_json,
+                    created_at,
+                    input_tokens,
+                    output_tokens,
+                    reasoning_tokens,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut result = Vec::with_capacity(rows.len());
-        for (id, role_str, content_json, created_at) in rows {
+        for (
+            id,
+            role_str,
+            content_json,
+            created_at,
+            input_tokens,
+            output_tokens,
+            reasoning_tokens,
+        ) in rows
+        {
             let role = match role_str.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
@@ -185,6 +231,9 @@ impl Database {
                 role,
                 content,
                 created_at,
+                input_tokens,
+                output_tokens,
+                reasoning_tokens,
             });
         }
 
@@ -226,6 +275,27 @@ impl Database {
         )?;
 
         Ok(message_id)
+    }
+
+    /// attach provider token usage to an already-persisted message.
+    pub fn set_message_usage(&self, message_id: i64, usage: &Usage) -> Result<(), Error> {
+        if message_id <= 0 {
+            return Ok(());
+        }
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages
+             SET input_tokens = ?1, output_tokens = ?2, reasoning_tokens = ?3
+             WHERE id = ?4",
+            rusqlite::params![
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens,
+                message_id
+            ],
+        )?;
+        Ok(())
     }
 
     /// load all messages for a session with their DB row IDs, oldest first.
@@ -839,6 +909,31 @@ mod tests {
             MessageContent::Text { text } => assert_eq!(text, "third"),
             _ => panic!("expected text content"),
         }
+    }
+
+    #[test]
+    fn test_message_usage_round_trip_for_history() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+        let message_id = db
+            .append_message(sid, "assistant", &[MessageContent::text("hi")], None)
+            .unwrap();
+
+        db.set_message_usage(
+            message_id,
+            &Usage {
+                input_tokens: 100,
+                output_tokens: 25,
+                reasoning_tokens: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let msgs = db.load_recent_messages(sid, 1).unwrap();
+        assert_eq!(msgs[0].input_tokens, Some(100));
+        assert_eq!(msgs[0].output_tokens, Some(25));
+        assert_eq!(msgs[0].reasoning_tokens, Some(10));
     }
 
     #[test]

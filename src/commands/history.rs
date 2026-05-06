@@ -108,11 +108,18 @@ fn print_message(msg: &HistoryMessage, mode: &HistoryMode) {
             Role::System => ("system", DIM),
         }
     };
-    let label = format!("── {role} · {} ──", msg.created_at);
+    let usage = match (msg.output_tokens, msg.reasoning_tokens) {
+        (Some(output), Some(reasoning)) => {
+            format!(" · output {output} · reasoning {reasoning}")
+        }
+        (Some(output), None) => format!(" · output {output}"),
+        _ => String::new(),
+    };
+    let label = format!("── {role} · {}{usage} ──", msg.created_at);
     let pad_len = 56usize.saturating_sub(label.len());
     let padding = "─".repeat(pad_len);
     println!(
-        "{DIM}──{RESET} {role_color}{role}{RESET} {DIM}· {} ──{padding}{RESET}",
+        "{DIM}──{RESET} {role_color}{role}{RESET} {DIM}· {}{usage} ──{padding}{RESET}",
         msg.created_at
     );
     for block in &msg.content {

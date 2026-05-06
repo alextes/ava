@@ -57,7 +57,8 @@ pub struct Usage {
     pub cache_creation_tokens: Option<u32>,
     /// anthropic: tokens read from cache this request
     pub cache_read_tokens: Option<u32>,
-    /// openai: reasoning tokens used by reasoning models (subset of output_tokens)
+    /// reasoning tokens used by reasoning models when the provider reports
+    /// them (subset of output_tokens).
     pub reasoning_tokens: Option<u32>,
 }
 
@@ -191,9 +192,23 @@ impl AnyProvider {
             "openrouter/deepseek/deepseek-v4-pro" | "openrouter/deepseek/deepseek-v4-flash" => {
                 ReasoningEffort::High
             }
-            "openrouter/deepseek/deepseek-chat-v3-0324" => ReasoningEffort::None,
             "openai/gpt-5.5" | "openai/gpt-5.4" | "openai/gpt-5-mini" => ReasoningEffort::Medium,
             _ => ReasoningEffort::None,
+        }
+    }
+
+    pub fn supports_reasoning_effort(model_id: &str, effort: ReasoningEffort) -> bool {
+        match effort {
+            ReasoningEffort::None
+            | ReasoningEffort::Low
+            | ReasoningEffort::Medium
+            | ReasoningEffort::High => true,
+            ReasoningEffort::XHigh => matches!(
+                model_id,
+                "openrouter/deepseek/deepseek-v4-pro"
+                    | "openrouter/deepseek/deepseek-v4-flash"
+                    | "anthropic/claude-opus-4-7"
+            ),
         }
     }
 
@@ -415,7 +430,7 @@ mod tests {
             ReasoningEffort::High
         );
         assert_eq!(
-            AnyProvider::default_reasoning_effort("openrouter/deepseek/deepseek-chat-v3-0324"),
+            AnyProvider::default_reasoning_effort("openrouter/deepseek/deepseek-chat"),
             ReasoningEffort::None
         );
         assert_eq!(
@@ -426,5 +441,21 @@ mod tests {
             AnyProvider::default_reasoning_effort("anthropic/claude-sonnet-4-6"),
             ReasoningEffort::None
         );
+    }
+
+    #[test]
+    fn test_xhigh_support_is_model_specific() {
+        assert!(AnyProvider::supports_reasoning_effort(
+            "openrouter/deepseek/deepseek-v4-pro",
+            ReasoningEffort::XHigh
+        ));
+        assert!(!AnyProvider::supports_reasoning_effort(
+            "openai/gpt-5.4",
+            ReasoningEffort::XHigh
+        ));
+        assert!(!AnyProvider::supports_reasoning_effort(
+            "anthropic/claude-sonnet-4-6",
+            ReasoningEffort::XHigh
+        ));
     }
 }

@@ -73,13 +73,20 @@ struct ApiRequest<'a> {
     tools: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
 }
 
 #[derive(Debug, Serialize)]
 struct ThinkingConfig {
     #[serde(rename = "type")]
     thinking_type: &'static str,
-    budget_tokens: u32,
+    display: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct OutputConfig {
+    effort: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,9 +101,19 @@ struct ApiUsage {
     input_tokens: u32,
     output_tokens: u32,
     #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+    #[serde(default)]
     cache_creation_input_tokens: Option<u32>,
     #[serde(default)]
     cache_read_input_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
+    #[serde(default)]
+    thinking_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +218,7 @@ impl Provider for AnthropicProvider {
             messages: messages_value,
             tools: tools_json,
             thinking: thinking_config(self.reasoning_effort),
+            output_config: output_config(self.reasoning_effort),
         };
 
         let response = self
@@ -266,9 +284,12 @@ impl Provider for AnthropicProvider {
             usage: Usage {
                 input_tokens: api_response.usage.input_tokens,
                 output_tokens: api_response.usage.output_tokens,
+                reasoning_tokens: api_response
+                    .usage
+                    .output_tokens_details
+                    .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens)),
                 cache_creation_tokens: api_response.usage.cache_creation_input_tokens,
                 cache_read_tokens: api_response.usage.cache_read_input_tokens,
-                ..Default::default()
             },
         })
     }
@@ -282,16 +303,21 @@ impl Provider for AnthropicProvider {
 }
 
 fn thinking_config(effort: ReasoningEffort) -> Option<ThinkingConfig> {
-    let budget_tokens = match effort {
-        ReasoningEffort::None => return None,
-        ReasoningEffort::Low => 1024,
-        ReasoningEffort::Medium => 2048,
-        ReasoningEffort::High => 4096,
-        ReasoningEffort::XHigh => 6144,
-    };
+    if effort == ReasoningEffort::None {
+        return None;
+    }
     Some(ThinkingConfig {
-        thinking_type: "enabled",
-        budget_tokens,
+        thinking_type: "adaptive",
+        display: "omitted",
+    })
+}
+
+fn output_config(effort: ReasoningEffort) -> Option<OutputConfig> {
+    if effort == ReasoningEffort::None {
+        return None;
+    }
+    Some(OutputConfig {
+        effort: effort.as_str(),
     })
 }
 
@@ -429,6 +455,7 @@ mod tests {
             messages: messages_value,
             tools: tools_json,
             thinking: None,
+            output_config: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -465,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn test_request_serializes_hidden_thinking() {
+    fn test_request_serializes_adaptive_hidden_thinking() {
         let request = ApiRequest {
             model: "claude-sonnet-4-6",
             max_tokens: 8192,
@@ -473,11 +500,30 @@ mod tests {
             messages: json!([]),
             tools: vec![],
             thinking: thinking_config(ReasoningEffort::High),
+            output_config: output_config(ReasoningEffort::High),
         };
 
         let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["thinking"]["type"], "enabled");
-        assert_eq!(json["thinking"]["budget_tokens"], 4096);
+        assert_eq!(json["thinking"]["type"], "adaptive");
+        assert_eq!(json["thinking"]["display"], "omitted");
+        assert_eq!(json["output_config"]["effort"], "high");
+    }
+
+    #[test]
+    fn test_request_omits_thinking_when_reasoning_none() {
+        let request = ApiRequest {
+            model: "claude-sonnet-4-6",
+            max_tokens: 8192,
+            system: json!([]),
+            messages: json!([]),
+            tools: vec![],
+            thinking: thinking_config(ReasoningEffort::None),
+            output_config: output_config(ReasoningEffort::None),
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("thinking").is_none());
+        assert!(json.get("output_config").is_none());
     }
 
     #[test]
@@ -503,5 +549,22 @@ mod tests {
             }
             _ => panic!("expected thinking block"),
         }
+    }
+
+    #[test]
+    fn test_parse_usage_with_reasoning_details() {
+        let json = r#"{
+            "content":[{"type":"text","text":"visible"}],
+            "stop_reason":"end_turn",
+            "usage":{
+                "input_tokens":10,
+                "output_tokens":50,
+                "output_tokens_details":{"thinking_tokens":42}
+            }
+        }"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        let details = response.usage.output_tokens_details.unwrap();
+        assert_eq!(details.thinking_tokens, Some(42));
+        assert_eq!(details.reasoning_tokens, None);
     }
 }

@@ -17,7 +17,10 @@ use crate::message::{
     ToolResultContent,
 };
 use crate::pricing;
-use crate::provider::{AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider, SETUP_SYSTEM_PROMPT};
+use crate::provider::{
+    AnyProvider, DEFAULT_SYSTEM_PROMPT, Provider, ProviderResponse, SETUP_SYSTEM_PROMPT,
+    StopReason, Usage,
+};
 use crate::runtime::RuntimeState;
 use crate::skill::Skill;
 use crate::tool::{self, ApprovalDecision, Approver, ToolCall, ToolDefinition};
@@ -488,8 +491,13 @@ impl Agent {
                 if !response.content.is_empty() {
                     let mut assistant_content = response.hidden_content.clone();
                     assistant_content.push(MessageContent::text(&response.content));
-                    self.db
-                        .append_message(session_id, "assistant", &assistant_content, None)?;
+                    let message_id = self.db.append_message(
+                        session_id,
+                        "assistant",
+                        &assistant_content,
+                        None,
+                    )?;
+                    self.db.set_message_usage(message_id, usage)?;
                 }
 
                 return Ok(Some(OutboundMessage {
@@ -522,8 +530,10 @@ impl Agent {
                 for call in &response.tool_calls {
                     assistant_blocks.push(tool_use_content(call));
                 }
-                self.db
-                    .append_message(session_id, "assistant", &assistant_blocks, None)?;
+                let assistant_message_id =
+                    self.db
+                        .append_message(session_id, "assistant", &assistant_blocks, None)?;
+                self.db.set_message_usage(assistant_message_id, usage)?;
                 messages.push(Message::assistant_with_content(assistant_blocks));
 
                 // synthetic tool results telling the model to wrap up
@@ -544,17 +554,25 @@ impl Agent {
 
                 // final text-only turn (no tools)
                 let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
-                let final_content = match active_provider
+                let final_response = match active_provider
                     .complete(&system_prompt, &messages, &[])
                     .await
                 {
-                    Ok(r) => r.content,
+                    Ok(r) => r,
                     Err(e) => {
                         tracing::warn!(%e, "final summary call failed, using fallback");
-                        "i used all 40 tool rounds. send a follow-up message and i'll continue."
-                            .to_string()
+                        ProviderResponse {
+                            content:
+                                "i used all 40 tool rounds. send a follow-up message and i'll continue."
+                                    .to_string(),
+                            stop_reason: StopReason::EndTurn,
+                            tool_calls: vec![],
+                            hidden_content: vec![],
+                            usage: Usage::default(),
+                        }
                     }
                 };
+                let final_content = final_response.content.clone();
 
                 // check length — if too long and on telegram, send error instead
                 let send_content = if inbound.channel == ChannelKind::Telegram {
@@ -575,8 +593,11 @@ impl Agent {
                 };
 
                 let final_blocks = vec![MessageContent::text(&final_content)];
+                let message_id =
+                    self.db
+                        .append_message(session_id, "assistant", &final_blocks, None)?;
                 self.db
-                    .append_message(session_id, "assistant", &final_blocks, None)?;
+                    .set_message_usage(message_id, &final_response.usage)?;
 
                 return Ok(Some(OutboundMessage {
                     content: send_content,
@@ -596,8 +617,10 @@ impl Agent {
             }
 
             // persist the assistant message (including tool_use blocks)
-            self.db
-                .append_message(session_id, "assistant", &assistant_blocks, None)?;
+            let assistant_message_id =
+                self.db
+                    .append_message(session_id, "assistant", &assistant_blocks, None)?;
+            self.db.set_message_usage(assistant_message_id, usage)?;
             messages.push(Message::assistant_with_content(assistant_blocks));
 
             // execute tool calls concurrently

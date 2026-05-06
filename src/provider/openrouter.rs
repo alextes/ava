@@ -62,7 +62,6 @@ impl OpenRouterProvider {
             "anthropic/claude-sonnet-4-6" | "anthropic/claude-opus-4-6" => 1_000_000,
             "openai/gpt-5.5" | "openai/gpt-5.4" => 1_050_000,
             "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash" => 1_048_576,
-            "deepseek/deepseek-chat-v3-0324" => 128_000,
             "meta-llama/llama-4-maverick" => 1_048_576,
             _ => 128_000, // conservative default
         }
@@ -173,12 +172,20 @@ struct ApiUsage {
     /// (deepseek, openai). populated even though we don't send `cache_control`.
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PromptTokensDetails {
     #[serde(default)]
     cached_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -499,6 +506,7 @@ impl Provider for OpenRouterProvider {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
                 cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+                reasoning_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
                 ..Default::default()
             })
             .unwrap_or_default();
@@ -647,6 +655,30 @@ mod tests {
         assert_eq!(
             usage.prompt_tokens_details.and_then(|d| d.cached_tokens),
             Some(768)
+        );
+    }
+
+    #[test]
+    fn test_parse_response_with_reasoning_tokens() {
+        let json = r#"{
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 1024,
+                "completion_tokens": 80,
+                "completion_tokens_details": {"reasoning_tokens": 64}
+            }
+        }"#;
+
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        let usage = response.usage.expect("usage present");
+        assert_eq!(
+            usage
+                .completion_tokens_details
+                .and_then(|d| d.reasoning_tokens),
+            Some(64)
         );
     }
 
