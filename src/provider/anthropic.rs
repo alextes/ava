@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::Error;
-use crate::message::Message;
-use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
+use crate::message::{Message, MessageContent};
+use crate::provider::{Provider, ProviderResponse, ReasoningEffort, StopReason, ToolCall, Usage};
 use crate::tool::{BuiltInKind, ToolDefinition};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -19,6 +19,7 @@ pub struct AnthropicProvider {
     api_key: String,
     model: String,
     max_tokens: u32,
+    reasoning_effort: ReasoningEffort,
 }
 
 impl AnthropicProvider {
@@ -28,6 +29,7 @@ impl AnthropicProvider {
             api_key,
             model: DEFAULT_MODEL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            reasoning_effort: ReasoningEffort::None,
         }
     }
 
@@ -43,6 +45,14 @@ impl AnthropicProvider {
 
     pub fn set_model(&mut self, model: String) {
         self.model = model;
+    }
+
+    pub fn reasoning_effort(&self) -> ReasoningEffort {
+        self.reasoning_effort
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: ReasoningEffort) {
+        self.reasoning_effort = effort;
     }
 
     pub fn context_window(&self) -> u32 {
@@ -61,6 +71,15 @@ struct ApiRequest<'a> {
     messages: serde_json::Value,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    thinking_type: &'static str,
+    budget_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +102,10 @@ struct ApiUsage {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
     Text {
         text: String,
     },
@@ -91,6 +114,8 @@ enum ContentBlock {
         name: String,
         input: serde_json::Value,
     },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +200,7 @@ impl Provider for AnthropicProvider {
             system,
             messages: messages_value,
             tools: tools_json,
+            thinking: thinking_config(self.reasoning_effort),
         };
 
         let response = self
@@ -209,9 +235,16 @@ impl Provider for AnthropicProvider {
 
         let mut content = String::new();
         let mut tool_calls = Vec::new();
+        let mut hidden_content = Vec::new();
 
         for block in api_response.content {
             match block {
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
+                    hidden_content.push(MessageContent::thinking(thinking, signature));
+                }
                 ContentBlock::Text { text } => {
                     if !content.is_empty() {
                         content.push('\n');
@@ -221,6 +254,7 @@ impl Provider for AnthropicProvider {
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall { id, name, input });
                 }
+                ContentBlock::Other => {}
             }
         }
 
@@ -228,6 +262,7 @@ impl Provider for AnthropicProvider {
             content,
             stop_reason: api_response.stop_reason,
             tool_calls,
+            hidden_content,
             usage: Usage {
                 input_tokens: api_response.usage.input_tokens,
                 output_tokens: api_response.usage.output_tokens,
@@ -244,6 +279,20 @@ impl Provider for AnthropicProvider {
         // set on system prompt, last tool, and last message block.
         Duration::from_secs(5 * 60)
     }
+}
+
+fn thinking_config(effort: ReasoningEffort) -> Option<ThinkingConfig> {
+    let budget_tokens = match effort {
+        ReasoningEffort::None => return None,
+        ReasoningEffort::Low => 1024,
+        ReasoningEffort::Medium => 2048,
+        ReasoningEffort::High => 4096,
+        ReasoningEffort::XHigh => 6144,
+    };
+    Some(ThinkingConfig {
+        thinking_type: "enabled",
+        budget_tokens,
+    })
 }
 
 #[cfg(test)]
@@ -379,6 +428,7 @@ mod tests {
             system,
             messages: messages_value,
             tools: tools_json,
+            thinking: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -412,5 +462,46 @@ mod tests {
         assert_eq!(builtin_tool["name"], "str_replace_based_edit_tool");
         assert!(builtin_tool.get("description").is_none());
         assert!(builtin_tool.get("input_schema").is_none());
+    }
+
+    #[test]
+    fn test_request_serializes_hidden_thinking() {
+        let request = ApiRequest {
+            model: "claude-sonnet-4-6",
+            max_tokens: 8192,
+            system: json!([]),
+            messages: json!([]),
+            tools: vec![],
+            thinking: thinking_config(ReasoningEffort::High),
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["thinking"]["type"], "enabled");
+        assert_eq!(json["thinking"]["budget_tokens"], 4096);
+    }
+
+    #[test]
+    fn test_parse_response_with_hidden_thinking() {
+        let json = r#"{
+            "content":[
+                {"type":"thinking","thinking":"private chain","signature":"sig_123"},
+                {"type":"text","text":"visible"}
+            ],
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":10,"output_tokens":5}
+        }"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.content.len(), 2);
+        match &response.content[0] {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                assert_eq!(thinking, "private chain");
+                assert_eq!(signature, "sig_123");
+            }
+            _ => panic!("expected thinking block"),
+        }
     }
 }

@@ -65,7 +65,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -76,7 +76,7 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -178,7 +178,7 @@ mod tests {
 
         // verify schema version is latest
         let version = migrations::schema_version(&conn).unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
 
         // verify facts table is gone
         let table_exists: bool = conn

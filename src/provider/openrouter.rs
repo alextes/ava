@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::error::Error;
 use crate::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
-use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
+use crate::provider::{Provider, ProviderResponse, ReasoningEffort, StopReason, ToolCall, Usage};
 use crate::tool::{BuiltInKind, ToolDefinition, text_editor_function_schema};
 
 const API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -18,6 +18,7 @@ pub struct OpenRouterProvider {
     api_key: String,
     model: String,
     max_tokens: u32,
+    reasoning_effort: ReasoningEffort,
 }
 
 impl OpenRouterProvider {
@@ -27,6 +28,7 @@ impl OpenRouterProvider {
             api_key,
             model: DEFAULT_MODEL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            reasoning_effort: ReasoningEffort::None,
         }
     }
 
@@ -42,6 +44,14 @@ impl OpenRouterProvider {
 
     pub fn set_model(&mut self, model: String) {
         self.model = model;
+    }
+
+    pub fn reasoning_effort(&self) -> ReasoningEffort {
+        self.reasoning_effort
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: ReasoningEffort) {
+        self.reasoning_effort = effort;
     }
 
     pub fn context_window(&self) -> u32 {
@@ -69,6 +79,14 @@ struct ApiRequest<'a> {
     tools: Vec<ChatTool>,
     max_tokens: u32,
     provider: ProviderPrefs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ReasoningRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReasoningRequest {
+    effort: &'static str,
+    exclude: bool,
 }
 
 /// per-request privacy preferences. OR'd with the account-level setting, so
@@ -400,6 +418,13 @@ impl Provider for OpenRouterProvider {
                 zdr: true,
                 data_collection: "deny",
             },
+            reasoning: match self.reasoning_effort {
+                ReasoningEffort::None => None,
+                effort => Some(ReasoningRequest {
+                    effort: effort.as_str(),
+                    exclude: true,
+                }),
+            },
         };
 
         let response = self
@@ -482,6 +507,7 @@ impl Provider for OpenRouterProvider {
             content,
             stop_reason,
             tool_calls,
+            hidden_content: Vec::new(),
             usage,
         })
     }
@@ -693,10 +719,32 @@ mod tests {
                 zdr: true,
                 data_collection: "deny",
             },
+            reasoning: None,
         };
         let body = serde_json::to_value(&req).unwrap();
         assert_eq!(body["provider"]["zdr"], true);
         assert_eq!(body["provider"]["data_collection"], "deny");
+    }
+
+    #[test]
+    fn test_request_carries_reasoning_when_enabled() {
+        let req = ApiRequest {
+            model: "deepseek/deepseek-v4-pro",
+            messages: vec![],
+            tools: vec![],
+            max_tokens: 1024,
+            provider: ProviderPrefs {
+                zdr: true,
+                data_collection: "deny",
+            },
+            reasoning: Some(ReasoningRequest {
+                effort: "high",
+                exclude: true,
+            }),
+        };
+        let body = serde_json::to_value(&req).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["reasoning"]["exclude"], true);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use crate::error::Error;
 use crate::message::Message;
@@ -60,12 +61,63 @@ pub struct Usage {
     pub reasoning_tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    None,
+    Low,
+    Medium,
+    High,
+    XHigh,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+        }
+    }
+
+    pub fn from_persisted(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+
+    pub fn from_user_input(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" | "off" => Some(Self::None),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderResponse {
     pub content: String,
     #[allow(dead_code)]
     pub stop_reason: StopReason,
     pub tool_calls: Vec<ToolCall>,
+    pub hidden_content: Vec<crate::message::MessageContent>,
     pub usage: Usage,
 }
 
@@ -114,6 +166,37 @@ impl AnyProvider {
         }
     }
 
+    pub fn reasoning_effort(&self) -> ReasoningEffort {
+        match self {
+            Self::Anthropic(p) => p.reasoning_effort(),
+            Self::OpenAi(p) => p.reasoning_effort(),
+            Self::OpenRouter(p) => p.reasoning_effort(),
+            #[cfg(test)]
+            Self::Test(_) => ReasoningEffort::None,
+        }
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: ReasoningEffort) {
+        match self {
+            Self::Anthropic(p) => p.set_reasoning_effort(effort),
+            Self::OpenAi(p) => p.set_reasoning_effort(effort),
+            Self::OpenRouter(p) => p.set_reasoning_effort(effort),
+            #[cfg(test)]
+            Self::Test(_) => {}
+        }
+    }
+
+    pub fn default_reasoning_effort(model_id: &str) -> ReasoningEffort {
+        match model_id {
+            "openrouter/deepseek/deepseek-v4-pro" | "openrouter/deepseek/deepseek-v4-flash" => {
+                ReasoningEffort::High
+            }
+            "openrouter/deepseek/deepseek-chat-v3-0324" => ReasoningEffort::None,
+            "openai/gpt-5.5" | "openai/gpt-5.4" | "openai/gpt-5-mini" => ReasoningEffort::Medium,
+            _ => ReasoningEffort::None,
+        }
+    }
+
     /// create a provider by name, for the switch_model tool.
     /// if a model is specified, it must be in the provider's allowed list.
     pub fn from_name(
@@ -133,7 +216,10 @@ impl AnyProvider {
                     }
                     p.set_model(m.to_string());
                 }
-                Ok(Self::Anthropic(p))
+                let mut p = Self::Anthropic(p);
+                let effort = Self::default_reasoning_effort(&p.model_id());
+                p.set_reasoning_effort(effort);
+                Ok(p)
             }
             "openai" => {
                 let mut p = OpenAiProvider::from_env(client)?;
@@ -146,7 +232,10 @@ impl AnyProvider {
                     }
                     p.set_model(m.to_string());
                 }
-                Ok(Self::OpenAi(p))
+                let mut p = Self::OpenAi(p);
+                let effort = Self::default_reasoning_effort(&p.model_id());
+                p.set_reasoning_effort(effort);
+                Ok(p)
             }
             "openrouter" => {
                 let mut p = OpenRouterProvider::from_env(client)?;
@@ -154,10 +243,24 @@ impl AnyProvider {
                     // no validation — openrouter has hundreds of models, let the API reject bad ones
                     p.set_model(m.to_string());
                 }
-                Ok(Self::OpenRouter(p))
+                let mut p = Self::OpenRouter(p);
+                let effort = Self::default_reasoning_effort(&p.model_id());
+                p.set_reasoning_effort(effort);
+                Ok(p)
             }
             _ => Err(Error::Provider(format!("unknown provider: {provider}"))),
         }
+    }
+
+    pub fn from_name_with_reasoning(
+        client: reqwest::Client,
+        provider: &str,
+        model: Option<&str>,
+        reasoning_effort: ReasoningEffort,
+    ) -> Result<Self, Error> {
+        let mut provider = Self::from_name(client, provider, model)?;
+        provider.set_reasoning_effort(reasoning_effort);
+        Ok(provider)
     }
 
     pub fn provider_name(&self) -> &str {
@@ -241,16 +344,23 @@ impl Provider for TestProvider {
 mod tests {
     use super::*;
 
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test HTTP client")
+    }
+
     #[test]
     fn test_model_id_format_anthropic() {
-        let p = AnthropicProvider::new(reqwest::Client::new(), "test-key".into());
+        let p = AnthropicProvider::new(test_client(), "test-key".into());
         let any = AnyProvider::Anthropic(p);
         assert_eq!(any.model_id(), "anthropic/claude-sonnet-4-6");
     }
 
     #[test]
     fn test_model_id_format_openai() {
-        let p = OpenAiProvider::new(reqwest::Client::new(), "test-key".into());
+        let p = OpenAiProvider::new(test_client(), "test-key".into());
         let any = AnyProvider::OpenAi(p);
         assert_eq!(any.model_id(), "openai/gpt-5.5");
     }
@@ -261,5 +371,60 @@ mod tests {
             handler: Box::new(|_, _| unreachable!()),
         });
         assert_eq!(p.model_id(), "test/test");
+    }
+
+    #[test]
+    fn test_reasoning_effort_normalization() {
+        assert_eq!(
+            ReasoningEffort::from_user_input("none"),
+            Some(ReasoningEffort::None)
+        );
+        assert_eq!(
+            ReasoningEffort::from_user_input("off"),
+            Some(ReasoningEffort::None)
+        );
+        assert_eq!(
+            ReasoningEffort::from_user_input("low"),
+            Some(ReasoningEffort::Low)
+        );
+        assert_eq!(
+            ReasoningEffort::from_user_input("medium"),
+            Some(ReasoningEffort::Medium)
+        );
+        assert_eq!(
+            ReasoningEffort::from_user_input("high"),
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(
+            ReasoningEffort::from_user_input("xhigh"),
+            Some(ReasoningEffort::XHigh)
+        );
+        assert_eq!(ReasoningEffort::from_user_input("minimal"), None);
+        assert_eq!(ReasoningEffort::from_user_input("max"), None);
+        assert_eq!(ReasoningEffort::from_user_input("unknown"), None);
+    }
+
+    #[test]
+    fn test_default_reasoning_effort_by_model() {
+        assert_eq!(
+            AnyProvider::default_reasoning_effort("openrouter/deepseek/deepseek-v4-pro"),
+            ReasoningEffort::High
+        );
+        assert_eq!(
+            AnyProvider::default_reasoning_effort("openrouter/deepseek/deepseek-v4-flash"),
+            ReasoningEffort::High
+        );
+        assert_eq!(
+            AnyProvider::default_reasoning_effort("openrouter/deepseek/deepseek-chat-v3-0324"),
+            ReasoningEffort::None
+        );
+        assert_eq!(
+            AnyProvider::default_reasoning_effort("openai/gpt-5.4"),
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
+            AnyProvider::default_reasoning_effort("anthropic/claude-sonnet-4-6"),
+            ReasoningEffort::None
+        );
     }
 }

@@ -90,6 +90,10 @@ pub enum MessageContent {
     Text {
         text: String,
     },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
     Image {
         source: ImageSource,
     },
@@ -107,6 +111,13 @@ pub enum MessageContent {
 impl MessageContent {
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text { text: text.into() }
+    }
+
+    pub fn thinking(thinking: impl Into<String>, signature: impl Into<String>) -> Self {
+        Self::Thinking {
+            thinking: thinking.into(),
+            signature: signature.into(),
+        }
     }
 
     pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {

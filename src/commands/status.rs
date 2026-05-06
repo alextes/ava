@@ -18,8 +18,11 @@ pub(crate) fn run_status() {
                 println!("context: unknown");
             }
         }
-        if let Ok(Some(model)) = db.session_model(sid) {
-            println!("model: {model}");
+        if let Ok(Some((model, reasoning))) = db.session_model_reasoning(sid) {
+            match reasoning {
+                Some(effort) => println!("model: {model} (reasoning: {effort})"),
+                None => println!("model: {model}"),
+            }
         }
     }
 }

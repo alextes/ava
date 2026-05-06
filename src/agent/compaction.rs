@@ -28,6 +28,7 @@ pub fn needs_compaction(
                 .flat_map(|m| &m.content)
                 .map(|c| match c {
                     MessageContent::Text { text } => text.len(),
+                    MessageContent::Thinking { thinking, .. } => thinking.len(),
                     MessageContent::Image { source } => source.data.len(),
                     MessageContent::ToolUse { input, .. } => input.to_string().len(),
                     MessageContent::ToolResult { content, .. } => content.estimated_len(),
@@ -96,6 +97,7 @@ pub async fn compact_messages(
                     summarize_content.push_str(text);
                     summarize_content.push('\n');
                 }
+                MessageContent::Thinking { .. } => {}
                 MessageContent::ToolUse { name, .. } => {
                     summarize_content.push_str(role_str);
                     summarize_content.push_str(": [tool call: ");
@@ -191,6 +193,7 @@ mod tests {
                     content: "the user discussed rust programming".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
@@ -228,6 +231,7 @@ mod tests {
                     content: "summary".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
@@ -282,6 +286,7 @@ mod tests {
                     content: "updated summary".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),

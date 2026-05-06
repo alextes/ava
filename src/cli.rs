@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::db::Database;
 use crate::error;
-use crate::provider::AnyProvider;
+use crate::provider::{AnyProvider, ReasoningEffort};
 
 #[derive(Parser)]
 #[command(name = "ava", about = "a personal ai assistant")]
@@ -115,12 +115,29 @@ pub(crate) fn parse_slash_command(input: &str) -> Option<(&str, &str)> {
     Some((cmd, args))
 }
 
+pub(crate) fn effective_reasoning_effort(
+    db: &Database,
+    session_id: i64,
+    model_id: &str,
+    explicit: Option<&str>,
+) -> ReasoningEffort {
+    if let Some(effort) = explicit.and_then(ReasoningEffort::from_user_input) {
+        return effort;
+    }
+
+    match db.model_reasoning_preference(session_id, model_id) {
+        Ok(Some(effort)) => effort,
+        _ => AnyProvider::default_reasoning_effort(model_id),
+    }
+}
+
 /// handle the `/switch` command: parse provider/model, construct the provider, persist it.
 /// returns a user-facing confirmation or error message.
 pub(crate) fn handle_switch_command(args: &str, client: reqwest::Client, db: &Database) -> String {
     if args.is_empty() {
-        return "usage: /switch <provider> [model]\n\
-                providers: anthropic, openai\n\
+        return "usage: /switch <provider> [model] [reasoning_effort]\n\
+                providers: anthropic, openai, openrouter\n\
+                reasoning_effort: none, low, medium, high, xhigh\n\
                 examples:\n  /switch openai\n  /switch anthropic claude-sonnet-4-6"
             .to_string();
     }
@@ -128,6 +145,7 @@ pub(crate) fn handle_switch_command(args: &str, client: reqwest::Client, db: &Da
     let mut parts = args.split_whitespace();
     let provider_name = parts.next().unwrap();
     let model = parts.next();
+    let requested_reasoning = parts.next();
 
     let session_id = match db.active_session() {
         Ok(id) => id,
@@ -135,12 +153,16 @@ pub(crate) fn handle_switch_command(args: &str, client: reqwest::Client, db: &Da
     };
 
     match AnyProvider::from_name(client, provider_name, model) {
-        Ok(new_provider) => {
+        Ok(mut new_provider) => {
             let model_id = new_provider.model_id();
-            if let Err(e) = db.set_session_model(session_id, &model_id) {
-                return format!("error: failed to persist model: {e}");
+            let reasoning_effort =
+                effective_reasoning_effort(db, session_id, &model_id, requested_reasoning);
+            new_provider.set_reasoning_effort(reasoning_effort);
+            if let Err(e) = db.set_session_model_reasoning(session_id, &model_id, reasoning_effort)
+            {
+                return format!("error: failed to persist model and reasoning: {e}");
             }
-            format!("switched to {model_id}")
+            format!("switched to {model_id} (reasoning: {reasoning_effort})")
         }
         Err(e) => format!("error: {e}"),
     }
@@ -204,11 +226,24 @@ pub(crate) fn provider_for_session(
     db: &Database,
 ) -> Result<AnyProvider, error::Error> {
     let session_id = db.active_session()?;
-    if let Ok(Some(model_id)) = db.session_model(session_id) {
+    if let Ok(Some((model_id, persisted_reasoning))) = db.session_model_reasoning(session_id) {
         if let Some((provider_name, model)) = model_id.split_once('/') {
-            match AnyProvider::from_name(client.clone(), provider_name, Some(model)) {
+            let reasoning_effort = persisted_reasoning
+                .or_else(|| {
+                    db.model_reasoning_preference(session_id, &model_id)
+                        .ok()
+                        .flatten()
+                })
+                .unwrap_or_else(|| AnyProvider::default_reasoning_effort(&model_id));
+            match AnyProvider::from_name_with_reasoning(
+                client.clone(),
+                provider_name,
+                Some(model),
+                reasoning_effort,
+            ) {
                 Ok(p) => {
-                    tracing::info!(%model_id, "loaded persisted model");
+                    let _ = db.set_session_model_reasoning(session_id, &model_id, reasoning_effort);
+                    tracing::info!(%model_id, reasoning = %reasoning_effort, "loaded persisted model");
                     return Ok(p);
                 }
                 Err(e) => {
@@ -222,4 +257,68 @@ pub(crate) fn provider_for_session(
         }
     }
     AnyProvider::default_from_env(client)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_effective_reasoning_prefers_valid_explicit_value() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+        db.set_session_model_reasoning(
+            sid,
+            "openrouter/deepseek/deepseek-v4-pro",
+            ReasoningEffort::High,
+        )
+        .unwrap();
+
+        assert_eq!(
+            effective_reasoning_effort(
+                &db,
+                sid,
+                "openrouter/deepseek/deepseek-v4-pro",
+                Some("xhigh")
+            ),
+            ReasoningEffort::XHigh
+        );
+    }
+
+    #[test]
+    fn test_effective_reasoning_ignores_invalid_value_and_uses_memory() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+        db.set_session_model_reasoning(
+            sid,
+            "openrouter/deepseek/deepseek-v4-pro",
+            ReasoningEffort::High,
+        )
+        .unwrap();
+
+        assert_eq!(
+            effective_reasoning_effort(
+                &db,
+                sid,
+                "openrouter/deepseek/deepseek-v4-pro",
+                Some("minimal")
+            ),
+            ReasoningEffort::High
+        );
+    }
+
+    #[test]
+    fn test_effective_reasoning_uses_default_without_memory() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        assert_eq!(
+            effective_reasoning_effort(&db, sid, "openai/gpt-5.4", None),
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
+            effective_reasoning_effort(&db, sid, "openrouter/deepseek/deepseek-chat-v3-0324", None),
+            ReasoningEffort::None
+        );
+    }
 }

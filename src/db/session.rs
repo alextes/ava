@@ -1,7 +1,9 @@
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 
 use crate::error::Error;
 use crate::message::{Message, MessageContent, Role};
+use crate::provider::ReasoningEffort;
 
 use super::Database;
 
@@ -189,21 +191,21 @@ impl Database {
         Ok(result)
     }
 
-    /// append a message to the session
+    /// append a message to the session, returning the inserted row id.
     pub fn append_message(
         &self,
         session_id: i64,
         role: &str,
         content: &[MessageContent],
         channel: Option<&str>,
-    ) -> Result<(), Error> {
+    ) -> Result<i64, Error> {
         // guard: never persist empty text blocks — the API rejects them
         if content
             .iter()
             .any(|c| matches!(c, MessageContent::Text { text } if text.is_empty()))
         {
             tracing::warn!(role, "refusing to persist message with empty text block");
-            return Ok(());
+            return Ok(0);
         }
 
         let content_json = serde_json::to_string(content)
@@ -215,6 +217,7 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![session_id, role, content_json, channel],
         )?;
+        let message_id = conn.last_insert_rowid();
 
         // update session timestamp
         conn.execute(
@@ -222,7 +225,7 @@ impl Database {
             [session_id],
         )?;
 
-        Ok(())
+        Ok(message_id)
     }
 
     /// load all messages for a session with their DB row IDs, oldest first.
@@ -317,6 +320,7 @@ impl Database {
     }
 
     /// persist the selected model for a session
+    #[allow(dead_code)]
     pub fn set_session_model(&self, session_id: i64, model_id: &str) -> Result<(), Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -326,11 +330,34 @@ impl Database {
         Ok(())
     }
 
+    /// persist the selected model and effective reasoning effort for a session.
+    pub fn set_session_model_reasoning(
+        &self,
+        session_id: i64,
+        model_id: &str,
+        reasoning_effort: ReasoningEffort,
+    ) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET model = ?1, reasoning_effort = ?2 WHERE id = ?3",
+            rusqlite::params![model_id, reasoning_effort.as_str(), session_id],
+        )?;
+        conn.execute(
+            "INSERT INTO model_reasoning_preferences (session_id, model, reasoning_effort, updated_at)
+             VALUES (?1, ?2, ?3, datetime('now'))
+             ON CONFLICT(session_id, model) DO UPDATE SET
+                reasoning_effort = excluded.reasoning_effort,
+                updated_at = excluded.updated_at",
+            rusqlite::params![session_id, model_id, reasoning_effort.as_str()],
+        )?;
+        Ok(())
+    }
+
     /// clear the persisted model for a session (e.g. when it becomes invalid)
     pub fn clear_session_model(&self, session_id: i64) -> Result<(), Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE sessions SET model = NULL WHERE id = ?1",
+            "UPDATE sessions SET model = NULL, reasoning_effort = NULL WHERE id = ?1",
             [session_id],
         )?;
         Ok(())
@@ -383,19 +410,43 @@ impl Database {
     /// the db for history purposes but are skipped on subsequent loads.
     ///
     /// returns the number of messages that were elided.
+    #[allow(dead_code)]
     pub fn clear_session_context(&self, session_id: i64) -> Result<u32, Error> {
+        self.clear_session_context_before(session_id, None)
+    }
+
+    /// reset session state while preserving a newly received message.
+    ///
+    /// when `before_message_id` is set, only messages older than that row are
+    /// elided, so the turn that triggered the cold-resume prompt remains in
+    /// the fresh context after the user chooses "clear".
+    pub fn clear_session_context_before(
+        &self,
+        session_id: i64,
+        before_message_id: Option<i64>,
+    ) -> Result<u32, Error> {
         let conn = self.conn.lock().unwrap();
 
-        // find the highest message id in this session — that's where we move
-        // the compaction cursor to.
-        let max_id: Option<i64> = conn
-            .query_row(
-                "SELECT MAX(id) FROM messages WHERE session_id = ?1",
-                [session_id],
-                |row| row.get(0),
-            )
-            .ok()
-            .flatten();
+        // find the cursor target. with no preserved message this is the latest
+        // message. with a preserved message this is the latest older message.
+        let max_id: Option<i64> = match before_message_id {
+            Some(before_id) => conn
+                .query_row(
+                    "SELECT MAX(id) FROM messages WHERE session_id = ?1 AND id < ?2",
+                    rusqlite::params![session_id, before_id],
+                    |row| row.get(0),
+                )
+                .ok()
+                .flatten(),
+            None => conn
+                .query_row(
+                    "SELECT MAX(id) FROM messages WHERE session_id = ?1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .ok()
+                .flatten(),
+        };
 
         let prior_cursor: Option<i64> = conn
             .query_row(
@@ -434,6 +485,7 @@ impl Database {
     }
 
     /// load the persisted model for a session
+    #[allow(dead_code)]
     pub fn session_model(&self, session_id: i64) -> Result<Option<String>, Error> {
         let conn = self.conn.lock().unwrap();
         let model: Option<String> = conn
@@ -444,6 +496,46 @@ impl Database {
             )
             .map_err(Error::from)?;
         Ok(model)
+    }
+
+    /// load the persisted model and active reasoning effort for a session.
+    pub fn session_model_reasoning(
+        &self,
+        session_id: i64,
+    ) -> Result<Option<(String, Option<ReasoningEffort>)>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let (model, effort): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT model, reasoning_effort FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Error::from)?;
+
+        Ok(model.map(|model| {
+            (
+                model,
+                effort.as_deref().and_then(ReasoningEffort::from_persisted),
+            )
+        }))
+    }
+
+    /// load the remembered effective reasoning effort for a model in this session.
+    pub fn model_reasoning_preference(
+        &self,
+        session_id: i64,
+        model_id: &str,
+    ) -> Result<Option<ReasoningEffort>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let effort: Option<String> = conn
+            .query_row(
+                "SELECT reasoning_effort FROM model_reasoning_preferences
+                 WHERE session_id = ?1 AND model = ?2",
+                rusqlite::params![session_id, model_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(effort.as_deref().and_then(ReasoningEffort::from_persisted))
     }
 
     /// get the creation timestamp for a session (e.g. "2026-04-12 14:30:00")
@@ -629,6 +721,40 @@ mod tests {
     }
 
     #[test]
+    fn test_set_and_get_session_model_reasoning() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        db.set_session_model_reasoning(
+            sid,
+            "openrouter/deepseek/deepseek-v4-pro",
+            ReasoningEffort::High,
+        )
+        .unwrap();
+
+        let (model, effort) = db.session_model_reasoning(sid).unwrap().unwrap();
+        assert_eq!(model, "openrouter/deepseek/deepseek-v4-pro");
+        assert_eq!(effort, Some(ReasoningEffort::High));
+        assert_eq!(
+            db.model_reasoning_preference(sid, "openrouter/deepseek/deepseek-v4-pro")
+                .unwrap(),
+            Some(ReasoningEffort::High)
+        );
+
+        db.set_session_model_reasoning(
+            sid,
+            "openrouter/deepseek/deepseek-v4-pro",
+            ReasoningEffort::XHigh,
+        )
+        .unwrap();
+        assert_eq!(
+            db.model_reasoning_preference(sid, "openrouter/deepseek/deepseek-v4-pro")
+                .unwrap(),
+            Some(ReasoningEffort::XHigh)
+        );
+    }
+
+    #[test]
     fn test_session_model_default_is_none() {
         let db = Database::open_in_memory().unwrap();
         let sid = db.active_session().unwrap();
@@ -799,6 +925,50 @@ mod tests {
         // existing message id.
         let msgs = db.load_messages(sid).unwrap();
         assert!(msgs.is_empty(), "expected empty after clear, got {msgs:?}");
+    }
+
+    #[test]
+    fn test_clear_session_context_before_preserves_trigger_message() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        db.append_message(
+            sid,
+            "user",
+            &[MessageContent::text("old user")],
+            Some("cli"),
+        )
+        .unwrap();
+        db.append_message(sid, "assistant", &[MessageContent::text("old reply")], None)
+            .unwrap();
+        db.set_session_summary(sid, "old summary").unwrap();
+        db.set_session_usage(sid, 50_000, 200_000).unwrap();
+        db.set_session_last_completion_at(sid, 1_700_000_000)
+            .unwrap();
+
+        let trigger_id = db
+            .append_message(
+                sid,
+                "user",
+                &[MessageContent::text("fresh question")],
+                Some("cli"),
+            )
+            .unwrap();
+
+        let cleared = db
+            .clear_session_context_before(sid, Some(trigger_id))
+            .unwrap();
+        assert!(cleared >= 2, "expected old messages to be elided");
+
+        let msgs = db.load_messages(sid).unwrap();
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].content[0] {
+            MessageContent::Text { text } => assert_eq!(text, "fresh question"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+        assert_eq!(db.get_session_summary(sid).unwrap(), None);
+        assert_eq!(db.session_usage(sid).unwrap(), None);
+        assert_eq!(db.session_last_completion_at(sid).unwrap(), None);
     }
 
     #[test]

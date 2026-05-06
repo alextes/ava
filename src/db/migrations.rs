@@ -238,6 +238,18 @@ const MIGRATIONS: &[&str] = &[
         attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     "#,
+    // v17: reasoning effort preferences per active model/session
+    r#"
+    ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT;
+
+    CREATE TABLE IF NOT EXISTS model_reasoning_preferences (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        reasoning_effort TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, model)
+    );
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

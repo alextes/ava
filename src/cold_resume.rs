@@ -301,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn handle_callback_ignores_non_cold_prefix() {
         let pending = PendingColdResumes::new();
-        let bot = TelegramBot::new("fake".into());
+        let bot = TelegramBot::new_for_tests("fake".into());
         let handled = handle_callback(&pending, &bot, "cb", "exec:abc:allow_once", 0, None).await;
         assert!(!handled);
     }

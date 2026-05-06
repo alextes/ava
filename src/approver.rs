@@ -689,7 +689,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("cargo test *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -706,7 +706,7 @@ mod tests {
         // save a rule that won't match
         db.save_approval_rule("cargo test *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, Arc::clone(&db));
 
@@ -724,7 +724,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("cargo *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -743,7 +743,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("cargo *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -761,7 +761,7 @@ mod tests {
         db.save_approval_rule("cargo *").unwrap();
         db.save_approval_rule("grep *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -778,7 +778,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("cargo *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -796,7 +796,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("read:/etc/**").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -815,7 +815,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("edit:/etc/**").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -834,7 +834,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("read:/etc/**").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -854,7 +854,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("read:/tmp/**").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -872,7 +872,7 @@ mod tests {
         db.save_approval_rule("cargo *").unwrap();
         // no grep rule — second pipe segment uncovered
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -887,7 +887,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("cargo *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 
@@ -904,7 +904,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.save_approval_rule("cargo *").unwrap();
 
-        let bot = Arc::new(TelegramBot::new("fake-token".into()));
+        let bot = Arc::new(TelegramBot::new_for_tests("fake-token".into()));
         let pending = Arc::new(PendingApprovals::new());
         let approver = TelegramApprover::new(bot, 123, None, pending, db);
 

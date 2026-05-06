@@ -118,6 +118,7 @@ fn print_message(msg: &HistoryMessage, mode: &HistoryMode) {
     for block in &msg.content {
         match block {
             MessageContent::Text { text } => println!("{text}"),
+            MessageContent::Thinking { .. } => {}
             MessageContent::Image { .. } => println!("{DIM}[image]{RESET}"),
             MessageContent::ToolUse { name, input, .. } => match mode {
                 HistoryMode::Compact => {

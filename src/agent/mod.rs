@@ -121,7 +121,11 @@ impl Agent {
     /// - this is a brand-new session (no last_completion_at recorded)
     /// - the elapsed time is still within the provider's cache ttl
     /// - the persisted input_tokens are below the quiet threshold (~10k)
-    async fn maybe_prompt_cold_resume(&self, session_id: i64) -> Result<(), Error> {
+    async fn maybe_prompt_cold_resume(
+        &self,
+        session_id: i64,
+        preserve_from_message_id: i64,
+    ) -> Result<(), Error> {
         let Some(prompter) = self.cold_resume.as_ref() else {
             return Ok(());
         };
@@ -168,9 +172,12 @@ impl Agent {
                 tracing::info!("cold-resume: user kept context");
             }
             Ok(ColdResumeDecision::Clear) => {
-                let cleared = self.db.clear_session_context(session_id)?;
+                let cleared = self
+                    .db
+                    .clear_session_context_before(session_id, Some(preserve_from_message_id))?;
                 tracing::info!(
                     cleared_messages = cleared,
+                    preserve_from_message_id,
                     "cold-resume: user cleared context"
                 );
             }
@@ -192,18 +199,11 @@ impl Agent {
         let session_id = self.db.active_session()?;
         let channel_str = inbound.channel.as_str();
 
-        // cold-resume check: if the prompt cache has expired since the last
-        // completion *and* the conversation is large enough that replaying it
-        // uncached would be visible on the bill, ask the user how to proceed.
-        // runs before load_messages so the [clear] action's db updates take
-        // effect on this turn's loaded history.
-        self.maybe_prompt_cold_resume(session_id).await?;
-
-        // load conversation history (growing window for prompt cache efficiency)
-        let mut messages = self.db.load_messages(session_id)?;
-
-        // fix orphaned tool_use blocks left by a previous crash/interruption
-        self.repair_orphaned_tool_calls(session_id, &mut messages)?;
+        // repair orphaned tool_use blocks left by a previous crash/interruption
+        // before appending the new user turn, so the orphan remains the tail.
+        let mut existing_messages = self.db.load_messages(session_id)?;
+        self.repair_orphaned_tool_calls(session_id, &mut existing_messages)?;
+        drop(existing_messages);
 
         // expand /skill-name invocations before sending to the LLM
         let content = self.expand_skill(&inbound.content);
@@ -219,10 +219,23 @@ impl Agent {
             });
         }
 
-        // append and persist the new user message
-        self.db
-            .append_message(session_id, "user", &user_content, Some(channel_str))?;
-        messages.push(Message::user_with_content(user_content));
+        // persist the new user message before the cold-resume prompt. if the
+        // user chooses "clear", older history is elided while this trigger
+        // message stays in the fresh context.
+        let user_message_id =
+            self.db
+                .append_message(session_id, "user", &user_content, Some(channel_str))?;
+
+        // cold-resume check: if the prompt cache has expired since the last
+        // completion *and* the conversation is large enough that replaying it
+        // uncached would be visible on the bill, ask the user how to proceed.
+        // runs before load_messages so the [clear] action's db updates take
+        // effect on this turn's loaded history.
+        self.maybe_prompt_cold_resume(session_id, user_message_id)
+            .await?;
+
+        // load conversation history (growing window for prompt cache efficiency)
+        let mut messages = self.db.load_messages(session_id)?;
 
         // inject current timestamp as a system note so the model knows the time
         // without putting it in the system prompt (which would bust the cache).
@@ -354,7 +367,12 @@ impl Agent {
                     match AnyProvider::from_name(self.client.clone(), fallback_name, None) {
                         Ok(new_provider) => {
                             let model_id = new_provider.model_id();
-                            if let Err(e) = self.db.set_session_model(session_id, &model_id) {
+                            let reasoning_effort = new_provider.reasoning_effort();
+                            if let Err(e) = self.db.set_session_model_reasoning(
+                                session_id,
+                                &model_id,
+                                reasoning_effort,
+                            ) {
                                 tracing::warn!(%e, "failed to persist fallback model");
                             }
                             let note = format!(
@@ -449,9 +467,9 @@ impl Agent {
                         );
                         // add the too-long response to in-memory context (not persisted)
                         // so the agent can see what it wrote and rework it
-                        messages.push(Message::assistant_with_content(vec![MessageContent::text(
-                            &response.content,
-                        )]));
+                        let mut retry_content = response.hidden_content.clone();
+                        retry_content.push(MessageContent::text(&response.content));
+                        messages.push(Message::assistant_with_content(retry_content));
                         let feedback = format!(
                             "[system: your response is {} characters after formatting, \
                              but telegram's limit is {}. either rewrite it much shorter, \
@@ -468,7 +486,8 @@ impl Agent {
 
                 // persist the final assistant response (skip empty content to avoid API rejection)
                 if !response.content.is_empty() {
-                    let assistant_content = vec![MessageContent::text(&response.content)];
+                    let mut assistant_content = response.hidden_content.clone();
+                    assistant_content.push(MessageContent::text(&response.content));
                     self.db
                         .append_message(session_id, "assistant", &assistant_content, None)?;
                 }
@@ -496,7 +515,7 @@ impl Agent {
                 );
 
                 // persist assistant message with its tool_use blocks (unanswered)
-                let mut assistant_blocks = Vec::new();
+                let mut assistant_blocks = response.hidden_content.clone();
                 if !response.content.is_empty() {
                     assistant_blocks.push(MessageContent::text(&response.content));
                 }
@@ -566,7 +585,7 @@ impl Agent {
                 }));
             }
 
-            let mut assistant_blocks = Vec::new();
+            let mut assistant_blocks = response.hidden_content.clone();
             if !response.content.is_empty() {
                 assistant_blocks.push(MessageContent::text(response.content));
             }
@@ -603,8 +622,12 @@ impl Agent {
                 }
                 if let Some(new_provider) = result.switch_provider {
                     let model_id = new_provider.model_id();
-                    tracing::info!(%model_id, "switching provider mid-conversation");
-                    if let Err(e) = self.db.set_session_model(session_id, &model_id) {
+                    let reasoning_effort = new_provider.reasoning_effort();
+                    tracing::info!(%model_id, reasoning = %reasoning_effort, "switching provider mid-conversation");
+                    if let Err(e) =
+                        self.db
+                            .set_session_model_reasoning(session_id, &model_id, reasoning_effort)
+                    {
                         tracing::warn!(%e, "failed to persist model selection");
                     }
                     switched_provider = Some(new_provider);
@@ -1097,6 +1120,7 @@ mod tests {
                     content: response.clone(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
@@ -1109,16 +1133,18 @@ mod tests {
         })
     }
 
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test HTTP client")
+    }
+
     #[tokio::test]
     async fn test_agent_processes_message() {
         let provider = make_test_provider("hi");
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -1134,12 +1160,7 @@ mod tests {
     async fn test_provider_error_propagates() {
         let provider = make_failing_provider();
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -1169,6 +1190,7 @@ mod tests {
                     content: "hi".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
@@ -1178,12 +1200,7 @@ mod tests {
         db.mark_setup_complete().unwrap();
         db.remember(MemoryKind::Fact, "alex", Some("user"), Some("name"))
             .unwrap();
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -1233,6 +1250,7 @@ mod tests {
                     content: "your name is alex".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
@@ -1242,7 +1260,7 @@ mod tests {
             provider,
             AnyApprover::Cli(CliApprover),
             Arc::clone(&db),
-            reqwest::Client::new(),
+            test_client(),
         );
 
         let inbound = InboundMessage {
@@ -1376,6 +1394,7 @@ mod tests {
                                 "key": "name"
                             }),
                         }],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -1384,6 +1403,7 @@ mod tests {
                         content: "done, i remembered that".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -1395,7 +1415,7 @@ mod tests {
             provider,
             AnyApprover::Cli(CliApprover),
             Arc::clone(&db),
-            reqwest::Client::new(),
+            test_client(),
         );
 
         let inbound = InboundMessage {
@@ -1466,6 +1486,7 @@ mod tests {
                                 }),
                             },
                         ],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -1473,6 +1494,7 @@ mod tests {
                         content: "remembered everything".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -1484,7 +1506,7 @@ mod tests {
             provider,
             AnyApprover::Cli(CliApprover),
             Arc::clone(&db),
-            reqwest::Client::new(),
+            test_client(),
         );
 
         let inbound = InboundMessage {
@@ -1534,6 +1556,7 @@ mod tests {
                                 "kind": "episode"
                             }),
                         }],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -1542,6 +1565,7 @@ mod tests {
                         content: "i've completed 40 rounds of work. here's a summary.".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -1549,12 +1573,7 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -1592,6 +1611,7 @@ mod tests {
                                 "kind": "episode"
                             }),
                         }],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -1601,12 +1621,7 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -1656,6 +1671,7 @@ mod tests {
                         content: "done".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     });
                 }
@@ -1671,18 +1687,14 @@ mod tests {
                             "kind": "episode"
                         }),
                     }],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -1716,6 +1728,7 @@ mod tests {
                             name: "exec".into(),
                             input: serde_json::json!({"command": "echo hi"}),
                         }],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -1723,6 +1736,7 @@ mod tests {
                         content: "ok, command was denied".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -1739,7 +1753,7 @@ mod tests {
             provider,
             AnyApprover::Cli(CliApprover),
             Arc::clone(&db),
-            reqwest::Client::new(),
+            test_client(),
         );
 
         let inbound = InboundMessage {
@@ -1772,12 +1786,7 @@ mod tests {
             .unwrap();
 
         let provider = make_test_provider("hi");
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
             .system_prompt(agent.db.active_session().unwrap())
             .unwrap();
@@ -1801,12 +1810,7 @@ mod tests {
         db.add_task("review PR #42", None).unwrap();
 
         let provider = make_test_provider("hi");
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
             .system_prompt(agent.db.active_session().unwrap())
             .unwrap();
@@ -1822,12 +1826,7 @@ mod tests {
         db.mark_setup_complete().unwrap();
 
         let provider = make_test_provider("hi");
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
             .system_prompt(agent.db.active_session().unwrap())
             .unwrap();
@@ -1865,6 +1864,7 @@ mod tests {
                     content: "recovered from crash".into(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
@@ -1874,7 +1874,7 @@ mod tests {
             provider,
             AnyApprover::Cli(CliApprover),
             Arc::clone(&db),
-            reqwest::Client::new(),
+            test_client(),
         );
 
         let inbound = InboundMessage {
@@ -1912,12 +1912,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.mark_setup_complete().unwrap();
         let provider = make_test_provider("hi");
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let prompt = agent
             .system_prompt(agent.db.active_session().unwrap())
@@ -1934,12 +1929,7 @@ mod tests {
         db.add_task("pending task", None).unwrap();
 
         let provider = make_test_provider("hi");
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
             .system_prompt(agent.db.active_session().unwrap())
             .unwrap();
@@ -1980,6 +1970,7 @@ mod tests {
                         name: "complete".into(),
                         input: serde_json::json!({"reason": "memory distillation done"}),
                     }],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
@@ -1990,7 +1981,7 @@ mod tests {
             provider,
             AnyApprover::Cli(CliApprover),
             Arc::clone(&db),
-            reqwest::Client::new(),
+            test_client(),
         );
 
         let inbound = InboundMessage {
@@ -2026,7 +2017,7 @@ mod tests {
             make_test_provider("hi"),
             AnyApprover::Cli(CliApprover),
             db,
-            reqwest::Client::new(),
+            test_client(),
         )
         .with_skills(skills);
 
@@ -2045,7 +2036,7 @@ mod tests {
             make_test_provider("hi"),
             AnyApprover::Cli(CliApprover),
             db,
-            reqwest::Client::new(),
+            test_client(),
         );
 
         // no skills loaded — should pass through unchanged
@@ -2068,7 +2059,7 @@ mod tests {
             make_test_provider("hi"),
             AnyApprover::Cli(CliApprover),
             db,
-            reqwest::Client::new(),
+            test_client(),
         )
         .with_skills(skills);
 
@@ -2091,7 +2082,7 @@ mod tests {
             make_test_provider("hi"),
             AnyApprover::Cli(CliApprover),
             db,
-            reqwest::Client::new(),
+            test_client(),
         )
         .with_skills(skills);
 
@@ -2126,7 +2117,7 @@ mod tests {
             make_test_provider("hi"),
             AnyApprover::Cli(CliApprover),
             db,
-            reqwest::Client::new(),
+            test_client(),
         )
         .with_skills(skills);
 
@@ -2147,7 +2138,7 @@ mod tests {
             make_test_provider("hi"),
             AnyApprover::Cli(CliApprover),
             db,
-            reqwest::Client::new(),
+            test_client(),
         );
 
         let prompt = agent
@@ -2174,6 +2165,7 @@ mod tests {
                         content: "a]".repeat(3000), // ~6000 chars, >4096 after HTML
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -2190,6 +2182,7 @@ mod tests {
                         content: "short response".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -2197,12 +2190,7 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Telegram, // must be telegram for length check
@@ -2232,18 +2220,14 @@ mod tests {
                     content: "x".repeat(5000),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
+                    hidden_content: Vec::new(),
                     usage: Usage::default(),
                 })
             }),
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli, // CLI — no length limit
@@ -2287,6 +2271,7 @@ mod tests {
                                 "caption": "test attachment"
                             }),
                         }],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -2294,6 +2279,7 @@ mod tests {
                         content: "file sent".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -2301,12 +2287,7 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -2354,6 +2335,7 @@ mod tests {
                                 "caption": "a screenshot"
                             }),
                         }],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -2361,6 +2343,7 @@ mod tests {
                         content: "photo sent".into(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -2368,12 +2351,7 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Cli,
@@ -2415,6 +2393,7 @@ mod tests {
                                 "kind": "episode"
                             }),
                         }],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 } else {
@@ -2423,6 +2402,7 @@ mod tests {
                         content: "x".repeat(5000),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
+                        hidden_content: Vec::new(),
                         usage: Usage::default(),
                     })
                 }
@@ -2430,12 +2410,7 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let agent = Agent::new(
-            provider,
-            AnyApprover::Cli(CliApprover),
-            db,
-            reqwest::Client::new(),
-        );
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let inbound = InboundMessage {
             channel: ChannelKind::Telegram, // must be telegram

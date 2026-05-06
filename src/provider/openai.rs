@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
-use crate::provider::{Provider, ProviderResponse, StopReason, ToolCall, Usage};
+use crate::provider::{Provider, ProviderResponse, ReasoningEffort, StopReason, ToolCall, Usage};
 use crate::tool::{APPLY_PATCH_TOOL_NAME, BuiltInKind, ToolDefinition};
 
 const API_URL: &str = "https://api.openai.com/v1/responses";
@@ -19,6 +19,7 @@ pub struct OpenAiProvider {
     api_key: String,
     model: String,
     max_tokens: u32,
+    reasoning_effort: ReasoningEffort,
 }
 
 impl OpenAiProvider {
@@ -28,6 +29,7 @@ impl OpenAiProvider {
             api_key,
             model: DEFAULT_MODEL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            reasoning_effort: ReasoningEffort::Medium,
         }
     }
 
@@ -43,6 +45,14 @@ impl OpenAiProvider {
 
     pub fn set_model(&mut self, model: String) {
         self.model = model;
+    }
+
+    pub fn reasoning_effort(&self) -> ReasoningEffort {
+        self.reasoning_effort
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: ReasoningEffort) {
+        self.reasoning_effort = effort;
     }
 
     pub fn context_window(&self) -> u32 {
@@ -64,6 +74,12 @@ struct ApiRequest<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Value>,
     prompt_cache_retention: &'a str,
+    reasoning: OpenAiReasoning,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiReasoning {
+    effort: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -421,6 +437,9 @@ impl Provider for OpenAiProvider {
             input,
             tools,
             prompt_cache_retention: "24h",
+            reasoning: OpenAiReasoning {
+                effort: self.reasoning_effort.as_str(),
+            },
         };
 
         let response = self
@@ -532,6 +551,7 @@ impl Provider for OpenAiProvider {
             content: content_parts.join(""),
             stop_reason,
             tool_calls,
+            hidden_content: Vec::new(),
             usage,
         })
     }
@@ -660,6 +680,22 @@ mod tests {
                 assert_ne!(name, "str_replace_based_edit_tool");
             }
         }
+    }
+
+    #[test]
+    fn test_request_serializes_reasoning_effort() {
+        let request = ApiRequest {
+            model: "gpt-5.4",
+            max_output_tokens: 1024,
+            instructions: "be helpful",
+            input: vec![],
+            tools: vec![],
+            prompt_cache_retention: "24h",
+            reasoning: OpenAiReasoning { effort: "medium" },
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["reasoning"]["effort"], "medium");
     }
 
     #[test]

@@ -257,6 +257,13 @@ mod tests {
     use crate::tool::{ToolCall, requires_approval};
     use serde_json::json;
 
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test HTTP client")
+    }
+
     #[test]
     fn test_requires_approval_web_search() {
         let call = ToolCall {
@@ -289,7 +296,7 @@ mod tests {
         unsafe {
             std::env::remove_var("BRAVE_SEARCH_API_KEY");
         }
-        let result = web_search(&reqwest::Client::new(), "test query", None).await;
+        let result = web_search(&test_client(), "test query", None).await;
         assert!(result.contains("BRAVE_SEARCH_API_KEY not set"));
         // restore if it was set
         if let Some(val) = _original {

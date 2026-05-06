@@ -19,6 +19,15 @@ impl TelegramBot {
         }
     }
 
+    #[cfg(test)]
+    pub fn new_for_tests(token: String) -> Self {
+        let client = Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test HTTP client");
+        Self { client, token }
+    }
+
     pub fn from_env() -> Result<Self, Error> {
         let token = std::env::var("TELEGRAM_BOT_TOKEN")
             .map_err(|_| Error::MissingEnvVar("TELEGRAM_BOT_TOKEN"))?;
