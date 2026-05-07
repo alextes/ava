@@ -15,7 +15,7 @@ use rusqlite::Connection;
 use crate::config::default_db_path;
 use crate::error::Error;
 
-pub use memory::{Memory, MemoryKind};
+pub use memory::{Memory, MemoryKind, MemorySearchMode, MemorySearchOptions};
 pub use rules::{
     contains_command_substitution, generate_edit_pattern, generate_narrow_pattern,
     generate_pattern, generate_read_pattern,

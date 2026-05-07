@@ -1237,6 +1237,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_recall_match_mode_any_terms() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "loves rust programming",
+            Some("user"),
+            Some("hobby"),
+        )
+        .unwrap();
+        db.remember(
+            MemoryKind::Episode,
+            "discussed python migration",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let call = make_call(
+            "recall",
+            json!({"query": "rust migration", "match_mode": "any_terms"}),
+        );
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+            .await
+            .unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.contains("loves rust programming"));
+        assert!(text.contains("discussed python migration"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_recall_exact_phrase_alias() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust migration", None, None)
+            .unwrap();
+        db.remember(MemoryKind::Episode, "discussed migration rust", None, None)
+            .unwrap();
+
+        let call = make_call(
+            "recall",
+            json!({"query": "rust migration", "match_mode": "phrase"}),
+        );
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+            .await
+            .unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.contains("discussed rust migration"));
+        assert!(!text.contains("discussed migration rust"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_recall_invalid_match_mode() {
+        let db = Database::open_in_memory().unwrap();
+        let call = make_call("recall", json!({"query": "rust", "match_mode": "near"}));
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "invalid match_mode: near"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_recall_kind_filter() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "rust developer",
+            Some("user"),
+            Some("role"),
+        )
+        .unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust", None, None)
+            .unwrap();
+
+        let call = make_call("recall", json!({"query": "rust", "kind": "episode"}));
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+            .await
+            .unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert!(text.contains("[episode]"));
+        assert!(!text.contains("[fact]"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_recall_no_results_hints_for_all_terms() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "loves rust programming",
+            Some("user"),
+            Some("hobby"),
+        )
+        .unwrap();
+
+        let call = make_call("recall", json!({"query": "rust migration"}));
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            extract_tool_result_text(&result.content),
+            "no memories found (try match_mode=any_terms for a broader search)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_recall_limit_clamps_to_minimum() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust one", None, None)
+            .unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust two", None, None)
+            .unwrap();
+
+        let call = make_call("recall", json!({"query": "rust", "limit": 0}));
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+            .await
+            .unwrap();
+        let text = extract_tool_result_text(&result.content);
+        assert_eq!(text.lines().count(), 1);
+    }
+
+    #[tokio::test]
     async fn test_handle_recall_formats_all_kinds() {
         let db = Database::open_in_memory().unwrap();
         db.remember(
