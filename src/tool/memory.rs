@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::{Database, MemoryKind};
+use crate::db::{Database, MemoryKind, MemorySearchMode, MemorySearchOptions};
 use crate::error::Error;
 use crate::message::MessageContent;
 use crate::runtime::RuntimeState;
@@ -34,6 +34,27 @@ struct ForgetInput {
 struct RecallInput {
     query: String,
     limit: Option<u32>,
+    match_mode: Option<String>,
+    kind: Option<String>,
+}
+
+fn parse_memory_search_mode(value: Option<&str>) -> Result<MemorySearchMode, String> {
+    let value = value.unwrap_or("all_terms").trim().to_ascii_lowercase();
+    match value.as_str() {
+        "all_terms" | "and" | "all" => Ok(MemorySearchMode::AllTerms),
+        "any_terms" | "or" | "any" => Ok(MemorySearchMode::AnyTerms),
+        "exact_phrase" | "phrase" | "exact" => Ok(MemorySearchMode::ExactPhrase),
+        other => Err(format!("invalid match_mode: {other}")),
+    }
+}
+
+fn parse_optional_memory_kind(value: Option<&str>) -> Result<Option<MemoryKind>, String> {
+    match value {
+        Some(kind) => MemoryKind::from_str(&kind.trim().to_ascii_lowercase())
+            .map(Some)
+            .ok_or_else(|| format!("invalid kind: {kind}")),
+        None => Ok(None),
+    }
 }
 
 // --- tool definitions ---
@@ -101,7 +122,7 @@ pub(crate) fn forget_definition() -> ToolDefinition {
 pub(crate) fn recall_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: RECALL_TOOL_NAME,
-        description: "search stored memories by keyword or phrase. use this proactively to look up past context when relevant.",
+        description: "search stored memories by keyword or phrase. use this proactively to look up past context when relevant. use match_mode=all_terms for targeted searches where every word should match somewhere, any_terms for broader searches where any word is enough, and exact_phrase only when the words must appear together in order.",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -111,7 +132,19 @@ pub(crate) fn recall_definition() -> ToolDefinition {
                 },
                 "limit": {
                     "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
                     "description": "max results to return (default 10, max 50)"
+                },
+                "match_mode": {
+                    "type": "string",
+                    "enum": ["all_terms", "any_terms", "exact_phrase"],
+                    "description": "how to match multiple terms: all_terms means every term must appear somewhere, in any order; any_terms means at least one term may appear; exact_phrase means the words must appear together in order. default: all_terms."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["fact", "episode", "identity"],
+                    "description": "optional memory type filter"
                 }
             },
             "required": ["query"]
@@ -243,11 +276,50 @@ pub(crate) async fn handle_forget(db: &Database, call: &ToolCall) -> Result<Tool
 pub(crate) async fn handle_recall(db: &Database, call: &ToolCall) -> Result<ToolCallResult, Error> {
     match serde_json::from_value::<RecallInput>(call.input.clone()) {
         Ok(input) => {
-            let limit = input.limit.unwrap_or(10).min(50);
-            let memories = db.search_memories(&input.query, limit)?;
+            let match_mode = match parse_memory_search_mode(input.match_mode.as_deref()) {
+                Ok(match_mode) => match_mode,
+                Err(message) => {
+                    return Ok(ToolCallResult {
+                        content: MessageContent::tool_result(&call.id, message),
+                        switch_provider: None,
+                        complete: false,
+                        compact: false,
+                        voice: None,
+                        attachment: None,
+                    });
+                }
+            };
+            let kind = match parse_optional_memory_kind(input.kind.as_deref()) {
+                Ok(kind) => kind,
+                Err(message) => {
+                    return Ok(ToolCallResult {
+                        content: MessageContent::tool_result(&call.id, message),
+                        switch_provider: None,
+                        complete: false,
+                        compact: false,
+                        voice: None,
+                        attachment: None,
+                    });
+                }
+            };
+            let limit = input.limit.unwrap_or(10).clamp(1, 50);
+            let search = MemorySearchOptions {
+                query: &input.query,
+                limit,
+                match_mode,
+                kind,
+            };
+            let has_all_terms_hint = search.match_mode == MemorySearchMode::AllTerms
+                && search.searchable_term_count() > 1;
+            let memories = db.search_memories(search)?;
             if memories.is_empty() {
+                let message = if has_all_terms_hint {
+                    "no memories found (try match_mode=any_terms for a broader search)"
+                } else {
+                    "no memories found"
+                };
                 return Ok(ToolCallResult {
-                    content: MessageContent::tool_result(&call.id, "no memories found"),
+                    content: MessageContent::tool_result(&call.id, message),
                     switch_provider: None,
                     complete: false,
                     compact: false,

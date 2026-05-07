@@ -40,6 +40,64 @@ pub struct Memory {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemorySearchMode {
+    AllTerms,
+    AnyTerms,
+    ExactPhrase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemorySearchOptions<'a> {
+    pub query: &'a str,
+    pub limit: u32,
+    pub match_mode: MemorySearchMode,
+    pub kind: Option<MemoryKind>,
+}
+
+impl<'a> MemorySearchOptions<'a> {
+    pub fn searchable_term_count(&self) -> usize {
+        searchable_terms(self.query).len()
+    }
+}
+
+fn searchable_terms(query: &str) -> Vec<String> {
+    query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn quote_fts5(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn fts5_query(options: &MemorySearchOptions<'_>) -> Option<String> {
+    let terms = searchable_terms(options.query);
+    if terms.is_empty() {
+        return None;
+    }
+
+    match options.match_mode {
+        MemorySearchMode::AllTerms => Some(
+            terms
+                .iter()
+                .map(|term| quote_fts5(term))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        MemorySearchMode::AnyTerms => Some(
+            terms
+                .iter()
+                .map(|term| quote_fts5(term))
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        ),
+        MemorySearchMode::ExactPhrase => Some(quote_fts5(options.query.trim())),
+    }
+}
+
 impl Database {
     pub fn identity_name(&self) -> Result<Option<String>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
@@ -189,18 +247,23 @@ impl Database {
         Ok(memories)
     }
 
-    pub fn search_memories(&self, query: &str, limit: u32) -> Result<Vec<Memory>, Error> {
+    pub fn search_memories(&self, options: MemorySearchOptions<'_>) -> Result<Vec<Memory>, Error> {
+        let Some(query) = fts5_query(&options) else {
+            return Ok(Vec::new());
+        };
+        let kind = options.kind.map(|kind| kind.as_str());
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.kind, m.content, m.category, m.key, m.created_at
              FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
              WHERE memories_fts MATCH ?1
+               AND (?3 IS NULL OR m.kind = ?3)
              ORDER BY f.rank
              LIMIT ?2",
         )?;
         let memories = stmt
-            .query_map(rusqlite::params![query, limit], |row| {
+            .query_map(rusqlite::params![query, options.limit, kind], |row| {
                 let kind_str: String = row.get(1)?;
                 Ok(Memory {
                     id: row.get(0)?,
@@ -267,6 +330,15 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn all_terms(query: &str, limit: u32) -> MemorySearchOptions<'_> {
+        MemorySearchOptions {
+            query,
+            limit,
+            match_mode: MemorySearchMode::AllTerms,
+            kind: None,
+        }
+    }
 
     #[test]
     fn test_remember_fact_upserts() {
@@ -359,11 +431,127 @@ mod tests {
         db.remember(MemoryKind::Fact, "amsterdam", Some("user"), Some("city"))
             .unwrap();
 
-        let results = db.search_memories("rust", 10).unwrap();
+        let results = db.search_memories(all_terms("rust", 10)).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].content.contains("rust"));
 
-        let results = db.search_memories("migration", 10).unwrap();
+        let results = db.search_memories(all_terms("migration", 10)).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, MemoryKind::Episode);
+    }
+
+    #[test]
+    fn test_search_memories_match_modes() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "loves rust programming",
+            Some("user"),
+            Some("hobby"),
+        )
+        .unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust migration", None, None)
+            .unwrap();
+        db.remember(MemoryKind::Episode, "discussed migration rust", None, None)
+            .unwrap();
+        db.remember(
+            MemoryKind::Episode,
+            "discussed python migration",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let all_terms = db
+            .search_memories(MemorySearchOptions {
+                query: "rust migration",
+                limit: 10,
+                match_mode: MemorySearchMode::AllTerms,
+                kind: None,
+            })
+            .unwrap();
+        assert_eq!(all_terms.len(), 2);
+        assert!(
+            all_terms
+                .iter()
+                .all(|memory| memory.content.contains("rust")
+                    && memory.content.contains("migration"))
+        );
+
+        let any_terms = db
+            .search_memories(MemorySearchOptions {
+                query: "rust migration",
+                limit: 10,
+                match_mode: MemorySearchMode::AnyTerms,
+                kind: None,
+            })
+            .unwrap();
+        assert_eq!(any_terms.len(), 4);
+
+        let exact_phrase = db
+            .search_memories(MemorySearchOptions {
+                query: "rust migration",
+                limit: 10,
+                match_mode: MemorySearchMode::ExactPhrase,
+                kind: None,
+            })
+            .unwrap();
+        assert_eq!(exact_phrase.len(), 1);
+        assert_eq!(exact_phrase[0].content, "discussed rust migration");
+    }
+
+    #[test]
+    fn test_search_memories_escapes_special_characters() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "project turbo-relay supports quote \" handling or near syntax",
+            Some("project"),
+            Some("turbo-relay"),
+        )
+        .unwrap();
+
+        for query in [
+            "turbo-relay",
+            "\"turbo-relay\"",
+            "(turbo-relay)",
+            "project:turbo-relay",
+            "turbo OR NEAR",
+        ] {
+            let results = db.search_memories(all_terms(query, 10)).unwrap();
+            assert_eq!(results.len(), 1, "query should be safe: {query}");
+        }
+
+        for query in ["", " - : ( ) \" "] {
+            let results = db.search_memories(all_terms(query, 10)).unwrap();
+            assert!(
+                results.is_empty(),
+                "query should return no matches: {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_search_memories_filters_by_kind() {
+        let db = Database::open_in_memory().unwrap();
+        db.remember(
+            MemoryKind::Fact,
+            "rust developer",
+            Some("user"),
+            Some("role"),
+        )
+        .unwrap();
+        db.remember(MemoryKind::Episode, "discussed rust", None, None)
+            .unwrap();
+
+        let results = db
+            .search_memories(MemorySearchOptions {
+                query: "rust",
+                limit: 10,
+                match_mode: MemorySearchMode::AllTerms,
+                kind: Some(MemoryKind::Episode),
+            })
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, MemoryKind::Episode);
     }
