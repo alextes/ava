@@ -5,7 +5,7 @@
 //! pages as of 2026-04:
 //! - anthropic: <https://platform.claude.com/docs/en/about-claude/pricing>
 //! - openai:   <https://openai.com/api/pricing/>
-//! - openrouter (deepseek): per-model pages on openrouter.ai
+//! - openrouter: per-model pages on openrouter.ai
 //!
 //! note: opus 4.7 ships with a tokenizer that emits ~35% more tokens for the
 //! same source text vs 4.6, so effective cost is higher despite the unchanged
@@ -27,18 +27,22 @@ pub fn base_input_usd_per_mtok(model_id: &str) -> Option<f64> {
     match model_id {
         // claude opus family
         "anthropic/claude-opus-4-7" => Some(5.0),
+        "openrouter/anthropic/claude-opus-4-7" => Some(5.0),
         "anthropic/claude-opus-4-6" => Some(5.0),
+        "openrouter/anthropic/claude-opus-4-6" => Some(5.0),
         "anthropic/claude-opus-4-5" => Some(5.0),
         "anthropic/claude-opus-4-1" => Some(15.0),
         "anthropic/claude-opus-4" => Some(15.0),
 
         // claude sonnet family
         "anthropic/claude-sonnet-4-6" => Some(3.0),
+        "openrouter/anthropic/claude-sonnet-4-6" => Some(3.0),
         "anthropic/claude-sonnet-4-5" => Some(3.0),
         "anthropic/claude-sonnet-4" => Some(3.0),
 
         // claude haiku family
         "anthropic/claude-haiku-4-5" => Some(1.0),
+        "openrouter/anthropic/claude-haiku-4-5" => Some(1.0),
         "anthropic/claude-haiku-3-5" => Some(0.80),
 
         // openai — values from openai's pricing page (april 2026).
@@ -78,9 +82,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opus_4_6_lookup() {
+    fn opus_4_7_lookup() {
         assert_eq!(
-            base_input_usd_per_mtok("anthropic/claude-opus-4-6"),
+            base_input_usd_per_mtok("anthropic/claude-opus-4-7"),
             Some(5.0)
         );
     }
@@ -90,6 +94,22 @@ mod tests {
         assert_eq!(
             base_input_usd_per_mtok("anthropic/claude-sonnet-4-6"),
             Some(3.0)
+        );
+    }
+
+    #[test]
+    fn openrouter_anthropic_sonnet_4_6_lookup() {
+        assert_eq!(
+            base_input_usd_per_mtok("openrouter/anthropic/claude-sonnet-4-6"),
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn openrouter_anthropic_opus_4_7_lookup() {
+        assert_eq!(
+            base_input_usd_per_mtok("openrouter/anthropic/claude-opus-4-7"),
+            Some(5.0)
         );
     }
 
@@ -110,7 +130,7 @@ mod tests {
     #[test]
     fn estimate_50k_on_opus() {
         // 50k tokens × $5/MTok = $0.25
-        let cost = estimate_replay_cost_usd("anthropic/claude-opus-4-6", 50_000).unwrap();
+        let cost = estimate_replay_cost_usd("anthropic/claude-opus-4-7", 50_000).unwrap();
         assert!((cost - 0.25).abs() < 0.0001);
     }
 
@@ -121,9 +141,15 @@ mod tests {
 
     #[test]
     fn format_large_cost() {
-        // 100k on opus 4.6 = $0.50
-        let s = format_replay_cost("anthropic/claude-opus-4-6", 100_000);
+        // 100k on opus 4.7 = $0.50
+        let s = format_replay_cost("anthropic/claude-opus-4-7", 100_000);
         assert_eq!(s, "~$0.50");
+    }
+
+    #[test]
+    fn format_openrouter_anthropic_cold_resume_cost() {
+        let s = format_replay_cost("openrouter/anthropic/claude-sonnet-4-6", 103_000);
+        assert_eq!(s, "~$0.31");
     }
 
     #[test]

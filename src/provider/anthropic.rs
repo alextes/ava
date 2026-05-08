@@ -11,7 +11,7 @@ use crate::tool::{BuiltInKind, ToolDefinition};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
-pub const ALLOWED_MODELS: &[&str] = &["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
+pub const ALLOWED_MODELS: &[&str] = &["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"];
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct AnthropicProvider {
@@ -57,7 +57,7 @@ impl AnthropicProvider {
 
     pub fn context_window(&self) -> u32 {
         match self.model.as_str() {
-            "claude-opus-4-6" | "claude-sonnet-4-6" => 1_000_000,
+            "claude-opus-4-7" | "claude-sonnet-4-6" => 1_000_000,
             _ => 200_000,
         }
     }
@@ -324,6 +324,14 @@ fn output_config(effort: ReasoningEffort) -> Option<OutputConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_allowed_models_use_sonnet_default_and_opus_4_7() {
+        assert_eq!(DEFAULT_MODEL, "claude-sonnet-4-6");
+        assert!(ALLOWED_MODELS.contains(&"claude-sonnet-4-6"));
+        assert!(ALLOWED_MODELS.contains(&"claude-opus-4-7"));
+        assert!(!ALLOWED_MODELS.contains(&"claude-opus-4-6"));
+    }
 
     #[test]
     fn test_parse_text_response() {

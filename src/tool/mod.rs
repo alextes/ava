@@ -742,7 +742,7 @@ fn switch_model_definition() -> ToolDefinition {
                 },
                 "model": {
                     "type": "string",
-                    "description": "model name. must match the chosen provider. anthropic: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5. openai: gpt-5.5, gpt-5.4, gpt-5-mini. openrouter: any model in provider/name format (e.g. google/gemini-2.5-flash, deepseek/deepseek-v4-pro, deepseek/deepseek-v4-flash). if omitted, uses the provider's default."
+                    "description": "model name. must match the chosen provider. anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5. openai: gpt-5.5, gpt-5.4, gpt-5-mini. openrouter: third-party models in provider/name format (e.g. google/gemini-2.5-flash, deepseek/deepseek-v4-pro, deepseek/deepseek-v4-flash); use the first-party anthropic/openai providers for anthropic or openai models. if omitted, uses the provider's default."
                 },
                 "reasoning_effort": {
                     "type": "string",

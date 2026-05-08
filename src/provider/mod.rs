@@ -212,6 +212,10 @@ impl AnyProvider {
         }
     }
 
+    fn model_belongs_to_first_party_provider(model: &str) -> bool {
+        model.starts_with("anthropic/") || model.starts_with("openai/")
+    }
+
     /// create a provider by name, for the switch_model tool.
     /// if a model is specified, it must be in the provider's allowed list.
     pub fn from_name(
@@ -253,6 +257,13 @@ impl AnyProvider {
                 Ok(p)
             }
             "openrouter" => {
+                if let Some(m) = model
+                    && Self::model_belongs_to_first_party_provider(m)
+                {
+                    return Err(Error::Provider(format!(
+                        "model {m} should use its first-party provider, not openrouter"
+                    )));
+                }
                 let mut p = OpenRouterProvider::from_env(client)?;
                 if let Some(m) = model {
                     // no validation — openrouter has hundreds of models, let the API reject bad ones
@@ -457,5 +468,22 @@ mod tests {
             "anthropic/claude-sonnet-4-6",
             ReasoningEffort::XHigh
         ));
+    }
+
+    #[test]
+    fn test_openrouter_rejects_first_party_provider_models() {
+        let err = AnyProvider::from_name(
+            test_client(),
+            "openrouter",
+            Some("anthropic/claude-sonnet-4-6"),
+        )
+        .err()
+        .expect("openrouter should reject anthropic models");
+        assert!(err.to_string().contains("first-party provider"));
+
+        let err = AnyProvider::from_name(test_client(), "openrouter", Some("openai/gpt-5.5"))
+            .err()
+            .expect("openrouter should reject openai models");
+        assert!(err.to_string().contains("first-party provider"));
     }
 }
