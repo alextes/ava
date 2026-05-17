@@ -4,6 +4,13 @@ how to cut a new ava release.
 
 ## pre-flight checks
 
+run releases from the latest `main` only:
+
+```bash
+git checkout main
+git pull --ff-only origin main
+```
+
 before releasing, run locally with CI-equivalent strictness:
 
 ```bash
@@ -66,13 +73,7 @@ git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "release: v0.2.0"
 ```
 
-## 7. ship to main (if in agent worktree)
-
-```bash
-brd agent merge
-```
-
-## 8. push and verify CI
+## 7. push and verify CI
 
 push commits to main and **wait for CI to pass** before tagging:
 
@@ -82,7 +83,7 @@ git push origin main
 
 check CI status with `hub ci-status -v` or at https://github.com/alextes/ava/actions — do not proceed until all checks pass.
 
-## 9. tag and push
+## 8. tag and push
 
 only after CI passes:
 
@@ -93,6 +94,6 @@ git push --tags
 
 this triggers cargo-dist CI which builds binaries for all platforms and creates the github release.
 
-## 10. publish to crates.io (currently skipped)
+## 9. publish to crates.io (currently skipped)
 
 cargo publish is disabled for now — the binary assumes a cloned repo (DB path, upgrade command). install via `git clone` + `cargo install --path .` instead.
