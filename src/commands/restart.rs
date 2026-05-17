@@ -1,10 +1,16 @@
 use super::stop::stop_daemon;
+use crate::db::Database;
 
 /// stop the running daemon (if any) then re-exec the current binary with `start`.
 pub(crate) fn run_restart(foreground: bool) {
     if let Err(e) = stop_daemon(true) {
         eprintln!("{e}");
         std::process::exit(1);
+    }
+    if let Err(e) =
+        Database::open().and_then(|db| db.record_runtime_event("cli_restart", "ava restart"))
+    {
+        eprintln!("warning: failed to record restart event: {e}");
     }
 
     let exe = if let Ok(path) = std::env::var("AVA_EXEC_PATH") {

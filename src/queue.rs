@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::message::{ChannelKind, ImageSource, OutboundMessage};
+use crate::message::OutboundMessage;
 use crate::telegram::TelegramBot;
 use crate::telegram_fmt::markdown_to_telegram_html;
 
@@ -31,18 +31,10 @@ impl ResponseSink {
     }
 }
 
-/// a message queued for sequential agent processing
-pub struct QueuedMessage {
-    pub channel: ChannelKind,
-    pub content: String,
-    pub images: Vec<ImageSource>,
-    pub sink: ResponseSink,
-}
+pub type WakeSender = mpsc::Sender<()>;
+pub type WakeReceiver = mpsc::Receiver<()>;
 
-pub type MessageSender = mpsc::Sender<QueuedMessage>;
-pub type MessageReceiver = mpsc::Receiver<QueuedMessage>;
-
-pub fn message_queue(buffer: usize) -> (MessageSender, MessageReceiver) {
+pub fn message_queue(buffer: usize) -> (WakeSender, WakeReceiver) {
     mpsc::channel(buffer)
 }
 

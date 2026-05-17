@@ -7,12 +7,10 @@ use crate::cli::{
     handle_rules_command, handle_switch_command, parse_slash_command, provider_for_session,
 };
 use crate::cold_resume::{ColdResumePrompter, PendingColdResumes};
-use crate::db::Database;
+use crate::db::{Database, QueuedRecord, RuntimeEvent};
 use crate::error;
 use crate::message::{ChannelKind, ImageSource, InboundMessage};
-use crate::queue::{
-    MessageReceiver, QueuedMessage, ResponseSink, message_queue, send_error, send_response,
-};
+use crate::queue::{ResponseSink, WakeReceiver, message_queue, send_error, send_response};
 use crate::runtime::RuntimeState;
 use crate::telegram::TelegramBot;
 
@@ -101,9 +99,57 @@ fn parse_id_list(env_var: &str) -> Vec<i64> {
         .collect()
 }
 
+fn startup_model_note(prior_event: Option<&RuntimeEvent>) -> String {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
+    match prior_event {
+        Some(event) if event.is_restart() => format!(
+            "[system: ava restarted at {now} after {}. no external restart notice was sent. \
+             if recent work was interrupted, inspect the conversation state and continue \
+             appropriately.]",
+            event.reason
+        ),
+        Some(event) => format!(
+            "[system: ava started at {now}. previous runtime event was {}: {}.]",
+            event.source, event.reason
+        ),
+        None => format!("[system: ava started at {now}.]"),
+    }
+}
+
+fn persist_startup_model_note(db: &Database, prior_event: Option<&RuntimeEvent>) {
+    let note = startup_model_note(prior_event);
+    let content = vec![crate::message::MessageContent::text(note)];
+    match db.active_session() {
+        Ok(session_id) => {
+            if let Err(e) = db.append_message(session_id, "system", &content, None) {
+                tracing::warn!(%e, "failed to persist startup model note");
+            }
+        }
+        Err(e) => tracing::warn!(%e, "failed to load active session for startup note"),
+    }
+}
+
 pub(crate) async fn run_start() -> Result<(), error::Error> {
     let client = reqwest::Client::new();
     let db = Arc::new(Database::open()?);
+    let prior_runtime_event = match db.last_runtime_event() {
+        Ok(event) => event,
+        Err(e) => {
+            tracing::warn!(%e, "failed to load prior runtime event");
+            None
+        }
+    };
+    persist_startup_model_note(&db, prior_runtime_event.as_ref());
+    if let Err(e) = db.record_runtime_event("startup", "daemon started") {
+        tracing::warn!(%e, "failed to record startup event");
+    }
+    match db.reset_processing_messages() {
+        Ok(count) if count > 0 => {
+            tracing::info!(count, "reset interrupted queued messages to pending")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%e, "failed to reset interrupted queued messages"),
+    }
     let (tx, rx) = message_queue(64);
     let pending = Arc::new(PendingApprovals::new());
     let pending_cold = Arc::new(PendingColdResumes::new());
@@ -154,34 +200,11 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
 
     // shared message buffer for cross-channel context
     let chat_buffer = Arc::new(ChatBuffer::new());
-
-    // start agent loop
-    let db_clone = Arc::clone(&db);
-    let pending_clone = Arc::clone(&pending);
-    let pending_cold_clone = Arc::clone(&pending_cold);
-    let client_clone = client.clone();
-    let mcp_clone = mcp.clone();
-    let skills_clone = Arc::clone(&skills);
-    let chat_buffer_clone = Arc::clone(&chat_buffer);
     let runtime = Arc::new(RuntimeState::new(String::new()));
-    let runtime_clone = Arc::clone(&runtime);
-    let agent_handle = tokio::spawn(async move {
-        agent_loop(
-            rx,
-            db_clone,
-            pending_clone,
-            pending_cold_clone,
-            client_clone,
-            mcp_clone,
-            skills_clone,
-            chat_buffer_clone,
-            runtime_clone,
-        )
-        .await;
-    });
 
     // track background tasks so we can abort them on shutdown
     let mut bg_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut telegram_bot_for_agent: Option<Arc<TelegramBot>> = None;
 
     // start telegram if configured
     if std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
@@ -206,6 +229,7 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
             resolved_display_name = %bot_name,
             "fetched bot identity"
         );
+        telegram_bot_for_agent = Some(Arc::clone(&bot));
 
         let allowed_users = db.list_allowed_users().unwrap_or_default();
 
@@ -224,9 +248,8 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         if let Some(&chat_id) = allowed_users.first() {
             let db_sched = Arc::clone(&db);
             let tx_sched = tx.clone();
-            let bot_sched = Arc::clone(&bot);
             bg_tasks.push(tokio::spawn(crate::scheduler::run(
-                db_sched, tx_sched, bot_sched, chat_id,
+                db_sched, tx_sched, chat_id,
             )));
         }
 
@@ -246,6 +269,35 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
         )));
     } else {
         tracing::info!("TELEGRAM_BOT_TOKEN not set, skipping telegram");
+    }
+
+    // start agent loop after channels are initialized so queued rows can be
+    // converted into live response sinks.
+    let db_clone = Arc::clone(&db);
+    let pending_clone = Arc::clone(&pending);
+    let pending_cold_clone = Arc::clone(&pending_cold);
+    let client_clone = client.clone();
+    let mcp_clone = mcp.clone();
+    let skills_clone = Arc::clone(&skills);
+    let chat_buffer_clone = Arc::clone(&chat_buffer);
+    let runtime_clone = Arc::clone(&runtime);
+    let agent_handle = tokio::spawn(async move {
+        agent_loop(
+            rx,
+            db_clone,
+            pending_clone,
+            pending_cold_clone,
+            client_clone,
+            mcp_clone,
+            skills_clone,
+            chat_buffer_clone,
+            runtime_clone,
+            telegram_bot_for_agent,
+        )
+        .await;
+    });
+    if let Err(e) = tx.send(()).await {
+        tracing::warn!(%e, "failed to send startup queue wake");
     }
 
     // drop our copy so the channel closes once bg tasks are aborted
@@ -286,7 +338,107 @@ pub(crate) async fn run_start() -> Result<(), error::Error> {
 
 #[allow(clippy::too_many_arguments)]
 async fn agent_loop(
-    mut rx: MessageReceiver,
+    mut rx: WakeReceiver,
+    db: Arc<Database>,
+    pending: Arc<PendingApprovals>,
+    pending_cold: Arc<PendingColdResumes>,
+    client: reqwest::Client,
+    mcp: Option<Arc<crate::mcp::manager::McpManager>>,
+    skills: Arc<Vec<crate::skill::Skill>>,
+    chat_buffer: Arc<ChatBuffer>,
+    runtime: Arc<RuntimeState>,
+    telegram_bot: Option<Arc<TelegramBot>>,
+) {
+    while rx.recv().await.is_some() {
+        loop {
+            let record = match db.next_pending_message() {
+                Ok(Some(record)) => record,
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::error!(%e, "failed to load next queued message");
+                    break;
+                }
+            };
+
+            let Some(channel) = record.channel_kind() else {
+                tracing::warn!(
+                    queue_id = record.id,
+                    channel = %record.channel,
+                    "queued message has unsupported channel"
+                );
+                if let Err(e) = db.mark_message_failed(record.id, "unsupported channel") {
+                    tracing::warn!(%e, queue_id = record.id, "failed to mark queue row failed");
+                }
+                continue;
+            };
+
+            let sink = match response_sink_for_record(&record, telegram_bot.as_ref()) {
+                Some(sink) => sink,
+                None => {
+                    tracing::warn!(
+                        queue_id = record.id,
+                        channel = %record.channel,
+                        "queued message cannot be routed yet"
+                    );
+                    break;
+                }
+            };
+
+            if let Err(e) = db.mark_message_processing(record.id) {
+                tracing::error!(%e, queue_id = record.id, "failed to mark queue row processing");
+                break;
+            }
+
+            process_queued_record(
+                record,
+                channel,
+                sink,
+                Arc::clone(&db),
+                Arc::clone(&pending),
+                Arc::clone(&pending_cold),
+                client.clone(),
+                mcp.clone(),
+                Arc::clone(&skills),
+                Arc::clone(&chat_buffer),
+                Arc::clone(&runtime),
+            )
+            .await;
+
+            if crate::signal::restart_requested() {
+                #[cfg(unix)]
+                match crate::signal::do_exec_restart() {
+                    // do_exec_restart never returns Ok — exec replaces the process
+                    Err(e) => {
+                        tracing::error!(%e, "exec restart failed, continuing normally");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn response_sink_for_record(
+    record: &QueuedRecord,
+    telegram_bot: Option<&Arc<TelegramBot>>,
+) -> Option<ResponseSink> {
+    match record.channel_kind()? {
+        ChannelKind::Telegram => {
+            let bot = telegram_bot?;
+            Some(ResponseSink::Telegram {
+                chat_id: record.chat_id,
+                thread_id: record.thread_id,
+                bot: Arc::clone(bot),
+            })
+        }
+        ChannelKind::Cli => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_queued_record(
+    record: QueuedRecord,
+    channel: ChannelKind,
+    sink: ResponseSink,
     db: Arc<Database>,
     pending: Arc<PendingApprovals>,
     pending_cold: Arc<PendingColdResumes>,
@@ -296,177 +448,177 @@ async fn agent_loop(
     chat_buffer: Arc<ChatBuffer>,
     runtime: Arc<RuntimeState>,
 ) {
-    while let Some(queued) = rx.recv().await {
-        let chat_id = queued.sink.chat_id();
-        let thread_id = queued.sink.thread_id();
+    let queue_id = record.id;
+    let chat_id = sink.chat_id();
+    let thread_id = sink.thread_id();
 
-        // helper: buffer a bot response so it appears in chat history context
-        let buffer_bot_reply = |text: &str| {
-            if text.is_empty() {
-                return;
-            }
-            let bot_name = runtime.telegram_display_name();
-            let label = if bot_name.is_empty() {
-                "bot".to_string()
-            } else {
-                bot_name
-            };
-            // truncate long responses to avoid dominating the ring buffer
-            let truncated: String = text.chars().take(500).collect();
-            chat_buffer.push(
-                chat_id,
-                thread_id,
-                BufferedMessage {
-                    user_name: label,
-                    user_id: None,
-                    text: truncated,
-                    images: vec![],
-                    received_at: std::time::Instant::now(),
-                },
+    // helper: buffer a bot response so it appears in chat history context
+    let buffer_bot_reply = |text: &str| {
+        if text.is_empty() {
+            return;
+        }
+        let bot_name = runtime.telegram_display_name();
+        let label = if bot_name.is_empty() {
+            "bot".to_string()
+        } else {
+            bot_name
+        };
+        // truncate long responses to avoid dominating the ring buffer
+        let truncated: String = text.chars().take(500).collect();
+        chat_buffer.push(
+            chat_id,
+            thread_id,
+            BufferedMessage {
+                user_name: label,
+                user_id: None,
+                text: truncated,
+                images: vec![],
+                received_at: std::time::Instant::now(),
+            },
+        );
+    };
+
+    if let Some(("switch", args)) = parse_slash_command(&record.content) {
+        let msg = handle_switch_command(args, client.clone(), &db);
+        buffer_bot_reply(&msg);
+        send_response(
+            sink,
+            crate::message::OutboundMessage {
+                content: msg,
+                voice: None,
+                attachments: vec![],
+            },
+        )
+        .await;
+        mark_queue_done(&db, queue_id);
+        return;
+    }
+
+    if let Some(("rules", args)) = parse_slash_command(&record.content) {
+        let msg = handle_rules_command(args, &db);
+        buffer_bot_reply(&msg);
+        send_response(
+            sink,
+            crate::message::OutboundMessage {
+                content: msg,
+                voice: None,
+                attachments: vec![],
+            },
+        )
+        .await;
+        mark_queue_done(&db, queue_id);
+        return;
+    }
+
+    let provider = match provider_for_session(client.clone(), &db) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(%e, "provider init failed");
+            send_error(sink, &format!("error: {e}")).await;
+            mark_queue_done(&db, queue_id);
+            return;
+        }
+    };
+
+    let (approver, cold_prompter) = match &sink {
+        ResponseSink::Telegram {
+            chat_id,
+            thread_id,
+            bot,
+        } => {
+            let approver = AnyApprover::Telegram(TelegramApprover::new(
+                Arc::clone(bot),
+                *chat_id,
+                *thread_id,
+                Arc::clone(&pending),
+                Arc::clone(&db),
+            ));
+            let cold = ColdResumePrompter::new(
+                Arc::clone(bot),
+                *chat_id,
+                *thread_id,
+                Arc::clone(&pending_cold),
             );
-        };
-
-        if let Some(("switch", args)) = parse_slash_command(&queued.content) {
-            let msg = handle_switch_command(args, client.clone(), &db);
-            buffer_bot_reply(&msg);
-            send_response(
-                queued.sink,
-                crate::message::OutboundMessage {
-                    content: msg,
-                    voice: None,
-                    attachments: vec![],
-                },
-            )
-            .await;
-            continue;
+            (approver, Some(cold))
         }
+    };
 
-        if let Some(("rules", args)) = parse_slash_command(&queued.content) {
-            let msg = handle_rules_command(args, &db);
-            buffer_bot_reply(&msg);
-            send_response(
-                queued.sink,
-                crate::message::OutboundMessage {
-                    content: msg,
-                    voice: None,
-                    attachments: vec![],
-                },
-            )
-            .await;
-            continue;
+    let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone())
+        .with_skills(Arc::clone(&skills))
+        .with_chat_buffer(Arc::clone(&chat_buffer))
+        .with_runtime(Arc::clone(&runtime));
+    if let Some(cold) = cold_prompter {
+        agent = agent.with_cold_resume_prompter(cold);
+    }
+    if let Some(ref mcp) = mcp {
+        agent = agent.with_mcp(Arc::clone(mcp));
+    }
+    let inbound = InboundMessage {
+        channel,
+        content: record.content,
+        images: record.images,
+    };
+
+    // send "typing" indicator while the agent processes.
+    // telegram's indicator expires after ~5s, so we re-send every 4s.
+    let typing_bot = match &sink {
+        ResponseSink::Telegram { chat_id, bot, .. } => Some((*chat_id, Arc::clone(bot))),
+    };
+    let typing_handle = typing_bot.map(|(chat_id, bot)| {
+        tokio::spawn(async move {
+            loop {
+                let _ = bot.send_chat_action(chat_id, "typing").await;
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            }
+        })
+    });
+
+    let result = agent.process(&inbound).await;
+
+    // stop typing indicator
+    if let Some(handle) = typing_handle {
+        handle.abort();
+    }
+
+    match result {
+        Ok(Some(outbound)) => {
+            buffer_bot_reply(&outbound.content);
+            send_response(sink, outbound).await;
         }
-
-        let provider = match provider_for_session(client.clone(), &db) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(%e, "provider init failed");
-                send_error(queued.sink, &format!("error: {e}")).await;
-                continue;
-            }
-        };
-
-        let (approver, cold_prompter) = match &queued.sink {
-            ResponseSink::Telegram {
-                chat_id,
-                thread_id,
-                bot,
-            } => {
-                let approver = AnyApprover::Telegram(TelegramApprover::new(
-                    Arc::clone(bot),
-                    *chat_id,
-                    *thread_id,
-                    Arc::clone(&pending),
-                    Arc::clone(&db),
-                ));
-                let cold = ColdResumePrompter::new(
-                    Arc::clone(bot),
-                    *chat_id,
-                    *thread_id,
-                    Arc::clone(&pending_cold),
-                );
-                (approver, Some(cold))
-            }
-        };
-
-        let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone())
-            .with_skills(Arc::clone(&skills))
-            .with_chat_buffer(Arc::clone(&chat_buffer))
-            .with_runtime(Arc::clone(&runtime));
-        if let Some(cold) = cold_prompter {
-            agent = agent.with_cold_resume_prompter(cold);
+        Ok(None) => tracing::debug!("agent completed silently"),
+        Err(error::Error::RateLimited(ref msg)) => {
+            tracing::warn!(%msg, "rate limited");
+            send_error(sink, &format!("rate limited: {msg}")).await;
         }
-        if let Some(ref mcp) = mcp {
-            agent = agent.with_mcp(Arc::clone(mcp));
+        Err(error::Error::BudgetExhausted(ref msg)) => {
+            tracing::error!(%msg, "budget exhausted, fallback also failed");
+            let help = format!(
+                "budget exhausted: {msg}\n\n\
+                 automatic fallback failed. use `/switch <provider>` to \
+                 switch manually (e.g. `/switch gemini`, `/switch openai`, \
+                 or `/switch anthropic`)."
+            );
+            send_error(sink, &help).await;
         }
-        let inbound = InboundMessage {
-            channel: queued.channel,
-            content: queued.content,
-            images: queued.images,
-        };
-
-        // send "typing" indicator while the agent processes.
-        // telegram's indicator expires after ~5s, so we re-send every 4s.
-        let typing_bot = match &queued.sink {
-            ResponseSink::Telegram { chat_id, bot, .. } => Some((*chat_id, Arc::clone(bot))),
-        };
-        let typing_handle = typing_bot.map(|(chat_id, bot)| {
-            tokio::spawn(async move {
-                loop {
-                    let _ = bot.send_chat_action(chat_id, "typing").await;
-                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                }
-            })
-        });
-
-        let result = agent.process(&inbound).await;
-
-        // stop typing indicator
-        if let Some(handle) = typing_handle {
-            handle.abort();
+        Err(e) => {
+            tracing::error!(%e, "agent processing failed");
+            send_error(sink, &format!("error: {e}")).await;
         }
+    }
 
-        match result {
-            Ok(Some(outbound)) => {
-                buffer_bot_reply(&outbound.content);
-                send_response(queued.sink, outbound).await;
-            }
-            Ok(None) => tracing::debug!("agent completed silently"),
-            Err(error::Error::RateLimited(ref msg)) => {
-                tracing::warn!(%msg, "rate limited");
-                send_error(queued.sink, &format!("rate limited: {msg}")).await;
-            }
-            Err(error::Error::BudgetExhausted(ref msg)) => {
-                tracing::error!(%msg, "budget exhausted, fallback also failed");
-                let help = format!(
-                    "budget exhausted: {msg}\n\n\
-                     automatic fallback failed. use `/switch <provider>` to \
-                     switch manually (e.g. `/switch gemini`, `/switch openai`, \
-                     or `/switch anthropic`)."
-                );
-                send_error(queued.sink, &help).await;
-            }
-            Err(e) => {
-                tracing::error!(%e, "agent processing failed");
-                send_error(queued.sink, &format!("error: {e}")).await;
-            }
-        }
+    mark_queue_done(&db, queue_id);
+}
 
-        if crate::signal::restart_requested() {
-            #[cfg(unix)]
-            match crate::signal::do_exec_restart() {
-                // do_exec_restart never returns Ok — exec replaces the process
-                Err(e) => {
-                    tracing::error!(%e, "exec restart failed, continuing normally");
-                }
-            }
-        }
+fn mark_queue_done(db: &Database, queue_id: i64) {
+    if let Err(e) = db.mark_message_done(queue_id) {
+        tracing::warn!(%e, queue_id, "failed to mark queue row done");
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn telegram_producer(
     bot: Arc<TelegramBot>,
-    tx: crate::queue::MessageSender,
+    tx: crate::queue::WakeSender,
     pending: Arc<PendingApprovals>,
     pending_cold: Arc<PendingColdResumes>,
     db: Arc<Database>,
@@ -760,19 +912,26 @@ async fn telegram_producer(
                 format!("[from: {sender_name} (DM)]\n{text}")
             };
 
-            // push to queue
-            let queued = QueuedMessage {
-                channel: ChannelKind::Telegram,
-                content,
-                images,
-                sink: ResponseSink::Telegram {
+            match db.enqueue_message(
+                ChannelKind::Telegram,
+                chat_id,
+                msg.message_thread_id,
+                &content,
+                &images,
+            ) {
+                Ok(queue_id) => tracing::info!(
+                    queue_id,
                     chat_id,
-                    thread_id: msg.message_thread_id,
-                    bot: Arc::clone(&bot),
-                },
-            };
+                    thread_id = ?msg.message_thread_id,
+                    "queued telegram message"
+                ),
+                Err(e) => {
+                    tracing::error!(%e, chat_id, "failed to persist telegram message");
+                    continue;
+                }
+            }
 
-            if tx.send(queued).await.is_err() {
+            if tx.send(()).await.is_err() {
                 tracing::error!("agent loop stopped, exiting telegram producer");
                 return;
             }
@@ -913,5 +1072,28 @@ mod tests {
         };
         assert!(!b.is_reply_to_bot(Some(&other_msg)));
         assert!(!b.is_reply_to_bot(None));
+    }
+
+    #[test]
+    fn test_startup_model_note_records_restart_silently() {
+        let event = RuntimeEvent {
+            source: "cli_restart".into(),
+            reason: "ava restart".into(),
+            occurred_at: "2026-05-08T12:00:00Z".into(),
+        };
+
+        let note = startup_model_note(Some(&event));
+
+        assert!(note.contains("ava restarted"));
+        assert!(note.contains("ava restart"));
+        assert!(note.contains("no external restart notice was sent"));
+    }
+
+    #[test]
+    fn test_startup_model_note_records_plain_start() {
+        let note = startup_model_note(None);
+
+        assert!(note.contains("ava started"));
+        assert!(!note.contains("no external restart notice was sent"));
     }
 }
