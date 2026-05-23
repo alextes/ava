@@ -31,6 +31,11 @@ pub(crate) fn run_upgrade() -> Result<(), error::Error> {
         println!("signaling running ava (pid {pid}) to restart...");
         let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGUSR1) };
         if ret == 0 {
+            if let Err(e) = crate::db::Database::open()
+                .and_then(|db| db.record_runtime_event("self_upgrade", "ava upgrade"))
+            {
+                println!("warning: failed to record restart event: {e}");
+            }
             println!("done — ava will restart after finishing current work");
         } else {
             let err = std::io::Error::last_os_error();

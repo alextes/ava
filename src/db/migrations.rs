@@ -256,6 +256,33 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN output_tokens INTEGER;
     ALTER TABLE messages ADD COLUMN reasoning_tokens INTEGER;
     "#,
+    // v19: small persisted daemon/runtime state
+    r#"
+    CREATE TABLE IF NOT EXISTS app_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    "#,
+    // v20: durable inbound queue for accepted work
+    r#"
+    CREATE TABLE IF NOT EXISTS queued_messages (
+        id INTEGER PRIMARY KEY,
+        channel TEXT NOT NULL CHECK (channel IN ('telegram', 'cli')),
+        chat_id INTEGER NOT NULL,
+        thread_id INTEGER,
+        content TEXT NOT NULL,
+        images_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'failed')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at TEXT,
+        finished_at TEXT,
+        error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_queued_messages_status_id
+        ON queued_messages(status, id);
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

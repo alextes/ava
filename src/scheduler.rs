@@ -8,8 +8,7 @@ use tokio::time::Instant;
 
 use crate::db::Database;
 use crate::message::ChannelKind;
-use crate::queue::{MessageSender, QueuedMessage, ResponseSink};
-use crate::telegram::TelegramBot;
+use crate::queue::WakeSender;
 
 /// default interval between task board nudges (30 minutes)
 const DEFAULT_TASK_CHECK_INTERVAL_SECS: u64 = 1800;
@@ -22,12 +21,7 @@ fn task_check_interval() -> Duration {
     Duration::from_secs(secs)
 }
 
-pub async fn run(
-    db: Arc<Database>,
-    tx: MessageSender,
-    bot: Arc<TelegramBot>,
-    default_chat_id: i64,
-) {
+pub async fn run(db: Arc<Database>, tx: WakeSender, default_chat_id: i64) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     let task_check_interval = task_check_interval();
     // start with last_nudge far enough in the past to allow an immediate first check
@@ -53,18 +47,18 @@ pub async fn run(
                 "firing schedule"
             );
 
-            let queued = QueuedMessage {
-                channel: ChannelKind::Telegram,
-                content: schedule.prompt.clone(),
-                images: Vec::new(),
-                sink: ResponseSink::Telegram {
-                    chat_id: default_chat_id,
-                    thread_id: None,
-                    bot: Arc::clone(&bot),
-                },
-            };
+            if let Err(e) = db.enqueue_message(
+                ChannelKind::Telegram,
+                default_chat_id,
+                None,
+                &schedule.prompt,
+                &[],
+            ) {
+                tracing::error!(%e, schedule_id = schedule.id, "failed to queue schedule");
+                continue;
+            }
 
-            if tx.send(queued).await.is_err() {
+            if tx.send(()).await.is_err() {
                 tracing::error!("agent loop stopped, exiting scheduler");
                 return;
             }
@@ -103,21 +97,19 @@ pub async fn run(
         let count = pending.len();
         tracing::info!(count, "nudging agent about pending tasks");
 
-        let queued = QueuedMessage {
-            channel: ChannelKind::Telegram,
-            content: format!(
-                "you have {count} pending task{}. review your task list and make progress where possible.",
-                if count == 1 { "" } else { "s" }
-            ),
-            images: Vec::new(),
-            sink: ResponseSink::Telegram {
-                chat_id: default_chat_id,
-                thread_id: None,
-                bot: Arc::clone(&bot),
-            },
-        };
+        let content = format!(
+            "you have {count} pending task{}. review your task list and make progress where possible.",
+            if count == 1 { "" } else { "s" }
+        );
 
-        if tx.send(queued).await.is_err() {
+        if let Err(e) =
+            db.enqueue_message(ChannelKind::Telegram, default_chat_id, None, &content, &[])
+        {
+            tracing::error!(%e, "failed to queue task nudge");
+            continue;
+        }
+
+        if tx.send(()).await.is_err() {
             tracing::error!("agent loop stopped, exiting scheduler");
             return;
         }

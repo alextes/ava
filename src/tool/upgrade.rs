@@ -66,7 +66,12 @@ fn run_upgrade() -> String {
             // when the process doesn't exist
             let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGUSR1) };
             if ret == 0 {
-                result.push_str(&format!(" signaled running ava (pid {pid}) to restart."));
+                if let Err(e) = crate::db::Database::open()
+                    .and_then(|db| db.record_runtime_event("self_upgrade", "self_upgrade tool"))
+                {
+                    tracing::warn!(%e, "failed to record self-upgrade restart event");
+                }
+                result.push_str(&restart_signaled_message(pid));
             } else {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::ESRCH) {
@@ -88,6 +93,13 @@ fn run_upgrade() -> String {
     }
 
     result
+}
+
+fn restart_signaled_message(pid: u32) -> String {
+    format!(
+        " signaled running ava (pid {pid}) to restart after this response. \
+         the next turn will include restart context if recovery is needed."
+    )
 }
 
 #[cfg(test)]
@@ -118,5 +130,13 @@ mod tests {
         );
         assert!(result.switch_provider.is_none());
         assert!(!result.complete);
+    }
+
+    #[test]
+    fn test_restart_signaled_message_guides_model() {
+        let msg = restart_signaled_message(123);
+        assert!(msg.contains("restart after this response"));
+        assert!(msg.contains("restart context"));
+        assert!(!msg.contains("tell the user"));
     }
 }

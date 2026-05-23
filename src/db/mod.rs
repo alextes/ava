@@ -1,7 +1,9 @@
 mod access;
+mod app_state;
 pub(crate) mod channels;
 mod memory;
 mod migrations;
+mod queued_message;
 mod rules;
 mod schedule;
 pub(crate) mod session;
@@ -15,7 +17,9 @@ use rusqlite::Connection;
 use crate::config::default_db_path;
 use crate::error::Error;
 
+pub use app_state::RuntimeEvent;
 pub use memory::{Memory, MemoryKind, MemorySearchMode, MemorySearchOptions};
+pub use queued_message::QueuedRecord;
 pub use rules::{
     contains_command_substitution, generate_edit_pattern, generate_narrow_pattern,
     generate_pattern, generate_read_pattern,
@@ -65,7 +69,12 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 20);
+        db.set_app_state("migration_test", "ok").unwrap();
+        assert_eq!(
+            db.app_state("migration_test").unwrap().as_deref(),
+            Some("ok")
+        );
     }
 
     #[test]
@@ -76,7 +85,7 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -178,7 +187,7 @@ mod tests {
 
         // verify schema version is latest
         let version = migrations::schema_version(&conn).unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 20);
 
         // verify facts table is gone
         let table_exists: bool = conn
