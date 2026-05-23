@@ -312,9 +312,12 @@ mod tests {
     fn test_real_jpeg_image_roundtrip() {
         use base64::Engine;
 
-        // read the real jpeg file and base64-encode it
-        let jpeg_bytes =
-            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/unknown-animal.jpeg")).unwrap();
+        // read the real jpeg fixture and base64-encode it
+        let jpeg_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/unknown-animal.jpeg"
+        ))
+        .unwrap();
         let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
 
         // construct a tool result with text + image blocks
