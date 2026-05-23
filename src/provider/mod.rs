@@ -1,9 +1,11 @@
 mod anthropic;
+mod gemini;
 mod openai;
 mod openrouter;
 
 pub use crate::tool::ToolCall;
 pub use anthropic::AnthropicProvider;
+pub use gemini::GeminiProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
 
@@ -135,8 +137,9 @@ pub trait Provider: Send + Sync {
     /// where the whole conversation will be re-processed as uncached input.
     ///
     /// - anthropic: `Duration::from_secs(300)` (ephemeral, 5 min)
+    /// - gemini: `Duration::ZERO` (no explicit cachedContent is created)
     /// - openai: `Duration::from_secs(24 * 3600)` (24h retention hint)
-    /// - openrouter: `Duration::ZERO` (no cache control is sent)
+    /// - openrouter: `Duration::ZERO` (no explicit cache resource is created)
     fn cache_ttl(&self) -> Duration;
 }
 
@@ -144,6 +147,7 @@ pub trait Provider: Send + Sync {
 
 pub enum AnyProvider {
     Anthropic(AnthropicProvider),
+    Gemini(GeminiProvider),
     OpenAi(OpenAiProvider),
     OpenRouter(OpenRouterProvider),
     #[cfg(test)]
@@ -151,15 +155,32 @@ pub enum AnyProvider {
 }
 
 impl AnyProvider {
-    /// create the default provider from environment variables (anthropic)
+    /// create the default provider from environment variables.
+    /// anthropic wins when available to preserve the historical default.
     pub fn default_from_env(client: reqwest::Client) -> Result<Self, Error> {
-        Ok(Self::Anthropic(AnthropicProvider::from_env(client)?))
+        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            return Ok(Self::Anthropic(AnthropicProvider::from_env(client)?));
+        }
+        if std::env::var("GEMINI_API_KEY").is_ok() {
+            return Ok(Self::Gemini(GeminiProvider::from_env(client)?));
+        }
+        if std::env::var("OPENAI_API_KEY").is_ok() {
+            return Ok(Self::OpenAi(OpenAiProvider::from_env(client)?));
+        }
+        if std::env::var("OPENROUTER_API_KEY").is_ok() {
+            return Ok(Self::OpenRouter(OpenRouterProvider::from_env(client)?));
+        }
+
+        Err(Error::MissingApiKey(
+            "ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY",
+        ))
     }
 
     /// returns a `"provider/model"` identifier string (e.g. `"anthropic/claude-sonnet-4-6"`)
     pub fn model_id(&self) -> String {
         match self {
             Self::Anthropic(p) => format!("anthropic/{}", p.model_name()),
+            Self::Gemini(p) => format!("gemini/{}", p.model_name()),
             Self::OpenAi(p) => format!("openai/{}", p.model_name()),
             Self::OpenRouter(p) => format!("openrouter/{}", p.model_name()),
             #[cfg(test)]
@@ -170,6 +191,7 @@ impl AnyProvider {
     pub fn reasoning_effort(&self) -> ReasoningEffort {
         match self {
             Self::Anthropic(p) => p.reasoning_effort(),
+            Self::Gemini(p) => p.reasoning_effort(),
             Self::OpenAi(p) => p.reasoning_effort(),
             Self::OpenRouter(p) => p.reasoning_effort(),
             #[cfg(test)]
@@ -180,6 +202,7 @@ impl AnyProvider {
     pub fn set_reasoning_effort(&mut self, effort: ReasoningEffort) {
         match self {
             Self::Anthropic(p) => p.set_reasoning_effort(effort),
+            Self::Gemini(p) => p.set_reasoning_effort(effort),
             Self::OpenAi(p) => p.set_reasoning_effort(effort),
             Self::OpenRouter(p) => p.set_reasoning_effort(effort),
             #[cfg(test)]
@@ -192,6 +215,7 @@ impl AnyProvider {
             "openrouter/deepseek/deepseek-v4-pro" | "openrouter/deepseek/deepseek-v4-flash" => {
                 ReasoningEffort::High
             }
+            "gemini/gemini-3.5-flash" | "gemini/gemini-3.1-pro-preview" => ReasoningEffort::Medium,
             "openai/gpt-5.5" | "openai/gpt-5.4" | "openai/gpt-5-mini" => ReasoningEffort::Medium,
             _ => ReasoningEffort::None,
         }
@@ -207,13 +231,17 @@ impl AnyProvider {
                 model_id,
                 "openrouter/deepseek/deepseek-v4-pro"
                     | "openrouter/deepseek/deepseek-v4-flash"
+                    | "gemini/gemini-3.1-pro-preview"
                     | "anthropic/claude-opus-4-7"
             ),
         }
     }
 
     fn model_belongs_to_first_party_provider(model: &str) -> bool {
-        model.starts_with("anthropic/") || model.starts_with("openai/")
+        model.starts_with("anthropic/")
+            || model.starts_with("gemini/")
+            || model.starts_with("google/gemini")
+            || model.starts_with("openai/")
     }
 
     /// create a provider by name, for the switch_model tool.
@@ -236,6 +264,22 @@ impl AnyProvider {
                     p.set_model(m.to_string());
                 }
                 let mut p = Self::Anthropic(p);
+                let effort = Self::default_reasoning_effort(&p.model_id());
+                p.set_reasoning_effort(effort);
+                Ok(p)
+            }
+            "gemini" => {
+                let mut p = GeminiProvider::from_env(client)?;
+                if let Some(m) = model {
+                    if !gemini::ALLOWED_MODELS.contains(&m) {
+                        return Err(Error::Provider(format!(
+                            "model {m} not allowed for gemini. allowed: {}",
+                            gemini::ALLOWED_MODELS.join(", ")
+                        )));
+                    }
+                    p.set_model(m.to_string());
+                }
+                let mut p = Self::Gemini(p);
                 let effort = Self::default_reasoning_effort(&p.model_id());
                 p.set_reasoning_effort(effort);
                 Ok(p)
@@ -292,6 +336,7 @@ impl AnyProvider {
     pub fn provider_name(&self) -> &str {
         match self {
             Self::Anthropic(_) => "anthropic",
+            Self::Gemini(_) => "gemini",
             Self::OpenAi(_) => "openai",
             Self::OpenRouter(_) => "openrouter",
             #[cfg(test)]
@@ -302,6 +347,7 @@ impl AnyProvider {
     pub fn context_window(&self) -> u32 {
         match self {
             Self::Anthropic(p) => p.context_window(),
+            Self::Gemini(p) => p.context_window(),
             Self::OpenAi(p) => p.context_window(),
             Self::OpenRouter(p) => p.context_window(),
             #[cfg(test)]
@@ -313,6 +359,7 @@ impl AnyProvider {
     pub fn cache_ttl(&self) -> Duration {
         match self {
             Self::Anthropic(p) => p.cache_ttl(),
+            Self::Gemini(p) => p.cache_ttl(),
             Self::OpenAi(p) => p.cache_ttl(),
             Self::OpenRouter(p) => p.cache_ttl(),
             #[cfg(test)]
@@ -330,6 +377,7 @@ impl Provider for AnyProvider {
     ) -> Result<ProviderResponse, Error> {
         match self {
             Self::Anthropic(p) => p.complete(system_prompt, messages, tools).await,
+            Self::Gemini(p) => p.complete(system_prompt, messages, tools).await,
             Self::OpenAi(p) => p.complete(system_prompt, messages, tools).await,
             Self::OpenRouter(p) => p.complete(system_prompt, messages, tools).await,
             #[cfg(test)]
@@ -382,6 +430,13 @@ mod tests {
         let p = AnthropicProvider::new(test_client(), "test-key".into());
         let any = AnyProvider::Anthropic(p);
         assert_eq!(any.model_id(), "anthropic/claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn test_model_id_format_gemini() {
+        let p = GeminiProvider::new(test_client(), "test-key".into());
+        let any = AnyProvider::Gemini(p);
+        assert_eq!(any.model_id(), "gemini/gemini-3.5-flash");
     }
 
     #[test]
@@ -449,6 +504,10 @@ mod tests {
             ReasoningEffort::Medium
         );
         assert_eq!(
+            AnyProvider::default_reasoning_effort("gemini/gemini-3.5-flash"),
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
             AnyProvider::default_reasoning_effort("anthropic/claude-sonnet-4-6"),
             ReasoningEffort::None
         );
@@ -462,6 +521,14 @@ mod tests {
         ));
         assert!(!AnyProvider::supports_reasoning_effort(
             "openai/gpt-5.4",
+            ReasoningEffort::XHigh
+        ));
+        assert!(AnyProvider::supports_reasoning_effort(
+            "gemini/gemini-3.1-pro-preview",
+            ReasoningEffort::XHigh
+        ));
+        assert!(!AnyProvider::supports_reasoning_effort(
+            "gemini/gemini-3.5-flash",
             ReasoningEffort::XHigh
         ));
         assert!(!AnyProvider::supports_reasoning_effort(
@@ -484,6 +551,18 @@ mod tests {
         let err = AnyProvider::from_name(test_client(), "openrouter", Some("openai/gpt-5.5"))
             .err()
             .expect("openrouter should reject openai models");
+        assert!(err.to_string().contains("first-party provider"));
+
+        let err =
+            AnyProvider::from_name(test_client(), "openrouter", Some("gemini/gemini-3.5-flash"))
+                .err()
+                .expect("openrouter should reject gemini models");
+        assert!(err.to_string().contains("first-party provider"));
+
+        let err =
+            AnyProvider::from_name(test_client(), "openrouter", Some("google/gemini-3.5-flash"))
+                .err()
+                .expect("openrouter should reject google gemini models");
         assert!(err.to_string().contains("first-party provider"));
     }
 }

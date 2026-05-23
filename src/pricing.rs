@@ -45,6 +45,10 @@ pub fn base_input_usd_per_mtok(model_id: &str) -> Option<f64> {
         "openrouter/anthropic/claude-haiku-4-5" => Some(1.0),
         "anthropic/claude-haiku-3-5" => Some(0.80),
 
+        // gemini — google ai studio prices as of may 2026.
+        "gemini/gemini-3.5-flash" => Some(1.50),
+        "gemini/gemini-3.1-pro-preview" => Some(2.00),
+
         // openai — values from openai's pricing page (april 2026).
         // gpt-5.5 doubled the per-token price relative to gpt-5.4.
         "openai/gpt-5.5" => Some(5.0),

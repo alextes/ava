@@ -10,7 +10,7 @@ use crate::provider::{Provider, ProviderResponse, ReasoningEffort, StopReason, T
 use crate::tool::{BuiltInKind, ToolDefinition, text_editor_function_schema};
 
 const API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
+const DEFAULT_MODEL: &str = "deepseek/deepseek-v4-flash";
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct OpenRouterProvider {
@@ -57,7 +57,6 @@ impl OpenRouterProvider {
     pub fn context_window(&self) -> u32 {
         // known context windows for popular models
         match self.model.as_str() {
-            "google/gemini-2.5-flash" | "google/gemini-2.5-pro" => 1_048_576,
             "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash" => 1_048_576,
             "meta-llama/llama-4-maverick" => 1_048_576,
             _ => 128_000, // conservative default

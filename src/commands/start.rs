@@ -440,7 +440,8 @@ async fn agent_loop(
                 let help = format!(
                     "budget exhausted: {msg}\n\n\
                      automatic fallback failed. use `/switch <provider>` to \
-                     switch manually (e.g. `/switch openai` or `/switch anthropic`)."
+                     switch manually (e.g. `/switch gemini`, `/switch openai`, \
+                     or `/switch anthropic`)."
                 );
                 send_error(queued.sink, &help).await;
             }

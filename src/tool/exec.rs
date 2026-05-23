@@ -32,7 +32,13 @@ fn check_safety_filter(command: &str) -> Option<&'static str> {
 
 /// returns true if the command references sensitive env vars
 pub fn references_sensitive_env(command: &str) -> bool {
-    const SENSITIVE_VARS: &[&str] = &["ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN"];
+    const SENSITIVE_VARS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+    ];
     SENSITIVE_VARS.iter().any(|var| command.contains(var))
 }
 
@@ -246,6 +252,9 @@ mod tests {
     #[test]
     fn test_references_sensitive_env() {
         assert!(references_sensitive_env("echo $ANTHROPIC_API_KEY"));
+        assert!(references_sensitive_env("echo $GEMINI_API_KEY"));
+        assert!(references_sensitive_env("echo $OPENAI_API_KEY"));
+        assert!(references_sensitive_env("echo $OPENROUTER_API_KEY"));
         assert!(references_sensitive_env("echo $TELEGRAM_BOT_TOKEN"));
         assert!(!references_sensitive_env("echo hello"));
     }
