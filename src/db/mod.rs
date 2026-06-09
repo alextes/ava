@@ -69,7 +69,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         db.set_app_state("migration_test", "ok").unwrap();
         assert_eq!(
             db.app_state("migration_test").unwrap().as_deref(),
@@ -85,11 +85,11 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
-    fn test_v21_migration_adds_cost_metadata_columns() {
+    fn test_v21_migration_defaults_existing_messages_to_message_kind() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
@@ -104,6 +104,47 @@ mod tests {
                 id INTEGER PRIMARY KEY,
                 session_id INTEGER NOT NULL,
                 role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                channel TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                reasoning_tokens INTEGER
+            );
+            INSERT INTO messages (session_id, role, content)
+            VALUES (1, 'user', '[{"type":"text","text":"hello"}]');
+            "#,
+        )
+        .unwrap();
+
+        migrations::migrate(&conn).unwrap();
+
+        let kind: String = conn
+            .query_row("SELECT kind FROM messages WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kind, "message");
+        assert_eq!(migrations::schema_version(&conn).unwrap(), 22);
+    }
+
+    #[test]
+    fn test_v22_migration_adds_cost_metadata_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO schema_version (version) VALUES (21)", [])
+            .unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+                kind TEXT NOT NULL DEFAULT 'message',
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 channel TEXT,
@@ -127,7 +168,7 @@ mod tests {
         assert!(cols.contains(&"model_id".to_string()));
         assert!(cols.contains(&"cache_creation_tokens".to_string()));
         assert!(cols.contains(&"cache_read_tokens".to_string()));
-        assert_eq!(migrations::schema_version(&conn).unwrap(), 21);
+        assert_eq!(migrations::schema_version(&conn).unwrap(), 22);
     }
 
     #[test]
@@ -229,7 +270,7 @@ mod tests {
 
         // verify schema version is latest
         let version = migrations::schema_version(&conn).unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
 
         // verify facts table is gone
         let table_exists: bool = conn

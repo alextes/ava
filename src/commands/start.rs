@@ -4,15 +4,18 @@ use crate::agent::Agent;
 use crate::approver::{AnyApprover, PendingApprovals, TelegramApprover};
 use crate::chat_buffer::{BufferedMessage, ChatBuffer};
 use crate::cli::{
-    handle_rules_command, handle_switch_command, parse_slash_command, provider_for_session,
+    handle_rules_command, handle_switch_command, parse_slash_command, parse_steer_command,
+    provider_for_session,
 };
 use crate::cold_resume::{ColdResumePrompter, PendingColdResumes};
 use crate::db::{Database, QueuedRecord, RuntimeEvent};
 use crate::error;
 use crate::message::{ChannelKind, ImageSource, InboundMessage};
 use crate::queue::{ResponseSink, WakeReceiver, message_queue, send_error, send_response};
-use crate::runtime::RuntimeState;
+use crate::runtime::{PendingSteer, RuntimeState, SteerOrigin};
 use crate::telegram::TelegramBot;
+
+const STEER_REJECTION: &str = "no active turn to steer. send a normal message instead.";
 
 struct BotIdentity {
     id: i64,
@@ -384,13 +387,22 @@ async fn agent_loop(
                 }
             };
 
-            if let Err(e) = db.mark_message_processing(record.id) {
-                tracing::error!(%e, queue_id = record.id, "failed to mark queue row processing");
+            let records = match queue_batch_for_record(&db, record.clone()) {
+                Ok(records) => records,
+                Err(e) => {
+                    tracing::error!(%e, queue_id = record.id, "failed to load queue batch");
+                    break;
+                }
+            };
+
+            let queue_ids: Vec<i64> = records.iter().map(|r| r.id).collect();
+            if let Err(e) = db.mark_messages_processing(&queue_ids) {
+                tracing::error!(%e, ?queue_ids, "failed to mark queue rows processing");
                 break;
             }
 
             process_queued_record(
-                record,
+                records,
                 channel,
                 sink,
                 Arc::clone(&db),
@@ -417,6 +429,40 @@ async fn agent_loop(
     }
 }
 
+fn queue_batch_for_record(
+    db: &Database,
+    record: QueuedRecord,
+) -> Result<Vec<QueuedRecord>, error::Error> {
+    if is_control_command(&record.content) {
+        return Ok(vec![record]);
+    }
+
+    let mut batch = Vec::new();
+    for next in db.pending_messages_from(record.id)? {
+        if !same_queue_sink(&record, &next) || is_control_command(&next.content) {
+            break;
+        }
+        batch.push(next);
+    }
+
+    if batch.is_empty() {
+        Ok(vec![record])
+    } else {
+        Ok(batch)
+    }
+}
+
+fn same_queue_sink(a: &QueuedRecord, b: &QueuedRecord) -> bool {
+    a.channel == b.channel && a.chat_id == b.chat_id && a.thread_id == b.thread_id
+}
+
+fn is_control_command(content: &str) -> bool {
+    matches!(
+        parse_slash_command(content),
+        Some(("switch", _)) | Some(("rules", _))
+    )
+}
+
 fn response_sink_for_record(
     record: &QueuedRecord,
     telegram_bot: Option<&Arc<TelegramBot>>,
@@ -436,7 +482,7 @@ fn response_sink_for_record(
 
 #[allow(clippy::too_many_arguments)]
 async fn process_queued_record(
-    record: QueuedRecord,
+    records: Vec<QueuedRecord>,
     channel: ChannelKind,
     sink: ResponseSink,
     db: Arc<Database>,
@@ -448,7 +494,10 @@ async fn process_queued_record(
     chat_buffer: Arc<ChatBuffer>,
     runtime: Arc<RuntimeState>,
 ) {
-    let queue_id = record.id;
+    let Some(record) = records.first().cloned() else {
+        return;
+    };
+    let queue_ids: Vec<i64> = records.iter().map(|r| r.id).collect();
     let chat_id = sink.chat_id();
     let thread_id = sink.thread_id();
 
@@ -490,7 +539,7 @@ async fn process_queued_record(
             },
         )
         .await;
-        mark_queue_done(&db, queue_id);
+        mark_queue_done_many(&db, &queue_ids);
         return;
     }
 
@@ -506,7 +555,7 @@ async fn process_queued_record(
             },
         )
         .await;
-        mark_queue_done(&db, queue_id);
+        mark_queue_done_many(&db, &queue_ids);
         return;
     }
 
@@ -515,7 +564,7 @@ async fn process_queued_record(
         Err(e) => {
             tracing::error!(%e, "provider init failed");
             send_error(sink, &format!("error: {e}")).await;
-            mark_queue_done(&db, queue_id);
+            mark_queue_done_many(&db, &queue_ids);
             return;
         }
     };
@@ -553,10 +602,19 @@ async fn process_queued_record(
     if let Some(ref mcp) = mcp {
         agent = agent.with_mcp(Arc::clone(mcp));
     }
+    let content = records
+        .iter()
+        .map(|r| r.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let images = records
+        .iter()
+        .flat_map(|r| r.images.iter().cloned())
+        .collect();
     let inbound = InboundMessage {
         channel,
-        content: record.content,
-        images: record.images,
+        content,
+        images,
     };
 
     // send "typing" indicator while the agent processes.
@@ -572,8 +630,13 @@ async fn process_queued_record(
             }
         })
     });
+    let rejection_bot = match &sink {
+        ResponseSink::Telegram { bot, .. } => Arc::clone(bot),
+    };
 
+    runtime.begin_turn();
     let result = agent.process(&inbound).await;
+    let rejected_steers = runtime.close_turn();
 
     // stop typing indicator
     if let Some(handle) = typing_handle {
@@ -606,12 +669,35 @@ async fn process_queued_record(
         }
     }
 
-    mark_queue_done(&db, queue_id);
+    send_steer_rejections(&rejection_bot, rejected_steers).await;
+    mark_queue_done_many(&db, &queue_ids);
 }
 
-fn mark_queue_done(db: &Database, queue_id: i64) {
-    if let Err(e) = db.mark_message_done(queue_id) {
-        tracing::warn!(%e, queue_id, "failed to mark queue row done");
+async fn send_steer_rejections(bot: &Arc<TelegramBot>, steers: Vec<PendingSteer>) {
+    for steer in steers {
+        if let Err(e) = bot
+            .send_message(
+                steer.origin.chat_id,
+                STEER_REJECTION,
+                steer.origin.thread_id,
+            )
+            .await
+        {
+            tracing::warn!(
+                %e,
+                chat_id = steer.origin.chat_id,
+                thread_id = ?steer.origin.thread_id,
+                "failed to send steer rejection"
+            );
+        }
+    }
+}
+
+fn mark_queue_done_many(db: &Database, queue_ids: &[i64]) {
+    for queue_id in queue_ids {
+        if let Err(e) = db.mark_message_done(*queue_id) {
+            tracing::warn!(%e, queue_id, "failed to mark queue row done");
+        }
     }
 }
 
@@ -826,6 +912,38 @@ async fn telegram_producer(
             // track channel activity
             let _ = db.upsert_channel(chat_id, chat_type, msg.chat.title.as_deref());
 
+            if let Some(steer) = parse_steer_command(&text, Some(&bot_identity.username)) {
+                let steer = steer.trim();
+                if steer.is_empty() {
+                    continue;
+                }
+                let origin = SteerOrigin {
+                    chat_id,
+                    thread_id: msg.message_thread_id,
+                };
+                if runtime.try_push_steer(steer, origin) {
+                    tracing::info!(
+                        chat_id,
+                        thread_id = ?msg.message_thread_id,
+                        "accepted telegram steer for active turn"
+                    );
+                    continue;
+                }
+
+                if let Err(e) = bot
+                    .send_message(chat_id, STEER_REJECTION, msg.message_thread_id)
+                    .await
+                {
+                    tracing::warn!(
+                        %e,
+                        chat_id,
+                        thread_id = ?msg.message_thread_id,
+                        "failed to send inactive steer rejection"
+                    );
+                }
+                continue;
+            }
+
             // buffer message for context (all authorized messages, not just those that trigger the agent)
             let buffer_text = if text.is_empty() {
                 "[photo]".to_string()
@@ -949,6 +1067,52 @@ mod tests {
             id: 123,
             username: "ren_bot".into(),
         }
+    }
+
+    #[test]
+    fn test_queue_batch_combines_contiguous_same_sink_normals() {
+        let db = Database::open_in_memory().unwrap();
+        let first = db
+            .enqueue_message(ChannelKind::Telegram, 1, Some(7), "first", &[])
+            .unwrap();
+        let second = db
+            .enqueue_message(ChannelKind::Telegram, 1, Some(7), "second", &[])
+            .unwrap();
+
+        let record = db.next_pending_message().unwrap().unwrap();
+        let batch = queue_batch_for_record(&db, record).unwrap();
+        let ids: Vec<i64> = batch.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![first, second]);
+    }
+
+    #[test]
+    fn test_queue_batch_stops_at_different_thread() {
+        let db = Database::open_in_memory().unwrap();
+        let first = db
+            .enqueue_message(ChannelKind::Telegram, 1, Some(7), "first", &[])
+            .unwrap();
+        db.enqueue_message(ChannelKind::Telegram, 1, Some(8), "second", &[])
+            .unwrap();
+
+        let record = db.next_pending_message().unwrap().unwrap();
+        let batch = queue_batch_for_record(&db, record).unwrap();
+        let ids: Vec<i64> = batch.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![first]);
+    }
+
+    #[test]
+    fn test_queue_batch_stops_before_control_command() {
+        let db = Database::open_in_memory().unwrap();
+        let first = db
+            .enqueue_message(ChannelKind::Telegram, 1, None, "first", &[])
+            .unwrap();
+        db.enqueue_message(ChannelKind::Telegram, 1, None, "/switch openai", &[])
+            .unwrap();
+
+        let record = db.next_pending_message().unwrap().unwrap();
+        let batch = queue_batch_for_record(&db, record).unwrap();
+        let ids: Vec<i64> = batch.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![first]);
     }
 
     #[test]

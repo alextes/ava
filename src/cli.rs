@@ -115,6 +115,28 @@ pub(crate) fn parse_slash_command(input: &str) -> Option<(&str, &str)> {
     Some((cmd, args))
 }
 
+pub(crate) fn parse_steer_command<'a>(
+    input: &'a str,
+    bot_username: Option<&str>,
+) -> Option<&'a str> {
+    let (cmd, args) = parse_slash_command(input)?;
+    if cmd.eq_ignore_ascii_case("steer") {
+        return Some(args);
+    }
+
+    let (base, mention) = cmd.split_once('@')?;
+    if !base.eq_ignore_ascii_case("steer") {
+        return None;
+    }
+
+    let bot_username = bot_username?;
+    if mention.eq_ignore_ascii_case(bot_username) {
+        Some(args)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn effective_reasoning_effort(
     db: &Database,
     session_id: i64,
@@ -130,6 +152,36 @@ pub(crate) fn effective_reasoning_effort(
     match db.model_reasoning_preference(session_id, model_id) {
         Ok(Some(effort)) if AnyProvider::supports_reasoning_effort(model_id, effort) => effort,
         _ => AnyProvider::default_reasoning_effort(model_id),
+    }
+}
+
+#[cfg(test)]
+mod steer_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_steer_command_plain() {
+        assert_eq!(
+            parse_steer_command("/steer keep it short", None),
+            Some("keep it short")
+        );
+    }
+
+    #[test]
+    fn test_parse_steer_command_with_bot_mention() {
+        assert_eq!(
+            parse_steer_command("/steer@ren_bot use bullets", Some("ren_bot")),
+            Some("use bullets")
+        );
+        assert_eq!(
+            parse_steer_command("/steer@other_bot use bullets", Some("ren_bot")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_steer_command_empty_args() {
+        assert_eq!(parse_steer_command("/steer", None), Some(""));
     }
 }
 

@@ -101,7 +101,9 @@ fn print_message(msg: &HistoryMessage, mode: &HistoryMode) {
             .iter()
             .any(|b| matches!(b, MessageContent::ToolResult { .. }));
 
-    let (role, role_color) = if is_tool_results {
+    let (role, role_color) = if msg.kind == crate::message::MessageKind::Steer {
+        ("steer", YELLOW)
+    } else if is_tool_results {
         ("tool result", MAGENTA)
     } else {
         match msg.role {
@@ -273,6 +275,7 @@ mod tests {
         let msg = HistoryMessage {
             id: 1,
             role: Role::Assistant,
+            kind: crate::message::MessageKind::Message,
             content: vec![MessageContent::text("hi")],
             created_at: "now".into(),
             model_id: Some("anthropic/claude-sonnet-4-6".into()),
@@ -294,6 +297,7 @@ mod tests {
         let msg = HistoryMessage {
             id: 1,
             role: Role::Assistant,
+            kind: crate::message::MessageKind::Message,
             content: vec![MessageContent::text("hi")],
             created_at: "now".into(),
             model_id: Some("unknown/model".into()),

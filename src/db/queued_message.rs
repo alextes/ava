@@ -114,14 +114,93 @@ impl Database {
         }))
     }
 
-    pub fn mark_message_processing(&self, id: i64) -> Result<(), Error> {
+    pub fn pending_messages_from(&self, start_id: i64) -> Result<Vec<QueuedRecord>, Error> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE queued_messages
-             SET status = 'processing', started_at = datetime('now'), finished_at = NULL, error = NULL
-             WHERE id = ?1",
-            [id],
+        let mut stmt = conn.prepare(
+            "SELECT id, channel, chat_id, thread_id, content, images_json, status,
+                    created_at, started_at, finished_at, error
+             FROM queued_messages
+             WHERE status = 'pending' AND id >= ?1
+             ORDER BY id ASC",
         )?;
+
+        let rows = stmt
+            .query_map([start_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    channel,
+                    chat_id,
+                    thread_id,
+                    content,
+                    images_json,
+                    status,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    error,
+                )| {
+                    let images = serde_json::from_str(&images_json).map_err(|e| {
+                        Error::Provider(format!("failed to deserialize queued images: {e}"))
+                    })?;
+                    Ok(QueuedRecord {
+                        id,
+                        channel,
+                        chat_id,
+                        thread_id,
+                        content,
+                        images,
+                        status,
+                        created_at,
+                        started_at,
+                        finished_at,
+                        error,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    pub fn mark_messages_processing(&self, ids: &[i64]) -> Result<(), Error> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE queued_messages
+                 SET status = 'processing', started_at = datetime('now'), finished_at = NULL, error = NULL
+                 WHERE id = ?1 AND status = 'pending'",
+            )?;
+            for id in ids {
+                let updated = stmt.execute([id])?;
+                if updated != 1 {
+                    return Err(Error::Provider(format!(
+                        "queued message {id} is no longer pending"
+                    )));
+                }
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -214,7 +293,7 @@ mod tests {
             .enqueue_message(ChannelKind::Telegram, 1, None, "retry me", &[])
             .unwrap();
 
-        db.mark_message_processing(id).unwrap();
+        db.mark_messages_processing(&[id]).unwrap();
         assert_eq!(db.next_pending_message().unwrap(), None);
 
         assert_eq!(db.reset_processing_messages().unwrap(), 1);
@@ -235,5 +314,37 @@ mod tests {
         db.mark_message_failed(id, "provider failed").unwrap();
 
         assert_eq!(db.next_pending_message().unwrap(), None);
+    }
+    #[test]
+    fn test_pending_messages_from_preserves_pending_order() {
+        let db = Database::open_in_memory().unwrap();
+        let first = db
+            .enqueue_message(ChannelKind::Telegram, 1, None, "first", &[])
+            .unwrap();
+        let second = db
+            .enqueue_message(ChannelKind::Telegram, 1, None, "second", &[])
+            .unwrap();
+        let third = db
+            .enqueue_message(ChannelKind::Telegram, 1, None, "third", &[])
+            .unwrap();
+
+        let rows = db.pending_messages_from(first).unwrap();
+        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![first, second, third]);
+    }
+
+    #[test]
+    fn test_mark_messages_processing_rolls_back_when_any_row_is_not_pending() {
+        let db = Database::open_in_memory().unwrap();
+        let first = db
+            .enqueue_message(ChannelKind::Telegram, 1, None, "first", &[])
+            .unwrap();
+
+        assert!(db.mark_messages_processing(&[first, first + 100]).is_err());
+
+        let next = db.next_pending_message().unwrap().unwrap();
+        assert_eq!(next.id, first);
+        assert_eq!(next.status, "pending");
+        assert_eq!(next.started_at, None);
     }
 }

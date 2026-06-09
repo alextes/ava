@@ -13,6 +13,33 @@ pub enum Role {
     System,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageKind {
+    Message,
+    Steer,
+}
+
+impl MessageKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageKind::Message => "message",
+            MessageKind::Steer => "steer",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Self {
+        match value {
+            "message" => MessageKind::Message,
+            "steer" => MessageKind::Steer,
+            other => {
+                tracing::warn!(kind = other, "unknown message kind, treating as message");
+                MessageKind::Message
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,

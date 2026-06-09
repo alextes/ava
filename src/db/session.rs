@@ -2,7 +2,7 @@ use rusqlite::OptionalExtension;
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::message::{Message, MessageContent, Role};
+use crate::message::{Message, MessageContent, MessageKind, Role};
 use crate::provider::{ReasoningEffort, Usage};
 
 use super::Database;
@@ -12,6 +12,7 @@ use super::Database;
 pub struct HistoryMessage {
     pub id: i64,
     pub role: Role,
+    pub kind: MessageKind,
     pub content: Vec<MessageContent>,
     pub created_at: String,
     pub model_id: Option<String>,
@@ -119,7 +120,7 @@ impl Database {
     ) -> Result<Vec<HistoryMessage>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at, model_id, input_tokens,
+            "SELECT id, role, kind, content, created_at, model_id, input_tokens,
                     output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens
              FROM messages
              WHERE session_id = ?1
@@ -131,17 +132,20 @@ impl Database {
             .query_map(rusqlite::params![session_id, limit], |row| {
                 let id: i64 = row.get(0)?;
                 let role_str: String = row.get(1)?;
-                let content_json: String = row.get(2)?;
-                let created_at: String = row.get(3)?;
-                let model_id: Option<String> = row.get(4)?;
-                let input_tokens: Option<u32> = row.get(5)?;
-                let output_tokens: Option<u32> = row.get(6)?;
-                let reasoning_tokens: Option<u32> = row.get(7)?;
-                let cache_creation_tokens: Option<u32> = row.get(8)?;
-                let cache_read_tokens: Option<u32> = row.get(9)?;
+                let kind_str: String = row.get(2)?;
+                let kind = MessageKind::from_db(&kind_str);
+                let content_json: String = row.get(3)?;
+                let created_at: String = row.get(4)?;
+                let model_id: Option<String> = row.get(5)?;
+                let input_tokens: Option<u32> = row.get(6)?;
+                let output_tokens: Option<u32> = row.get(7)?;
+                let reasoning_tokens: Option<u32> = row.get(8)?;
+                let cache_creation_tokens: Option<u32> = row.get(9)?;
+                let cache_read_tokens: Option<u32> = row.get(10)?;
                 Ok((
                     id,
                     role_str,
+                    kind,
                     content_json,
                     created_at,
                     model_id,
@@ -158,6 +162,7 @@ impl Database {
         for (
             id,
             role_str,
+            kind,
             content_json,
             created_at,
             model_id,
@@ -179,6 +184,7 @@ impl Database {
             result.push(HistoryMessage {
                 id,
                 role,
+                kind,
                 content,
                 created_at,
                 model_id,
@@ -204,7 +210,7 @@ impl Database {
     ) -> Result<Vec<HistoryMessage>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at, model_id, input_tokens,
+            "SELECT id, role, kind, content, created_at, model_id, input_tokens,
                     output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens
              FROM messages
              WHERE session_id = ?1 AND id > ?2
@@ -215,17 +221,20 @@ impl Database {
             .query_map(rusqlite::params![session_id, after_id], |row| {
                 let id: i64 = row.get(0)?;
                 let role_str: String = row.get(1)?;
-                let content_json: String = row.get(2)?;
-                let created_at: String = row.get(3)?;
-                let model_id: Option<String> = row.get(4)?;
-                let input_tokens: Option<u32> = row.get(5)?;
-                let output_tokens: Option<u32> = row.get(6)?;
-                let reasoning_tokens: Option<u32> = row.get(7)?;
-                let cache_creation_tokens: Option<u32> = row.get(8)?;
-                let cache_read_tokens: Option<u32> = row.get(9)?;
+                let kind_str: String = row.get(2)?;
+                let kind = MessageKind::from_db(&kind_str);
+                let content_json: String = row.get(3)?;
+                let created_at: String = row.get(4)?;
+                let model_id: Option<String> = row.get(5)?;
+                let input_tokens: Option<u32> = row.get(6)?;
+                let output_tokens: Option<u32> = row.get(7)?;
+                let reasoning_tokens: Option<u32> = row.get(8)?;
+                let cache_creation_tokens: Option<u32> = row.get(9)?;
+                let cache_read_tokens: Option<u32> = row.get(10)?;
                 Ok((
                     id,
                     role_str,
+                    kind,
                     content_json,
                     created_at,
                     model_id,
@@ -242,6 +251,7 @@ impl Database {
         for (
             id,
             role_str,
+            kind,
             content_json,
             created_at,
             model_id,
@@ -263,6 +273,7 @@ impl Database {
             result.push(HistoryMessage {
                 id,
                 role,
+                kind,
                 content,
                 created_at,
                 model_id,
@@ -299,13 +310,58 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO messages (session_id, role, content, channel)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![session_id, role, content_json, channel],
+            "INSERT INTO messages (session_id, role, kind, content, channel)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                session_id,
+                role,
+                MessageKind::Message.as_str(),
+                content_json,
+                channel
+            ],
         )?;
         let message_id = conn.last_insert_rowid();
 
         // update session timestamp
+        conn.execute(
+            "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
+            [session_id],
+        )?;
+
+        Ok(message_id)
+    }
+
+    pub fn append_message_with_kind(
+        &self,
+        session_id: i64,
+        role: &str,
+        kind: MessageKind,
+        content: &[MessageContent],
+        channel: Option<&str>,
+    ) -> Result<i64, Error> {
+        if content
+            .iter()
+            .any(|c| matches!(c, MessageContent::Text { text } if text.is_empty()))
+        {
+            tracing::warn!(
+                role,
+                kind = kind.as_str(),
+                "refusing to persist message with empty text block"
+            );
+            return Ok(0);
+        }
+
+        let content_json = serde_json::to_string(content)
+            .map_err(|e| Error::Provider(format!("failed to serialize message: {e}")))?;
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO messages (session_id, role, kind, content, channel)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![session_id, role, kind.as_str(), content_json, channel],
+        )?;
+        let message_id = conn.last_insert_rowid();
+
         conn.execute(
             "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
             [session_id],
@@ -984,6 +1040,7 @@ mod tests {
         let msgs = db.load_recent_messages(sid, 2).unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, Role::Assistant);
+        assert_eq!(msgs[0].kind, MessageKind::Message);
         assert_eq!(msgs[1].role, Role::User);
         assert!(!msgs[0].created_at.is_empty());
 
@@ -991,6 +1048,29 @@ mod tests {
             MessageContent::Text { text } => assert_eq!(text, "third"),
             _ => panic!("expected text content"),
         }
+    }
+
+    #[test]
+    fn test_append_message_with_kind_round_trip_for_history_and_replay() {
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+
+        db.append_message_with_kind(
+            sid,
+            "system",
+            MessageKind::Steer,
+            &[MessageContent::text("[system: steer here]")],
+            None,
+        )
+        .unwrap();
+
+        let recent = db.load_recent_messages(sid, 1).unwrap();
+        assert_eq!(recent[0].role, Role::System);
+        assert_eq!(recent[0].kind, MessageKind::Steer);
+
+        let replay = db.load_messages(sid).unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].role, Role::User);
     }
 
     #[test]

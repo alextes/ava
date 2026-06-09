@@ -13,8 +13,8 @@ use crate::db::Database;
 use crate::error::Error;
 use crate::mcp::manager::McpManager;
 use crate::message::{
-    ChannelKind, ContentBlock, InboundMessage, Message, MessageContent, OutboundMessage, Role,
-    ToolResultContent,
+    ChannelKind, ContentBlock, InboundMessage, Message, MessageContent, MessageKind,
+    OutboundMessage, Role, ToolResultContent,
 };
 use crate::pricing;
 use crate::provider::{
@@ -194,6 +194,61 @@ impl Agent {
         Ok(())
     }
 
+    fn drain_pending_steers(
+        &self,
+        session_id: i64,
+        messages: &mut Vec<Message>,
+    ) -> Result<(), Error> {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return Ok(());
+        };
+
+        let steers = runtime.drain_steers();
+        let steer_count = steers.len();
+        if let Err(e) = self.inject_steers(session_id, messages, steers) {
+            tracing::error!(%e, steer_count, "failed to inject pending steers");
+            return Err(Error::Provider(format!(
+                "failed to persist /steer injection ({steer_count} steer message{})",
+                if steer_count == 1 { "" } else { "s" }
+            )));
+        }
+        Ok(())
+    }
+
+    fn inject_steers(
+        &self,
+        session_id: i64,
+        messages: &mut Vec<Message>,
+        steers: Vec<String>,
+    ) -> Result<bool, Error> {
+        let steer_texts: Vec<String> = steers
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if steer_texts.is_empty() {
+            return Ok(false);
+        }
+
+        let note = steering_note(&steer_texts);
+        self.db.append_message_with_kind(
+            session_id,
+            "system",
+            MessageKind::Steer,
+            &[MessageContent::text(&note)],
+            None,
+        )?;
+        messages.push(Message::user(note));
+        Ok(true)
+    }
+
+    fn finish_turn_or_drain_steers(&self) -> Vec<String> {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.finish_turn_or_drain_steers())
+            .unwrap_or_default()
+    }
+
     #[tracing::instrument(skip(self, inbound), fields(channel = ?inbound.channel))]
     pub async fn process(
         &self,
@@ -303,6 +358,8 @@ impl Agent {
         let mut length_retries: u32 = 0;
 
         loop {
+            self.drain_pending_steers(session_id, &mut messages)?;
+
             // compact context if approaching the model's limit
             let context_window = switched_provider
                 .as_ref()
@@ -489,6 +546,19 @@ impl Agent {
                     }
                 }
 
+                let last_chance_steers = self.finish_turn_or_drain_steers();
+                if !last_chance_steers.is_empty() {
+                    let mut provisional_content = response.hidden_content.clone();
+                    if !response.content.is_empty() {
+                        provisional_content.push(MessageContent::text(&response.content));
+                    }
+                    if !provisional_content.is_empty() {
+                        messages.push(Message::assistant_with_content(provisional_content));
+                    }
+                    self.inject_steers(session_id, &mut messages, last_chance_steers)?;
+                    continue;
+                }
+
                 // persist the final assistant response (skip empty content to avoid API rejection)
                 if !response.content.is_empty() {
                     let mut assistant_content = response.hidden_content.clone();
@@ -556,59 +626,79 @@ impl Agent {
                     .append_message(session_id, "user", &synthetic_results, None)?;
                 messages.push(Message::user_with_content(synthetic_results));
 
-                // final text-only turn (no tools)
-                let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
-                let final_model_id = active_provider.model_id();
-                let final_response = match active_provider
-                    .complete(&system_prompt, &messages, &[])
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(%e, "final summary call failed, using fallback");
-                        ProviderResponse {
-                            content:
-                                "i used all 40 tool rounds. send a follow-up message and i'll continue."
-                                    .to_string(),
-                            stop_reason: StopReason::EndTurn,
-                            tool_calls: vec![],
-                            hidden_content: vec![],
-                            usage: Usage::default(),
+                loop {
+                    // final text-only turn (no tools)
+                    self.drain_pending_steers(session_id, &mut messages)?;
+                    let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
+                    let final_model_id = active_provider.model_id();
+                    let final_response = match active_provider
+                        .complete(&system_prompt, &messages, &[])
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!(%e, "final summary call failed, using fallback");
+                            ProviderResponse {
+                                content:
+                                    "i used all 40 tool rounds. send a follow-up message and i'll continue."
+                                        .to_string(),
+                                stop_reason: StopReason::EndTurn,
+                                tool_calls: vec![],
+                                hidden_content: vec![],
+                                usage: Usage::default(),
+                            }
                         }
-                    }
-                };
-                let final_content = final_response.content.clone();
+                    };
 
-                // check length — if too long and on telegram, send error instead
-                let send_content = if inbound.channel == ChannelKind::Telegram {
-                    let html = crate::telegram_fmt::markdown_to_telegram_html(&final_content);
-                    if html.len() > TELEGRAM_MAX_MESSAGE_LEN {
-                        format!(
-                            "sorry, my response was too long for telegram ({} chars, \
-                             limit is {}). send a follow-up and i'll try to be more \
-                             concise, or ask me to write it to a file.",
-                            html.len(),
-                            TELEGRAM_MAX_MESSAGE_LEN,
-                        )
+                    let last_chance_steers = self.finish_turn_or_drain_steers();
+                    if !last_chance_steers.is_empty() {
+                        let mut provisional_content = final_response.hidden_content.clone();
+                        if !final_response.content.is_empty() {
+                            provisional_content.push(MessageContent::text(&final_response.content));
+                        }
+                        if !provisional_content.is_empty() {
+                            messages.push(Message::assistant_with_content(provisional_content));
+                        }
+                        self.inject_steers(session_id, &mut messages, last_chance_steers)?;
+                        continue;
+                    }
+
+                    let final_content = final_response.content.clone();
+
+                    // check length — if too long and on telegram, send error instead
+                    let send_content = if inbound.channel == ChannelKind::Telegram {
+                        let html = crate::telegram_fmt::markdown_to_telegram_html(&final_content);
+                        if html.len() > TELEGRAM_MAX_MESSAGE_LEN {
+                            format!(
+                                "sorry, my response was too long for telegram ({} chars, \
+                                 limit is {}). send a follow-up and i'll try to be more \
+                                 concise, or ask me to write it to a file.",
+                                html.len(),
+                                TELEGRAM_MAX_MESSAGE_LEN,
+                            )
+                        } else {
+                            final_content.clone()
+                        }
                     } else {
                         final_content.clone()
-                    }
-                } else {
-                    final_content.clone()
-                };
+                    };
 
-                let final_blocks = vec![MessageContent::text(&final_content)];
-                let message_id =
-                    self.db
-                        .append_message(session_id, "assistant", &final_blocks, None)?;
-                self.db
-                    .set_message_usage(message_id, &final_response.usage, &final_model_id)?;
+                    let final_blocks = vec![MessageContent::text(&final_content)];
+                    let message_id =
+                        self.db
+                            .append_message(session_id, "assistant", &final_blocks, None)?;
+                    self.db.set_message_usage(
+                        message_id,
+                        &final_response.usage,
+                        &final_model_id,
+                    )?;
 
-                return Ok(Some(OutboundMessage {
-                    content: send_content,
-                    voice: pending_voice.take(),
-                    attachments: std::mem::take(&mut pending_attachments),
-                }));
+                    return Ok(Some(OutboundMessage {
+                        content: send_content,
+                        voice: pending_voice.take(),
+                        attachments: std::mem::take(&mut pending_attachments),
+                    }));
+                }
             }
 
             let mut assistant_blocks = response.hidden_content.clone();
@@ -1132,6 +1222,13 @@ fn tool_use_content(call: &ToolCall) -> MessageContent {
     MessageContent::tool_use(call.id.clone(), call.name.clone(), call.input.clone())
 }
 
+fn steering_note(messages: &[String]) -> String {
+    format!(
+        "[system: the user sent /steer before this response:\n{}]",
+        messages.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::prompt::*;
@@ -1167,6 +1264,13 @@ mod tests {
             .no_proxy()
             .build()
             .expect("test HTTP client")
+    }
+
+    fn steer_origin() -> crate::runtime::SteerOrigin {
+        crate::runtime::SteerOrigin {
+            chat_id: 1,
+            thread_id: Some(2),
+        }
     }
 
     #[tokio::test]
@@ -1468,6 +1572,276 @@ mod tests {
         let sid = db.active_session().unwrap();
         let count = db.session_message_count(sid).unwrap();
         assert_eq!(count, 6);
+    }
+
+    #[tokio::test]
+    async fn test_agent_injects_pending_steer_between_tool_rounds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc as StdArc, Mutex};
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let seen_steer = StdArc::new(Mutex::new(false));
+        let runtime = Arc::new(RuntimeState::new(String::new()));
+        let call_count_clone = call_count.clone();
+        let seen_steer_clone = seen_steer.clone();
+        let runtime_for_provider = Arc::clone(&runtime);
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    assert!(
+                        runtime_for_provider
+                            .try_push_steer("answer in one sentence", steer_origin())
+                    );
+                    Ok(ProviderResponse {
+                        content: "checking".into(),
+                        stop_reason: StopReason::ToolUse,
+                        tool_calls: vec![tool::ToolCall {
+                            id: "call_1".into(),
+                            name: "remember".into(),
+                            input: serde_json::json!({
+                                "content": "steer test",
+                                "kind": "fact"
+                            }),
+                        }],
+                        hidden_content: Vec::new(),
+                        usage: Usage::default(),
+                    })
+                } else {
+                    let found = msgs.iter().any(|msg| {
+                        msg.content.iter().any(|block| {
+                            matches!(
+                                block,
+                                MessageContent::Text { text }
+                                    if text.contains("the user sent /steer")
+                                        && text.contains("answer in one sentence")
+                            )
+                        })
+                    });
+                    *seen_steer_clone.lock().unwrap() = found;
+                    Ok(ProviderResponse {
+                        content: "done".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        hidden_content: Vec::new(),
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            test_client(),
+        )
+        .with_runtime(Arc::clone(&runtime));
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            images: Vec::new(),
+            content: "please remember this".into(),
+        };
+
+        runtime.begin_turn();
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+        assert!(runtime.close_turn().is_empty());
+        assert_eq!(outbound.content, "done");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert!(*seen_steer.lock().unwrap());
+
+        let sid = db.active_session().unwrap();
+        let history = db.load_recent_messages(sid, 20).unwrap();
+        assert!(history.iter().any(|m| m.kind == MessageKind::Steer));
+    }
+
+    #[tokio::test]
+    async fn test_agent_extends_turn_for_steer_arriving_during_final_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc as StdArc, Mutex};
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let runtime = Arc::new(RuntimeState::new(String::new()));
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let seen_context = StdArc::new(Mutex::new(false));
+        let runtime_for_provider = Arc::clone(&runtime);
+        let call_count_clone = Arc::clone(&call_count);
+        let seen_context_clone = Arc::clone(&seen_context);
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, msgs| {
+                let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    assert!(
+                        runtime_for_provider
+                            .try_push_steer("make the answer corrected", steer_origin())
+                    );
+                    Ok(ProviderResponse {
+                        content: "initial answer".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        hidden_content: Vec::new(),
+                        usage: Usage::default(),
+                    })
+                } else {
+                    let saw_initial = msgs.iter().any(|msg| {
+                        msg.content.iter().any(|block| {
+                            matches!(block, MessageContent::Text { text } if text == "initial answer")
+                        })
+                    });
+                    let saw_steer = msgs.iter().any(|msg| {
+                        msg.content.iter().any(|block| {
+                            matches!(
+                                block,
+                                MessageContent::Text { text }
+                                    if text.contains("the user sent /steer")
+                                        && text.contains("make the answer corrected")
+                            )
+                        })
+                    });
+                    *seen_context_clone.lock().unwrap() = saw_initial && saw_steer;
+                    Ok(ProviderResponse {
+                        content: "corrected answer".into(),
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        hidden_content: Vec::new(),
+                        usage: Usage::default(),
+                    })
+                }
+            }),
+        });
+
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            test_client(),
+        )
+        .with_runtime(Arc::clone(&runtime));
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            images: Vec::new(),
+            content: "please answer".into(),
+        };
+
+        runtime.begin_turn();
+        let outbound = agent.process(&inbound).await.unwrap().unwrap();
+
+        assert_eq!(outbound.content, "corrected answer");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert!(*seen_context.lock().unwrap());
+        assert!(runtime.close_turn().is_empty());
+        assert!(!runtime.try_push_steer("too late", steer_origin()));
+
+        let sid = db.active_session().unwrap();
+        let history = db.load_recent_messages(sid, 20).unwrap();
+        assert!(history.iter().any(|m| m.kind == MessageKind::Steer));
+        assert!(!history.iter().any(|m| {
+            m.role == Role::Assistant
+                && m.content.iter().any(|block| {
+                    matches!(block, MessageContent::Text { text } if text == "initial answer")
+                })
+        }));
+        assert!(history.iter().any(|m| {
+            m.role == Role::Assistant
+                && m.content.iter().any(|block| {
+                    matches!(block, MessageContent::Text { text } if text == "corrected answer")
+                })
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_agent_returns_pending_steer_for_rejection_after_complete_tool_exit() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let runtime = Arc::new(RuntimeState::new(String::new()));
+        let runtime_for_provider = Arc::clone(&runtime);
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                assert!(
+                    runtime_for_provider.try_push_steer("too late for complete", steer_origin())
+                );
+                Ok(ProviderResponse {
+                    content: "finishing silently".into(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: vec![tool::ToolCall {
+                        id: "call_1".into(),
+                        name: tool::COMPLETE_TOOL_NAME.into(),
+                        input: serde_json::json!({"reason": "done"}),
+                    }],
+                    hidden_content: Vec::new(),
+                    usage: Usage::default(),
+                })
+            }),
+        });
+
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            test_client(),
+        )
+        .with_runtime(Arc::clone(&runtime));
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            images: Vec::new(),
+            content: "finish silently".into(),
+        };
+
+        runtime.begin_turn();
+        let result = agent.process(&inbound).await.unwrap();
+        assert!(result.is_none());
+        let rejected = runtime.close_turn();
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].text, "too late for complete");
+        assert_eq!(rejected[0].origin, steer_origin());
+
+        let sid = db.active_session().unwrap();
+        let history = db.load_recent_messages(sid, 20).unwrap();
+        assert!(!history.iter().any(|m| m.kind == MessageKind::Steer));
+    }
+
+    #[tokio::test]
+    async fn test_agent_returns_pending_steer_for_rejection_after_provider_error() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let runtime = Arc::new(RuntimeState::new(String::new()));
+        let runtime_for_provider = Arc::clone(&runtime);
+
+        let provider = AnyProvider::Test(TestProvider {
+            handler: Box::new(move |_system, _msgs| {
+                assert!(runtime_for_provider.try_push_steer("too late for error", steer_origin()));
+                Err(Error::Provider("provider failed".into()))
+            }),
+        });
+
+        let agent = Agent::new(
+            provider,
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            test_client(),
+        )
+        .with_runtime(Arc::clone(&runtime));
+        let inbound = InboundMessage {
+            channel: ChannelKind::Cli,
+            images: Vec::new(),
+            content: "please fail".into(),
+        };
+
+        runtime.begin_turn();
+        let result = agent.process(&inbound).await;
+        assert!(result.is_err());
+        let rejected = runtime.close_turn();
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].text, "too late for error");
+        assert_eq!(rejected[0].origin, steer_origin());
+
+        let sid = db.active_session().unwrap();
+        let history = db.load_recent_messages(sid, 20).unwrap();
+        assert!(!history.iter().any(|m| m.kind == MessageKind::Steer));
     }
 
     #[tokio::test]
