@@ -405,6 +405,7 @@ impl Agent {
                 Err(e) => return Err(e),
             };
 
+            let response_model_id = active_provider.model_id();
             let usage = &response.usage;
             last_input_tokens = Some(usage.input_tokens);
 
@@ -497,7 +498,8 @@ impl Agent {
                         &assistant_content,
                         None,
                     )?;
-                    self.db.set_message_usage(message_id, usage)?;
+                    self.db
+                        .set_message_usage(message_id, usage, &response_model_id)?;
                 }
 
                 return Ok(Some(OutboundMessage {
@@ -533,7 +535,8 @@ impl Agent {
                 let assistant_message_id =
                     self.db
                         .append_message(session_id, "assistant", &assistant_blocks, None)?;
-                self.db.set_message_usage(assistant_message_id, usage)?;
+                self.db
+                    .set_message_usage(assistant_message_id, usage, &response_model_id)?;
                 messages.push(Message::assistant_with_content(assistant_blocks));
 
                 // synthetic tool results telling the model to wrap up
@@ -554,6 +557,7 @@ impl Agent {
 
                 // final text-only turn (no tools)
                 let active_provider = switched_provider.as_ref().unwrap_or(&self.provider);
+                let final_model_id = active_provider.model_id();
                 let final_response = match active_provider
                     .complete(&system_prompt, &messages, &[])
                     .await
@@ -597,7 +601,7 @@ impl Agent {
                     self.db
                         .append_message(session_id, "assistant", &final_blocks, None)?;
                 self.db
-                    .set_message_usage(message_id, &final_response.usage)?;
+                    .set_message_usage(message_id, &final_response.usage, &final_model_id)?;
 
                 return Ok(Some(OutboundMessage {
                     content: send_content,
@@ -620,7 +624,8 @@ impl Agent {
             let assistant_message_id =
                 self.db
                     .append_message(session_id, "assistant", &assistant_blocks, None)?;
-            self.db.set_message_usage(assistant_message_id, usage)?;
+            self.db
+                .set_message_usage(assistant_message_id, usage, &response_model_id)?;
             messages.push(Message::assistant_with_content(assistant_blocks));
 
             // execute tool calls concurrently

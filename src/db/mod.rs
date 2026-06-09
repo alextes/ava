@@ -69,7 +69,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         db.set_app_state("migration_test", "ok").unwrap();
         assert_eq!(
             db.app_state("migration_test").unwrap().as_deref(),
@@ -85,7 +85,49 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
+    }
+
+    #[test]
+    fn test_v21_migration_adds_cost_metadata_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO schema_version (version) VALUES (20)", [])
+            .unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                channel TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                reasoning_tokens INTEGER
+            );
+            "#,
+        )
+        .unwrap();
+
+        migrations::migrate(&conn).unwrap();
+
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(messages)").unwrap();
+            stmt.query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(cols.contains(&"model_id".to_string()));
+        assert!(cols.contains(&"cache_creation_tokens".to_string()));
+        assert!(cols.contains(&"cache_read_tokens".to_string()));
+        assert_eq!(migrations::schema_version(&conn).unwrap(), 21);
     }
 
     #[test]
@@ -187,7 +229,7 @@ mod tests {
 
         // verify schema version is latest
         let version = migrations::schema_version(&conn).unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
 
         // verify facts table is gone
         let table_exists: bool = conn

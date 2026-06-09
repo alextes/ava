@@ -283,6 +283,12 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_queued_messages_status_id
         ON queued_messages(status, id);
     "#,
+    // v21: enough per-message usage metadata to estimate request cost
+    r#"
+    ALTER TABLE messages ADD COLUMN model_id TEXT;
+    ALTER TABLE messages ADD COLUMN cache_creation_tokens INTEGER;
+    ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

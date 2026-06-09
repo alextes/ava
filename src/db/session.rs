@@ -14,9 +14,18 @@ pub struct HistoryMessage {
     pub role: Role,
     pub content: Vec<MessageContent>,
     pub created_at: String,
+    pub model_id: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub reasoning_tokens: Option<u32>,
+    pub cache_creation_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageUsageRecord {
+    pub model_id: Option<String>,
+    pub usage: Usage,
 }
 
 impl Database {
@@ -110,7 +119,9 @@ impl Database {
     ) -> Result<Vec<HistoryMessage>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at, input_tokens, output_tokens, reasoning_tokens FROM messages
+            "SELECT id, role, content, created_at, model_id, input_tokens,
+                    output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens
+             FROM messages
              WHERE session_id = ?1
              ORDER BY created_at DESC, id DESC
              LIMIT ?2",
@@ -122,17 +133,23 @@ impl Database {
                 let role_str: String = row.get(1)?;
                 let content_json: String = row.get(2)?;
                 let created_at: String = row.get(3)?;
-                let input_tokens: Option<u32> = row.get(4)?;
-                let output_tokens: Option<u32> = row.get(5)?;
-                let reasoning_tokens: Option<u32> = row.get(6)?;
+                let model_id: Option<String> = row.get(4)?;
+                let input_tokens: Option<u32> = row.get(5)?;
+                let output_tokens: Option<u32> = row.get(6)?;
+                let reasoning_tokens: Option<u32> = row.get(7)?;
+                let cache_creation_tokens: Option<u32> = row.get(8)?;
+                let cache_read_tokens: Option<u32> = row.get(9)?;
                 Ok((
                     id,
                     role_str,
                     content_json,
                     created_at,
+                    model_id,
                     input_tokens,
                     output_tokens,
                     reasoning_tokens,
+                    cache_creation_tokens,
+                    cache_read_tokens,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -143,9 +160,12 @@ impl Database {
             role_str,
             content_json,
             created_at,
+            model_id,
             input_tokens,
             output_tokens,
             reasoning_tokens,
+            cache_creation_tokens,
+            cache_read_tokens,
         ) in rows
         {
             let role = match role_str.as_str() {
@@ -161,9 +181,12 @@ impl Database {
                 role,
                 content,
                 created_at,
+                model_id,
                 input_tokens,
                 output_tokens,
                 reasoning_tokens,
+                cache_creation_tokens,
+                cache_read_tokens,
             });
         }
 
@@ -181,7 +204,9 @@ impl Database {
     ) -> Result<Vec<HistoryMessage>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at, input_tokens, output_tokens, reasoning_tokens FROM messages
+            "SELECT id, role, content, created_at, model_id, input_tokens,
+                    output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens
+             FROM messages
              WHERE session_id = ?1 AND id > ?2
              ORDER BY id ASC",
         )?;
@@ -192,17 +217,23 @@ impl Database {
                 let role_str: String = row.get(1)?;
                 let content_json: String = row.get(2)?;
                 let created_at: String = row.get(3)?;
-                let input_tokens: Option<u32> = row.get(4)?;
-                let output_tokens: Option<u32> = row.get(5)?;
-                let reasoning_tokens: Option<u32> = row.get(6)?;
+                let model_id: Option<String> = row.get(4)?;
+                let input_tokens: Option<u32> = row.get(5)?;
+                let output_tokens: Option<u32> = row.get(6)?;
+                let reasoning_tokens: Option<u32> = row.get(7)?;
+                let cache_creation_tokens: Option<u32> = row.get(8)?;
+                let cache_read_tokens: Option<u32> = row.get(9)?;
                 Ok((
                     id,
                     role_str,
                     content_json,
                     created_at,
+                    model_id,
                     input_tokens,
                     output_tokens,
                     reasoning_tokens,
+                    cache_creation_tokens,
+                    cache_read_tokens,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -213,9 +244,12 @@ impl Database {
             role_str,
             content_json,
             created_at,
+            model_id,
             input_tokens,
             output_tokens,
             reasoning_tokens,
+            cache_creation_tokens,
+            cache_read_tokens,
         ) in rows
         {
             let role = match role_str.as_str() {
@@ -231,9 +265,12 @@ impl Database {
                 role,
                 content,
                 created_at,
+                model_id,
                 input_tokens,
                 output_tokens,
                 reasoning_tokens,
+                cache_creation_tokens,
+                cache_read_tokens,
             });
         }
 
@@ -278,7 +315,12 @@ impl Database {
     }
 
     /// attach provider token usage to an already-persisted message.
-    pub fn set_message_usage(&self, message_id: i64, usage: &Usage) -> Result<(), Error> {
+    pub fn set_message_usage(
+        &self,
+        message_id: i64,
+        usage: &Usage,
+        model_id: &str,
+    ) -> Result<(), Error> {
         if message_id <= 0 {
             return Ok(());
         }
@@ -286,16 +328,56 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE messages
-             SET input_tokens = ?1, output_tokens = ?2, reasoning_tokens = ?3
-             WHERE id = ?4",
+             SET input_tokens = ?1, output_tokens = ?2, reasoning_tokens = ?3,
+                 model_id = ?4, cache_creation_tokens = ?5, cache_read_tokens = ?6
+             WHERE id = ?7",
             rusqlite::params![
                 usage.input_tokens,
                 usage.output_tokens,
                 usage.reasoning_tokens,
+                model_id,
+                usage.cache_creation_tokens,
+                usage.cache_read_tokens,
                 message_id
             ],
         )?;
         Ok(())
+    }
+
+    /// load persisted provider usage records for session-level cost estimates.
+    pub fn session_usage_records(&self, session_id: i64) -> Result<Vec<MessageUsageRecord>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT model_id, input_tokens, output_tokens, reasoning_tokens,
+                    cache_creation_tokens, cache_read_tokens
+             FROM messages
+             WHERE session_id = ?1
+               AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+             ORDER BY id ASC",
+        )?;
+
+        let rows = stmt
+            .query_map([session_id], |row| {
+                let model_id: Option<String> = row.get(0)?;
+                let input_tokens: Option<u32> = row.get(1)?;
+                let output_tokens: Option<u32> = row.get(2)?;
+                let reasoning_tokens: Option<u32> = row.get(3)?;
+                let cache_creation_tokens: Option<u32> = row.get(4)?;
+                let cache_read_tokens: Option<u32> = row.get(5)?;
+                Ok(MessageUsageRecord {
+                    model_id,
+                    usage: Usage {
+                        input_tokens: input_tokens.unwrap_or(0),
+                        output_tokens: output_tokens.unwrap_or(0),
+                        reasoning_tokens,
+                        cache_creation_tokens,
+                        cache_read_tokens,
+                    },
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
     }
 
     /// load all messages for a session with their DB row IDs, oldest first.
@@ -925,15 +1007,36 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 25,
                 reasoning_tokens: Some(10),
+                cache_creation_tokens: Some(30),
+                cache_read_tokens: Some(40),
                 ..Default::default()
             },
+            "anthropic/claude-sonnet-4-6",
         )
         .unwrap();
 
         let msgs = db.load_recent_messages(sid, 1).unwrap();
+        assert_eq!(
+            msgs[0].model_id.as_deref(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
         assert_eq!(msgs[0].input_tokens, Some(100));
         assert_eq!(msgs[0].output_tokens, Some(25));
         assert_eq!(msgs[0].reasoning_tokens, Some(10));
+        assert_eq!(msgs[0].cache_creation_tokens, Some(30));
+        assert_eq!(msgs[0].cache_read_tokens, Some(40));
+
+        let usage = db.session_usage_records(sid).unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(
+            usage[0].model_id.as_deref(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert_eq!(usage[0].usage.input_tokens, 100);
+        assert_eq!(usage[0].usage.output_tokens, 25);
+        assert_eq!(usage[0].usage.reasoning_tokens, Some(10));
+        assert_eq!(usage[0].usage.cache_creation_tokens, Some(30));
+        assert_eq!(usage[0].usage.cache_read_tokens, Some(40));
     }
 
     #[test]

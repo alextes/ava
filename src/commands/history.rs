@@ -1,6 +1,8 @@
 use crate::db::{Database, session::HistoryMessage};
 use crate::error;
 use crate::message::{MessageContent, Role};
+use crate::pricing;
+use crate::provider::Usage;
 
 /// display mode for history output
 enum HistoryMode {
@@ -108,13 +110,7 @@ fn print_message(msg: &HistoryMessage, mode: &HistoryMode) {
             Role::System => ("system", DIM),
         }
     };
-    let usage = match (msg.output_tokens, msg.reasoning_tokens) {
-        (Some(output), Some(reasoning)) => {
-            format!(" · output {output} · reasoning {reasoning}")
-        }
-        (Some(output), None) => format!(" · output {output}"),
-        _ => String::new(),
-    };
+    let usage = usage_label(msg);
     let label = format!("── {role} · {}{usage} ──", msg.created_at);
     let pad_len = 56usize.saturating_sub(label.len());
     let padding = "─".repeat(pad_len);
@@ -165,6 +161,40 @@ fn print_message(msg: &HistoryMessage, mode: &HistoryMode) {
                 }
             }
         }
+    }
+}
+
+fn usage_label(msg: &HistoryMessage) -> String {
+    let mut parts = Vec::new();
+    if let Some(output) = msg.output_tokens {
+        parts.push(format!("output {output}"));
+    }
+    if let Some(reasoning) = msg.reasoning_tokens {
+        parts.push(format!("reasoning {reasoning}"));
+    }
+    if let Some(model_id) = msg.model_id.as_deref()
+        && (msg.input_tokens.is_some()
+            || msg.output_tokens.is_some()
+            || msg.cache_creation_tokens.is_some()
+            || msg.cache_read_tokens.is_some())
+    {
+        let usage = Usage {
+            input_tokens: msg.input_tokens.unwrap_or(0),
+            output_tokens: msg.output_tokens.unwrap_or(0),
+            reasoning_tokens: msg.reasoning_tokens,
+            cache_creation_tokens: msg.cache_creation_tokens,
+            cache_read_tokens: msg.cache_read_tokens,
+        };
+        parts.push(format!(
+            "cost {}",
+            pricing::format_usage_cost(model_id, &usage)
+        ));
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", parts.join(" · "))
     }
 }
 
@@ -231,5 +261,49 @@ fn print_expanded_json(value: &serde_json::Value) {
             let formatted = serde_json::to_string_pretty(other).unwrap_or_default();
             println!("{formatted}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_label_includes_cost_when_model_is_known() {
+        let msg = HistoryMessage {
+            id: 1,
+            role: Role::Assistant,
+            content: vec![MessageContent::text("hi")],
+            created_at: "now".into(),
+            model_id: Some("anthropic/claude-sonnet-4-6".into()),
+            input_tokens: Some(100_000),
+            output_tokens: Some(10_000),
+            reasoning_tokens: Some(2_000),
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        };
+
+        assert_eq!(
+            usage_label(&msg),
+            " · output 10000 · reasoning 2000 · cost ~$0.45"
+        );
+    }
+
+    #[test]
+    fn usage_label_marks_unknown_model_cost() {
+        let msg = HistoryMessage {
+            id: 1,
+            role: Role::Assistant,
+            content: vec![MessageContent::text("hi")],
+            created_at: "now".into(),
+            model_id: Some("unknown/model".into()),
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            reasoning_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        };
+
+        assert_eq!(usage_label(&msg), " · output 10 · cost unknown");
     }
 }

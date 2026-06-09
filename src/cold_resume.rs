@@ -90,7 +90,7 @@ impl ColdResumePrompter {
         let elapsed_str = format_elapsed(elapsed);
         let text = format!(
             "conversation has grown to ~{tokens} tokens. cache expired {elapsed_str} ago.\n\
-             replaying uncached will cost {cost} ({model}).",
+             replaying uncached input will cost {cost} ({model}).",
             tokens = format_token_count(input_tokens),
             elapsed_str = elapsed_str,
             cost = cost_estimate,
