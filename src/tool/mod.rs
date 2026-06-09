@@ -737,12 +737,12 @@ fn switch_model_definition() -> ToolDefinition {
             "properties": {
                 "provider": {
                     "type": "string",
-                    "enum": ["anthropic", "gemini", "openai", "openrouter"],
+                    "enum": ["anthropic", "deepseek", "gemini", "openai", "openrouter"],
                     "description": "the provider to switch to"
                 },
                 "model": {
                     "type": "string",
-                    "description": "model name. must match the chosen provider. anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5. gemini: gemini-3.5-flash, gemini-3.1-pro-preview. openai: gpt-5.5, gpt-5.4, gpt-5-mini. openrouter: non-anthropic, non-openai, non-gemini third-party models in provider/name format (e.g. deepseek/deepseek-v4-pro, deepseek/deepseek-v4-flash); use first-party providers for anthropic, gemini, or openai models. if omitted, uses the provider's default."
+                    "description": "model name. must match the chosen provider. anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5. deepseek: deepseek-v4-pro, deepseek-v4-flash. gemini: gemini-3.5-flash, gemini-3.1-pro-preview. openai: gpt-5.5, gpt-5.4, gpt-5-mini. openrouter: third-party models that do not have a first-party provider here, in provider/name format; use first-party providers for anthropic, deepseek, gemini, or openai models. if omitted, uses the provider's default."
                 },
                 "reasoning_effort": {
                     "type": "string",

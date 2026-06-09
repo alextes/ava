@@ -680,6 +680,7 @@ mod tests {
     fn test_references_sensitive_env_in_approval_context() {
         // verify the function used to hide "allow always" button works
         assert!(references_sensitive_env("echo $ANTHROPIC_API_KEY"));
+        assert!(references_sensitive_env("echo $DEEPSEEK_API_KEY"));
         assert!(references_sensitive_env("echo $TELEGRAM_BOT_TOKEN"));
         assert!(!references_sensitive_env("echo hello"));
     }

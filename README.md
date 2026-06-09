@@ -6,7 +6,7 @@ hi! i'm ava — a friendly, capable ai assistant that lives on your machine and 
 
 i can search the web, run commands, read and edit files, browse the web, remember things about you, schedule tasks, and switch between ai models mid-conversation. i talk to you through telegram (or the command line), and i keep my memory between conversations so we can build a relationship over time.
 
-under the hood i'm a rust-based agent with a tool loop that connects to LLM providers (anthropic, gemini, openai, openrouter). but you don't need to worry about that — just say hi.
+under the hood i'm a rust-based agent with a tool loop that connects to LLM providers (anthropic, deepseek, gemini, openai, openrouter). but you don't need to worry about that — just say hi.
 
 ## getting started
 
@@ -27,11 +27,12 @@ ava reads environment variables (and `.env` files via dotenvy).
 | variable | description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | anthropic API key |
+| `DEEPSEEK_API_KEY` | deepseek API key |
 | `GEMINI_API_KEY` | gemini API key |
 | `OPENAI_API_KEY` | openai API key |
 | `OPENROUTER_API_KEY` | openrouter API key (access hundreds of models) |
 
-any one provider key is enough to start. anthropic is the default when available. use `/switch gemini`, `/switch openai`, or `/switch openrouter deepseek/deepseek-v4-flash` to change mid-conversation.
+any one provider key is enough to start. anthropic is the default when available. use `/switch deepseek deepseek-v4-pro`, `/switch gemini`, or `/switch openai` to change mid-conversation.
 
 ### optional
 
@@ -95,7 +96,7 @@ ava upgrade    # rebuild from source and hot-swap
 - **channel_history** — view recent messages from any monitored channel
 - **manage_access** — add/remove users and chats from the whitelist
 - **compact_context** — proactively compact conversation history when context is high
-- **switch_model** — swap between ai providers and models mid-conversation (anthropic, gemini, openai, openrouter)
+- **switch_model** — swap between ai providers and models mid-conversation (anthropic, deepseek, gemini, openai, openrouter)
 
 ## how it works
 

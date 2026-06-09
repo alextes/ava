@@ -1,10 +1,12 @@
 mod anthropic;
+mod deepseek;
 mod gemini;
 mod openai;
 mod openrouter;
 
 pub use crate::tool::ToolCall;
 pub use anthropic::AnthropicProvider;
+pub use deepseek::DeepSeekProvider;
 pub use gemini::GeminiProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
@@ -137,9 +139,10 @@ pub trait Provider: Send + Sync {
     /// where the whole conversation will be re-processed as uncached input.
     ///
     /// - anthropic: `Duration::from_secs(300)` (ephemeral, 5 min)
+    /// - deepseek: `Duration::from_secs(300)` (implicit prefix cache estimate)
     /// - gemini: `Duration::ZERO` (no explicit cachedContent is created)
     /// - openai: `Duration::from_secs(24 * 3600)` (24h retention hint)
-    /// - openrouter: `Duration::ZERO` (no explicit cache resource is created)
+    /// - openrouter: `Duration::from_secs(300)` (implicit prefix cache estimate)
     fn cache_ttl(&self) -> Duration;
 }
 
@@ -147,6 +150,7 @@ pub trait Provider: Send + Sync {
 
 pub enum AnyProvider {
     Anthropic(AnthropicProvider),
+    DeepSeek(DeepSeekProvider),
     Gemini(GeminiProvider),
     OpenAi(OpenAiProvider),
     OpenRouter(OpenRouterProvider),
@@ -167,12 +171,18 @@ impl AnyProvider {
         if std::env::var("OPENAI_API_KEY").is_ok() {
             return Ok(Self::OpenAi(OpenAiProvider::from_env(client)?));
         }
+        if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            let mut provider = Self::DeepSeek(DeepSeekProvider::from_env(client)?);
+            let effort = Self::default_reasoning_effort(&provider.model_id());
+            provider.set_reasoning_effort(effort);
+            return Ok(provider);
+        }
         if std::env::var("OPENROUTER_API_KEY").is_ok() {
             return Ok(Self::OpenRouter(OpenRouterProvider::from_env(client)?));
         }
 
         Err(Error::MissingApiKey(
-            "ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY",
+            "ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, or OPENROUTER_API_KEY",
         ))
     }
 
@@ -180,6 +190,7 @@ impl AnyProvider {
     pub fn model_id(&self) -> String {
         match self {
             Self::Anthropic(p) => format!("anthropic/{}", p.model_name()),
+            Self::DeepSeek(p) => format!("deepseek/{}", p.model_name()),
             Self::Gemini(p) => format!("gemini/{}", p.model_name()),
             Self::OpenAi(p) => format!("openai/{}", p.model_name()),
             Self::OpenRouter(p) => format!("openrouter/{}", p.model_name()),
@@ -191,6 +202,7 @@ impl AnyProvider {
     pub fn reasoning_effort(&self) -> ReasoningEffort {
         match self {
             Self::Anthropic(p) => p.reasoning_effort(),
+            Self::DeepSeek(p) => p.reasoning_effort(),
             Self::Gemini(p) => p.reasoning_effort(),
             Self::OpenAi(p) => p.reasoning_effort(),
             Self::OpenRouter(p) => p.reasoning_effort(),
@@ -202,6 +214,7 @@ impl AnyProvider {
     pub fn set_reasoning_effort(&mut self, effort: ReasoningEffort) {
         match self {
             Self::Anthropic(p) => p.set_reasoning_effort(effort),
+            Self::DeepSeek(p) => p.set_reasoning_effort(effort),
             Self::Gemini(p) => p.set_reasoning_effort(effort),
             Self::OpenAi(p) => p.set_reasoning_effort(effort),
             Self::OpenRouter(p) => p.set_reasoning_effort(effort),
@@ -215,6 +228,7 @@ impl AnyProvider {
             "openrouter/deepseek/deepseek-v4-pro" | "openrouter/deepseek/deepseek-v4-flash" => {
                 ReasoningEffort::High
             }
+            "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash" => ReasoningEffort::High,
             "gemini/gemini-3.5-flash" | "gemini/gemini-3.1-pro-preview" => ReasoningEffort::Medium,
             "openai/gpt-5.5" | "openai/gpt-5.4" | "openai/gpt-5-mini" => ReasoningEffort::Medium,
             _ => ReasoningEffort::None,
@@ -231,6 +245,8 @@ impl AnyProvider {
                 model_id,
                 "openrouter/deepseek/deepseek-v4-pro"
                     | "openrouter/deepseek/deepseek-v4-flash"
+                    | "deepseek/deepseek-v4-pro"
+                    | "deepseek/deepseek-v4-flash"
                     | "gemini/gemini-3.1-pro-preview"
                     | "anthropic/claude-opus-4-7"
             ),
@@ -242,6 +258,7 @@ impl AnyProvider {
             || model.starts_with("gemini/")
             || model.starts_with("google/gemini")
             || model.starts_with("openai/")
+            || model.starts_with("deepseek/")
     }
 
     /// create a provider by name, for the switch_model tool.
@@ -280,6 +297,22 @@ impl AnyProvider {
                     p.set_model(m.to_string());
                 }
                 let mut p = Self::Gemini(p);
+                let effort = Self::default_reasoning_effort(&p.model_id());
+                p.set_reasoning_effort(effort);
+                Ok(p)
+            }
+            "deepseek" => {
+                let mut p = DeepSeekProvider::from_env(client)?;
+                if let Some(m) = model {
+                    if !deepseek::ALLOWED_MODELS.contains(&m) {
+                        return Err(Error::Provider(format!(
+                            "model {m} not allowed for deepseek. allowed: {}",
+                            deepseek::ALLOWED_MODELS.join(", ")
+                        )));
+                    }
+                    p.set_model(m.to_string());
+                }
+                let mut p = Self::DeepSeek(p);
                 let effort = Self::default_reasoning_effort(&p.model_id());
                 p.set_reasoning_effort(effort);
                 Ok(p)
@@ -336,6 +369,7 @@ impl AnyProvider {
     pub fn provider_name(&self) -> &str {
         match self {
             Self::Anthropic(_) => "anthropic",
+            Self::DeepSeek(_) => "deepseek",
             Self::Gemini(_) => "gemini",
             Self::OpenAi(_) => "openai",
             Self::OpenRouter(_) => "openrouter",
@@ -347,6 +381,7 @@ impl AnyProvider {
     pub fn context_window(&self) -> u32 {
         match self {
             Self::Anthropic(p) => p.context_window(),
+            Self::DeepSeek(p) => p.context_window(),
             Self::Gemini(p) => p.context_window(),
             Self::OpenAi(p) => p.context_window(),
             Self::OpenRouter(p) => p.context_window(),
@@ -359,6 +394,7 @@ impl AnyProvider {
     pub fn cache_ttl(&self) -> Duration {
         match self {
             Self::Anthropic(p) => p.cache_ttl(),
+            Self::DeepSeek(p) => p.cache_ttl(),
             Self::Gemini(p) => p.cache_ttl(),
             Self::OpenAi(p) => p.cache_ttl(),
             Self::OpenRouter(p) => p.cache_ttl(),
@@ -377,6 +413,7 @@ impl Provider for AnyProvider {
     ) -> Result<ProviderResponse, Error> {
         match self {
             Self::Anthropic(p) => p.complete(system_prompt, messages, tools).await,
+            Self::DeepSeek(p) => p.complete(system_prompt, messages, tools).await,
             Self::Gemini(p) => p.complete(system_prompt, messages, tools).await,
             Self::OpenAi(p) => p.complete(system_prompt, messages, tools).await,
             Self::OpenRouter(p) => p.complete(system_prompt, messages, tools).await,
@@ -440,10 +477,24 @@ mod tests {
     }
 
     #[test]
+    fn test_model_id_format_deepseek() {
+        let p = DeepSeekProvider::new(test_client(), "test-key".into());
+        let any = AnyProvider::DeepSeek(p);
+        assert_eq!(any.model_id(), "deepseek/deepseek-v4-flash");
+    }
+
+    #[test]
     fn test_model_id_format_openai() {
         let p = OpenAiProvider::new(test_client(), "test-key".into());
         let any = AnyProvider::OpenAi(p);
         assert_eq!(any.model_id(), "openai/gpt-5.5");
+    }
+
+    #[test]
+    fn test_model_id_format_openrouter_default_is_not_deepseek() {
+        let p = OpenRouterProvider::new(test_client(), "test-key".into());
+        let any = AnyProvider::OpenRouter(p);
+        assert_eq!(any.model_id(), "openrouter/meta-llama/llama-4-maverick");
     }
 
     #[test]
@@ -496,6 +547,10 @@ mod tests {
             ReasoningEffort::High
         );
         assert_eq!(
+            AnyProvider::default_reasoning_effort("deepseek/deepseek-v4-pro"),
+            ReasoningEffort::High
+        );
+        assert_eq!(
             AnyProvider::default_reasoning_effort("openrouter/deepseek/deepseek-chat"),
             ReasoningEffort::None
         );
@@ -517,6 +572,10 @@ mod tests {
     fn test_xhigh_support_is_model_specific() {
         assert!(AnyProvider::supports_reasoning_effort(
             "openrouter/deepseek/deepseek-v4-pro",
+            ReasoningEffort::XHigh
+        ));
+        assert!(AnyProvider::supports_reasoning_effort(
+            "deepseek/deepseek-v4-pro",
             ReasoningEffort::XHigh
         ));
         assert!(!AnyProvider::supports_reasoning_effort(
@@ -563,6 +622,15 @@ mod tests {
             AnyProvider::from_name(test_client(), "openrouter", Some("google/gemini-3.5-flash"))
                 .err()
                 .expect("openrouter should reject google gemini models");
+        assert!(err.to_string().contains("first-party provider"));
+
+        let err = AnyProvider::from_name(
+            test_client(),
+            "openrouter",
+            Some("deepseek/deepseek-v4-pro"),
+        )
+        .err()
+        .expect("openrouter should reject deepseek models");
         assert!(err.to_string().contains("first-party provider"));
     }
 }

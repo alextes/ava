@@ -138,9 +138,9 @@ pub(crate) fn effective_reasoning_effort(
 pub(crate) fn handle_switch_command(args: &str, client: reqwest::Client, db: &Database) -> String {
     if args.is_empty() {
         return "usage: /switch <provider> [model] [reasoning_effort]\n\
-                providers: anthropic, gemini, openai, openrouter\n\
+                providers: anthropic, deepseek, gemini, openai, openrouter\n\
                 reasoning_effort: none, low, medium, high, xhigh\n\
-                examples:\n  /switch gemini\n  /switch openai\n  /switch anthropic claude-sonnet-4-6"
+                examples:\n  /switch deepseek deepseek-v4-pro\n  /switch gemini\n  /switch anthropic claude-sonnet-4-6"
             .to_string();
     }
 

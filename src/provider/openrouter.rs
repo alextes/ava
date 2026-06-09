@@ -10,7 +10,7 @@ use crate::provider::{Provider, ProviderResponse, ReasoningEffort, StopReason, T
 use crate::tool::{BuiltInKind, ToolDefinition, text_editor_function_schema};
 
 const API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL: &str = "deepseek/deepseek-v4-flash";
+const DEFAULT_MODEL: &str = "meta-llama/llama-4-maverick";
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct OpenRouterProvider {

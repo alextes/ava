@@ -358,6 +358,7 @@ impl Agent {
                     let current_name = active_provider.provider_name();
                     let fallback_name = match current_name {
                         "anthropic" => "openai",
+                        "deepseek" => "anthropic",
                         "openai" => "anthropic",
                         "openrouter" => "anthropic",
                         _ => return Err(Error::BudgetExhausted(msg.clone())),

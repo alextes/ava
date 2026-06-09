@@ -7,6 +7,7 @@
 //! - anthropic: <https://platform.claude.com/docs/en/about-claude/pricing>
 //! - openai:   <https://openai.com/api/pricing/>
 //! - gemini:   <https://ai.google.dev/gemini-api/docs/pricing>
+//! - deepseek: <https://api-docs.deepseek.com/>
 //! - openrouter: per-model pages on openrouter.ai
 //!
 //! note: opus 4.7 ships with a tokenizer that emits ~35% more tokens for the
@@ -91,6 +92,14 @@ pub fn model_pricing(model_id: &str) -> Option<ModelPricing> {
         "openai/gpt-5.5" => Some(ModelPricing::new(5.0, 30.0).with_cache(None, 0.50)),
         "openai/gpt-5.4" => Some(ModelPricing::new(2.5, 15.0).with_cache(None, 0.25)),
         "openai/gpt-5-mini" => Some(ModelPricing::new(0.25, 2.0).with_cache(None, 0.025)),
+
+        // deepseek — first-party prices for the V4 models.
+        "deepseek/deepseek-v4-pro" => {
+            Some(ModelPricing::new(0.435, 0.87).with_cache(None, 0.003625))
+        }
+        "deepseek/deepseek-v4-flash" => {
+            Some(ModelPricing::new(0.14, 0.28).with_cache(None, 0.0028))
+        }
 
         // openrouter — pricing for the few models we know; falls through
         // to None for the long tail.
@@ -204,6 +213,18 @@ mod tests {
         assert_eq!(
             base_input_usd_per_mtok("anthropic/claude-haiku-4-5"),
             Some(1.0)
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_pro_lookup() {
+        assert_eq!(
+            base_input_usd_per_mtok("deepseek/deepseek-v4-pro"),
+            Some(0.435)
+        );
+        assert_eq!(
+            model_pricing("deepseek/deepseek-v4-pro").map(|p| p.output_usd_per_mtok),
+            Some(0.87)
         );
     }
 
