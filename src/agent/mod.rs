@@ -41,6 +41,7 @@ pub struct Agent {
     chat_buffer: Option<Arc<crate::chat_buffer::ChatBuffer>>,
     runtime: Option<Arc<RuntimeState>>,
     cold_resume: Option<ColdResumePrompter>,
+    continuation_target: Option<tool::ContinuationTarget>,
 }
 
 impl Agent {
@@ -61,6 +62,7 @@ impl Agent {
             chat_buffer: None,
             runtime: None,
             cold_resume: None,
+            continuation_target: None,
         }
     }
 
@@ -86,6 +88,11 @@ impl Agent {
 
     pub fn with_cold_resume_prompter(mut self, prompter: ColdResumePrompter) -> Self {
         self.cold_resume = Some(prompter);
+        self
+    }
+
+    pub fn with_continuation_target(mut self, target: tool::ContinuationTarget) -> Self {
+        self.continuation_target = Some(target);
         self
     }
 
@@ -950,6 +957,7 @@ impl Agent {
             call,
             self.chat_buffer.as_deref(),
             self.runtime.as_deref(),
+            self.continuation_target,
         )
         .await?;
 

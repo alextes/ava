@@ -595,7 +595,12 @@ async fn process_queued_record(
     let mut agent = Agent::new(provider, approver, Arc::clone(&db), client.clone())
         .with_skills(Arc::clone(&skills))
         .with_chat_buffer(Arc::clone(&chat_buffer))
-        .with_runtime(Arc::clone(&runtime));
+        .with_runtime(Arc::clone(&runtime))
+        .with_continuation_target(crate::tool::ContinuationTarget {
+            channel,
+            chat_id,
+            thread_id,
+        });
     if let Some(cold) = cold_prompter {
         agent = agent.with_cold_resume_prompter(cold);
     }

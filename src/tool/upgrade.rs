@@ -8,7 +8,7 @@ pub const UPGRADE_TOOL_NAME: &str = "self_upgrade";
 pub fn upgrade_definition() -> ToolDefinition {
     ToolDefinition::Custom {
         name: UPGRADE_TOOL_NAME,
-        description: "rebuild ava from source and trigger a hot-swap restart. use when the user asks you to upgrade or update yourself. only works when running from a local source checkout.",
+        description: "rebuild ava from source and trigger a hot-swap restart. use when the user asks you to upgrade or update yourself. only works when running from a local source checkout. if you need to verify the upgrade or continue work right after restart, call request_continuation before your final response.",
         input_schema: json!({
             "type": "object",
             "properties": {},
@@ -98,7 +98,8 @@ fn run_upgrade() -> String {
 fn restart_signaled_message(pid: u32) -> String {
     format!(
         " signaled running ava (pid {pid}) to restart after this response. \
-         the next turn will include restart context if recovery is needed."
+         if you need to continue or verify immediately after restart, call request_continuation \
+         before your final response."
     )
 }
 
@@ -136,7 +137,7 @@ mod tests {
     fn test_restart_signaled_message_guides_model() {
         let msg = restart_signaled_message(123);
         assert!(msg.contains("restart after this response"));
-        assert!(msg.contains("restart context"));
+        assert!(msg.contains("request_continuation"));
         assert!(!msg.contains("tell the user"));
     }
 }

@@ -3,6 +3,7 @@ mod browser;
 mod channel_history;
 mod compact;
 mod complete;
+mod continuation;
 mod cron;
 mod exec;
 mod filesystem;
@@ -27,7 +28,7 @@ use crate::cli::effective_reasoning_effort;
 use crate::db::Database;
 use crate::error::Error;
 use crate::mcp::manager::McpManager;
-use crate::message::MessageContent;
+use crate::message::{ChannelKind, MessageContent};
 use crate::provider::AnyProvider;
 use crate::runtime::RuntimeState;
 
@@ -37,6 +38,7 @@ pub use browser::BROWSER_TOOL_NAME;
 pub use channel_history::CHANNEL_HISTORY_TOOL_NAME;
 pub use compact::COMPACT_CONTEXT_TOOL_NAME;
 pub use complete::COMPLETE_TOOL_NAME;
+pub use continuation::REQUEST_CONTINUATION_TOOL_NAME;
 pub use cron::CRON_TOOL_NAME;
 pub use exec::{EXEC_TOOL_NAME, references_sensitive_env};
 pub(crate) use exec::{load_vault_secrets, scrub_vault_secrets};
@@ -131,6 +133,13 @@ pub struct ToolCallResult {
     pub voice: Option<Vec<u8>>,
     /// file attachment produced by the send_file tool
     pub attachment: Option<FileAttachment>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ContinuationTarget {
+    pub channel: ChannelKind,
+    pub chat_id: i64,
+    pub thread_id: Option<i64>,
 }
 
 /// whether an attachment should be sent as a document or an inline photo.
@@ -336,6 +345,7 @@ pub fn tool_definitions(setup_mode: bool) -> Vec<ToolDefinition> {
         cron::cron_definition(),
         tasks::tasks_definition(),
         complete::complete_definition(),
+        continuation::request_continuation_definition(),
         compact::compact_context_definition(),
         upgrade::upgrade_definition(),
         search::grep_definition(),
@@ -372,6 +382,7 @@ struct ManageRulesInput {
     pattern: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_tool_call(
     client: &reqwest::Client,
     db: &Database,
@@ -380,6 +391,7 @@ pub async fn handle_tool_call(
     call: &ToolCall,
     chat_buffer: Option<&crate::chat_buffer::ChatBuffer>,
     runtime: Option<&RuntimeState>,
+    continuation_target: Option<ContinuationTarget>,
 ) -> Result<ToolCallResult, Error> {
     tracing::info!(tool = %call.name, input = %call.input, "handling tool call");
 
@@ -497,6 +509,12 @@ pub async fn handle_tool_call(
             &call.input,
         )),
         COMPLETE_TOOL_NAME => Ok(complete::handle_complete(&call.id, &call.input)),
+        REQUEST_CONTINUATION_TOOL_NAME => Ok(continuation::handle_request_continuation(
+            db,
+            &call.id,
+            &call.input,
+            continuation_target,
+        )),
         COMPACT_CONTEXT_TOOL_NAME => Ok(compact::handle_compact_context(&call.id)),
         UPGRADE_TOOL_NAME => Ok(upgrade::handle_upgrade(&call.id)),
         COMPLETE_SETUP_TOOL_NAME => {
@@ -1013,7 +1031,7 @@ mod tests {
             "remember",
             json!({"content": "alex", "kind": "fact", "category": "user", "key": "name"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1033,7 +1051,7 @@ mod tests {
             "remember",
             json!({"content": "discussed migration plan", "kind": "episode"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert!(extract_tool_result_text(&result.content).starts_with("ok (id="));
@@ -1050,7 +1068,7 @@ mod tests {
             "remember",
             json!({"content": "formal and precise", "kind": "identity", "key": "tone"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert!(extract_tool_result_text(&result.content).starts_with("ok (id="));
@@ -1064,7 +1082,7 @@ mod tests {
     async fn test_handle_remember_invalid_kind() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("remember", json!({"content": "test", "kind": "bogus"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1077,7 +1095,7 @@ mod tests {
     async fn test_handle_remember_missing_fields() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("remember", json!({"kind": "fact"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1095,10 +1113,10 @@ mod tests {
             "remember",
             json!({"content": "v2", "kind": "fact", "category": "user", "key": "name"}),
         );
-        handle_tool_call(&test_client(), &db, None, &[], &call1, None, None)
+        handle_tool_call(&test_client(), &db, None, &[], &call1, None, None, None)
             .await
             .unwrap();
-        handle_tool_call(&test_client(), &db, None, &[], &call2, None, None)
+        handle_tool_call(&test_client(), &db, None, &[], &call2, None, None, None)
             .await
             .unwrap();
 
@@ -1119,7 +1137,7 @@ mod tests {
             "forget",
             json!({"kind": "fact", "category": "user", "key": "name"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -1133,7 +1151,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("forget", json!({"kind": "identity", "key": "tone"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -1148,7 +1166,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("forget", json!({"kind": "episode", "id": id}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -1158,7 +1176,7 @@ mod tests {
     async fn test_handle_forget_episode_missing_id() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("forget", json!({"kind": "episode"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1174,7 +1192,7 @@ mod tests {
             "forget",
             json!({"kind": "fact", "category": "user", "key": "nonexistent"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "not found");
@@ -1184,7 +1202,7 @@ mod tests {
     async fn test_handle_forget_invalid_kind() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("forget", json!({"kind": "bogus"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1216,7 +1234,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("recall", json!({"query": "rust"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1227,7 +1245,7 @@ mod tests {
     async fn test_handle_recall_no_results() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("recall", json!({"query": "nonexistent"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1258,7 +1276,7 @@ mod tests {
             "recall",
             json!({"query": "rust migration", "match_mode": "any_terms"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1278,7 +1296,7 @@ mod tests {
             "recall",
             json!({"query": "rust migration", "match_mode": "phrase"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1290,7 +1308,7 @@ mod tests {
     async fn test_handle_recall_invalid_match_mode() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("recall", json!({"query": "rust", "match_mode": "near"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1313,7 +1331,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("recall", json!({"query": "rust", "kind": "episode"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1333,7 +1351,7 @@ mod tests {
         .unwrap();
 
         let call = make_call("recall", json!({"query": "rust migration"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1351,7 +1369,7 @@ mod tests {
             .unwrap();
 
         let call = make_call("recall", json!({"query": "rust", "limit": 0}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1379,7 +1397,7 @@ mod tests {
         .unwrap();
 
         let call = make_call("recall", json!({"query": "rust"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1394,7 +1412,7 @@ mod tests {
     async fn test_handle_manage_rules_list_empty() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "list"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1410,7 +1428,7 @@ mod tests {
         db.save_approval_rule("cargo *").unwrap();
 
         let call = make_call("manage_rules", json!({"action": "list"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1428,7 +1446,7 @@ mod tests {
             "manage_rules",
             json!({"action": "delete", "id": rules[0].id}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "deleted");
@@ -1439,7 +1457,7 @@ mod tests {
     async fn test_handle_manage_rules_delete_not_found() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "delete", "id": 999}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(extract_tool_result_text(&result.content), "not found");
@@ -1449,7 +1467,7 @@ mod tests {
     async fn test_handle_manage_rules_delete_missing_id() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "delete"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1462,7 +1480,7 @@ mod tests {
     async fn test_handle_manage_rules_invalid_action() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "update"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1478,7 +1496,7 @@ mod tests {
             "manage_rules",
             json!({"action": "add", "pattern": "cargo *"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1495,7 +1513,7 @@ mod tests {
     async fn test_handle_manage_rules_add_missing_pattern() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "add"}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1508,7 +1526,7 @@ mod tests {
     async fn test_handle_manage_rules_add_empty_pattern() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("manage_rules", json!({"action": "add", "pattern": "  "}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1547,7 +1565,7 @@ mod tests {
             "str_replace_based_edit_tool",
             json!({"command": "view", "path": "/tmp/nonexistent_ava_test_12345.txt"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1564,7 +1582,7 @@ mod tests {
             "str_replace_based_edit_tool",
             json!({"command": "bogus", "path": "/tmp/whatever"}),
         );
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
@@ -1580,7 +1598,7 @@ mod tests {
     async fn test_handle_unknown_tool() {
         let db = Database::open_in_memory().unwrap();
         let call = make_call("nonexistent_tool", json!({}));
-        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None)
+        let result = handle_tool_call(&test_client(), &db, None, &[], &call, None, None, None)
             .await
             .unwrap();
         let text = extract_tool_result_text(&result.content);
