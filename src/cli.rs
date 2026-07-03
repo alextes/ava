@@ -189,11 +189,20 @@ mod steer_tests {
 /// returns a user-facing confirmation or error message.
 pub(crate) fn handle_switch_command(args: &str, client: reqwest::Client, db: &Database) -> String {
     if args.is_empty() {
-        return "usage: /switch <provider> [model] [reasoning_effort]\n\
-                providers: anthropic, deepseek, gemini, openai, openrouter\n\
-                reasoning_effort: none, low, medium, high, xhigh\n\
-                examples:\n  /switch deepseek deepseek-v4-pro\n  /switch gemini\n  /switch anthropic claude-sonnet-4-6"
-            .to_string();
+        let current_line = match provider_for_session(client, db) {
+            Ok(p) => format!(
+                "current: {} (reasoning: {})\n",
+                p.model_id(),
+                p.reasoning_effort()
+            ),
+            Err(_) => String::new(),
+        };
+        return format!(
+            "{current_line}usage: /switch <provider> [model] [reasoning_effort]\n\
+             providers: anthropic, deepseek, gemini, openai, openrouter\n\
+             reasoning_effort: none, low, medium, high, xhigh\n\
+             examples:\n  /switch deepseek deepseek-v4-pro\n  /switch gemini\n  /switch anthropic claude-sonnet-4-6"
+        );
     }
 
     let mut parts = args.split_whitespace();

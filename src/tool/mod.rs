@@ -544,13 +544,11 @@ pub async fn handle_tool_call(
                                     AnyProvider::default_reasoning_effort(&model_id)
                                 });
                             provider.set_reasoning_effort(reasoning_effort);
-                            let model_info = input.model.as_deref().unwrap_or("default");
                             Ok(ToolCallResult {
                                 content: MessageContent::tool_result(
                                     &call.id,
                                     format!(
-                                        "switched to provider: {}, model: {model_info}, reasoning: {reasoning_effort}",
-                                        input.provider,
+                                        "switched to {model_id} (reasoning: {reasoning_effort})"
                                     ),
                                 ),
                                 switch_provider: Some(provider),

@@ -337,7 +337,7 @@ impl Agent {
             messages.push(Message::user(&time_note));
         }
 
-        let system_prompt = self.system_prompt(session_id)?;
+        let mut system_prompt = self.system_prompt(session_id, &self.provider)?;
         let tools = self.all_tool_definitions().await;
         let mut tool_rounds = 0;
         let mut switched_provider: Option<AnyProvider> = None;
@@ -445,7 +445,7 @@ impl Agent {
                             }
                             let note = format!(
                                 "the {current_name} provider's budget is exhausted. \
-                                 automatically switched to {fallback_name}. \
+                                 automatically switched to {model_id}. \
                                  send `/switch {current_name}` to switch back."
                             );
                             messages.push(Message::user(&note));
@@ -455,6 +455,7 @@ impl Agent {
                                 &[MessageContent::text(&note)],
                                 None,
                             )?;
+                            system_prompt = self.system_prompt(session_id, &new_provider)?;
                             switched_provider = Some(new_provider);
                             continue;
                         }
@@ -756,6 +757,7 @@ impl Agent {
                     {
                         tracing::warn!(%e, "failed to persist model selection");
                     }
+                    system_prompt = self.system_prompt(session_id, &new_provider)?;
                     switched_provider = Some(new_provider);
                 }
                 if let Some(voice_bytes) = result.voice {
@@ -1084,7 +1086,7 @@ impl Agent {
         Ok(!self.db.is_setup_complete()?)
     }
 
-    fn system_prompt(&self, session_id: i64) -> Result<String, Error> {
+    fn system_prompt(&self, session_id: i64, provider: &AnyProvider) -> Result<String, Error> {
         // in setup mode, use a dedicated prompt that guides the user through initialization
         if self.is_setup_mode()? {
             let mut prompt = SETUP_SYSTEM_PROMPT.to_string();
@@ -1175,6 +1177,14 @@ impl Agent {
                  other machines."
             ));
         }
+
+        prompt.push_str(&format!(
+            "\n\n## model\nactive model: {} (reasoning: {})\n\
+             this line is the ground truth for which model you are running — do not infer \
+             your identity from training data. use the switch_model tool to change it.",
+            provider.model_id(),
+            provider.reasoning_effort()
+        ));
 
         prompt.push_str(&format!(
             "\n\n## tool budget\nyou have a budget of {MAX_TOOL_ROUNDS} tool rounds per user \
@@ -2199,7 +2209,7 @@ mod tests {
         let provider = make_test_provider("hi");
         let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
-            .system_prompt(agent.db.active_session().unwrap())
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
             .unwrap();
 
         assert!(prompt.contains("session started:"));
@@ -2214,6 +2224,21 @@ mod tests {
     }
 
     #[test]
+    fn test_system_prompt_includes_active_model() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.mark_setup_complete().unwrap();
+
+        let provider = make_test_provider("hi");
+        let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
+        let prompt = agent
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
+            .unwrap();
+
+        assert!(prompt.contains("## model"));
+        assert!(prompt.contains("active model: test/test"));
+    }
+
+    #[test]
     fn test_system_prompt_includes_pending_tasks() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.mark_setup_complete().unwrap();
@@ -2223,7 +2248,7 @@ mod tests {
         let provider = make_test_provider("hi");
         let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
-            .system_prompt(agent.db.active_session().unwrap())
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
             .unwrap();
 
         assert!(prompt.contains("## pending tasks"));
@@ -2239,7 +2264,7 @@ mod tests {
         let provider = make_test_provider("hi");
         let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
-            .system_prompt(agent.db.active_session().unwrap())
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
             .unwrap();
 
         assert!(!prompt.contains("## pending tasks"));
@@ -2326,7 +2351,7 @@ mod tests {
         let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
 
         let prompt = agent
-            .system_prompt(agent.db.active_session().unwrap())
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
             .unwrap();
         assert!(!prompt.contains("context usage"));
     }
@@ -2342,7 +2367,7 @@ mod tests {
         let provider = make_test_provider("hi");
         let agent = Agent::new(provider, AnyApprover::Cli(CliApprover), db, test_client());
         let prompt = agent
-            .system_prompt(agent.db.active_session().unwrap())
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
             .unwrap();
 
         assert!(prompt.contains("## pending tasks"));
@@ -2533,7 +2558,7 @@ mod tests {
         .with_skills(skills);
 
         let prompt = agent
-            .system_prompt(agent.db.active_session().unwrap())
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
             .unwrap();
         assert!(prompt.contains("## available skills"));
         assert!(prompt.contains("**summarize**: summarize text"));
@@ -2553,7 +2578,7 @@ mod tests {
         );
 
         let prompt = agent
-            .system_prompt(agent.db.active_session().unwrap())
+            .system_prompt(agent.db.active_session().unwrap(), &agent.provider)
             .unwrap();
         assert!(!prompt.contains("## available skills"));
     }
