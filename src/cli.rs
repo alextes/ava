@@ -199,7 +199,7 @@ pub(crate) fn handle_switch_command(args: &str, client: reqwest::Client, db: &Da
         };
         return format!(
             "{current_line}usage: /switch <provider> [model] [reasoning_effort]\n\
-             providers: anthropic, deepseek, gemini, openai, openrouter\n\
+             providers: anthropic, deepseek, gemini, nvidia, openai, openrouter\n\
              reasoning_effort: none, low, medium, high, xhigh\n\
              examples:\n  /switch deepseek deepseek-v4-pro\n  /switch gemini\n  /switch anthropic claude-sonnet-4-6"
         );
@@ -394,5 +394,39 @@ mod tests {
             effective_reasoning_effort(&db, sid, "openrouter/deepseek/deepseek-chat", None),
             ReasoningEffort::None
         );
+    }
+
+    #[test]
+    fn test_handle_switch_command_accepts_nvidia() {
+        let _guard = crate::config::ENV_TEST_LOCK.lock().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let sid = db.active_session().unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test HTTP client");
+
+        // SAFETY: this test holds ENV_TEST_LOCK while mutating process env.
+        unsafe {
+            std::env::set_var("NVIDIA_API_KEY", "test-key");
+        }
+
+        let result = handle_switch_command("nvidia", client, &db);
+        assert_eq!(
+            result,
+            "switched to nvidia/deepseek-ai/deepseek-v4-pro (reasoning: high)"
+        );
+        assert_eq!(
+            db.session_model_reasoning(sid).unwrap(),
+            Some((
+                "nvidia/deepseek-ai/deepseek-v4-pro".to_string(),
+                Some(ReasoningEffort::High)
+            ))
+        );
+
+        // SAFETY: this test holds ENV_TEST_LOCK while mutating process env.
+        unsafe {
+            std::env::remove_var("NVIDIA_API_KEY");
+        }
     }
 }

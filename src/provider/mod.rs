@@ -1,6 +1,7 @@
 mod anthropic;
 mod deepseek;
 mod gemini;
+mod nvidia;
 mod openai;
 mod openrouter;
 
@@ -8,6 +9,7 @@ pub use crate::tool::ToolCall;
 pub use anthropic::AnthropicProvider;
 pub use deepseek::DeepSeekProvider;
 pub use gemini::GeminiProvider;
+pub use nvidia::NvidiaProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
 
@@ -141,6 +143,7 @@ pub trait Provider: Send + Sync {
     /// - anthropic: `Duration::from_secs(300)` (ephemeral, 5 min)
     /// - deepseek: `Duration::from_secs(300)` (implicit prefix cache estimate)
     /// - gemini: `Duration::ZERO` (no explicit cachedContent is created)
+    /// - nvidia: `Duration::ZERO` (no prompt caching is documented)
     /// - openai: `Duration::from_secs(24 * 3600)` (24h retention hint)
     /// - openrouter: `Duration::from_secs(300)` (implicit prefix cache estimate)
     fn cache_ttl(&self) -> Duration;
@@ -152,6 +155,7 @@ pub enum AnyProvider {
     Anthropic(AnthropicProvider),
     DeepSeek(DeepSeekProvider),
     Gemini(GeminiProvider),
+    Nvidia(NvidiaProvider),
     OpenAi(OpenAiProvider),
     OpenRouter(OpenRouterProvider),
     #[cfg(test)]
@@ -180,9 +184,15 @@ impl AnyProvider {
         if std::env::var("OPENROUTER_API_KEY").is_ok() {
             return Ok(Self::OpenRouter(OpenRouterProvider::from_env(client)?));
         }
+        if std::env::var("NVIDIA_API_KEY").is_ok() {
+            let mut provider = Self::Nvidia(NvidiaProvider::from_env(client)?);
+            let effort = Self::default_reasoning_effort(&provider.model_id());
+            provider.set_reasoning_effort(effort);
+            return Ok(provider);
+        }
 
         Err(Error::MissingApiKey(
-            "ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, or OPENROUTER_API_KEY",
+            "ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY, or NVIDIA_API_KEY",
         ))
     }
 
@@ -192,6 +202,7 @@ impl AnyProvider {
             Self::Anthropic(p) => format!("anthropic/{}", p.model_name()),
             Self::DeepSeek(p) => format!("deepseek/{}", p.model_name()),
             Self::Gemini(p) => format!("gemini/{}", p.model_name()),
+            Self::Nvidia(p) => format!("nvidia/{}", p.model_name()),
             Self::OpenAi(p) => format!("openai/{}", p.model_name()),
             Self::OpenRouter(p) => format!("openrouter/{}", p.model_name()),
             #[cfg(test)]
@@ -204,6 +215,7 @@ impl AnyProvider {
             Self::Anthropic(p) => p.reasoning_effort(),
             Self::DeepSeek(p) => p.reasoning_effort(),
             Self::Gemini(p) => p.reasoning_effort(),
+            Self::Nvidia(p) => p.reasoning_effort(),
             Self::OpenAi(p) => p.reasoning_effort(),
             Self::OpenRouter(p) => p.reasoning_effort(),
             #[cfg(test)]
@@ -216,6 +228,7 @@ impl AnyProvider {
             Self::Anthropic(p) => p.set_reasoning_effort(effort),
             Self::DeepSeek(p) => p.set_reasoning_effort(effort),
             Self::Gemini(p) => p.set_reasoning_effort(effort),
+            Self::Nvidia(p) => p.set_reasoning_effort(effort),
             Self::OpenAi(p) => p.set_reasoning_effort(effort),
             Self::OpenRouter(p) => p.set_reasoning_effort(effort),
             #[cfg(test)]
@@ -229,6 +242,7 @@ impl AnyProvider {
                 ReasoningEffort::High
             }
             "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash" => ReasoningEffort::High,
+            "nvidia/deepseek-ai/deepseek-v4-pro" => ReasoningEffort::High,
             "gemini/gemini-3.5-flash" | "gemini/gemini-3.1-pro-preview" => ReasoningEffort::Medium,
             "openai/gpt-5.5" | "openai/gpt-5.4" | "openai/gpt-5-mini" => ReasoningEffort::Medium,
             _ => ReasoningEffort::None,
@@ -247,6 +261,7 @@ impl AnyProvider {
                     | "openrouter/deepseek/deepseek-v4-flash"
                     | "deepseek/deepseek-v4-pro"
                     | "deepseek/deepseek-v4-flash"
+                    | "nvidia/deepseek-ai/deepseek-v4-pro"
                     | "gemini/gemini-3.1-pro-preview"
                     | "anthropic/claude-opus-4-7"
             ),
@@ -257,6 +272,8 @@ impl AnyProvider {
         model.starts_with("anthropic/")
             || model.starts_with("gemini/")
             || model.starts_with("google/gemini")
+            || model.starts_with("nvidia/")
+            || model.starts_with("deepseek-ai/")
             || model.starts_with("openai/")
             || model.starts_with("deepseek/")
     }
@@ -317,6 +334,22 @@ impl AnyProvider {
                 p.set_reasoning_effort(effort);
                 Ok(p)
             }
+            "nvidia" => {
+                let mut p = NvidiaProvider::from_env(client)?;
+                if let Some(m) = model {
+                    if !nvidia::ALLOWED_MODELS.contains(&m) {
+                        return Err(Error::Provider(format!(
+                            "model {m} not allowed for nvidia. allowed: {}",
+                            nvidia::ALLOWED_MODELS.join(", ")
+                        )));
+                    }
+                    p.set_model(m.to_string());
+                }
+                let mut p = Self::Nvidia(p);
+                let effort = Self::default_reasoning_effort(&p.model_id());
+                p.set_reasoning_effort(effort);
+                Ok(p)
+            }
             "openai" => {
                 let mut p = OpenAiProvider::from_env(client)?;
                 if let Some(m) = model {
@@ -371,6 +404,7 @@ impl AnyProvider {
             Self::Anthropic(_) => "anthropic",
             Self::DeepSeek(_) => "deepseek",
             Self::Gemini(_) => "gemini",
+            Self::Nvidia(_) => "nvidia",
             Self::OpenAi(_) => "openai",
             Self::OpenRouter(_) => "openrouter",
             #[cfg(test)]
@@ -383,6 +417,7 @@ impl AnyProvider {
             Self::Anthropic(p) => p.context_window(),
             Self::DeepSeek(p) => p.context_window(),
             Self::Gemini(p) => p.context_window(),
+            Self::Nvidia(p) => p.context_window(),
             Self::OpenAi(p) => p.context_window(),
             Self::OpenRouter(p) => p.context_window(),
             #[cfg(test)]
@@ -396,6 +431,7 @@ impl AnyProvider {
             Self::Anthropic(p) => p.cache_ttl(),
             Self::DeepSeek(p) => p.cache_ttl(),
             Self::Gemini(p) => p.cache_ttl(),
+            Self::Nvidia(p) => p.cache_ttl(),
             Self::OpenAi(p) => p.cache_ttl(),
             Self::OpenRouter(p) => p.cache_ttl(),
             #[cfg(test)]
@@ -415,6 +451,7 @@ impl Provider for AnyProvider {
             Self::Anthropic(p) => p.complete(system_prompt, messages, tools).await,
             Self::DeepSeek(p) => p.complete(system_prompt, messages, tools).await,
             Self::Gemini(p) => p.complete(system_prompt, messages, tools).await,
+            Self::Nvidia(p) => p.complete(system_prompt, messages, tools).await,
             Self::OpenAi(p) => p.complete(system_prompt, messages, tools).await,
             Self::OpenRouter(p) => p.complete(system_prompt, messages, tools).await,
             #[cfg(test)]
@@ -481,6 +518,13 @@ mod tests {
         let p = DeepSeekProvider::new(test_client(), "test-key".into());
         let any = AnyProvider::DeepSeek(p);
         assert_eq!(any.model_id(), "deepseek/deepseek-v4-flash");
+    }
+
+    #[test]
+    fn test_model_id_format_nvidia() {
+        let p = NvidiaProvider::new(test_client(), "test-key".into());
+        let any = AnyProvider::Nvidia(p);
+        assert_eq!(any.model_id(), "nvidia/deepseek-ai/deepseek-v4-pro");
     }
 
     #[test]
@@ -551,6 +595,10 @@ mod tests {
             ReasoningEffort::High
         );
         assert_eq!(
+            AnyProvider::default_reasoning_effort("nvidia/deepseek-ai/deepseek-v4-pro"),
+            ReasoningEffort::High
+        );
+        assert_eq!(
             AnyProvider::default_reasoning_effort("openrouter/deepseek/deepseek-chat"),
             ReasoningEffort::None
         );
@@ -576,6 +624,10 @@ mod tests {
         ));
         assert!(AnyProvider::supports_reasoning_effort(
             "deepseek/deepseek-v4-pro",
+            ReasoningEffort::XHigh
+        ));
+        assert!(AnyProvider::supports_reasoning_effort(
+            "nvidia/deepseek-ai/deepseek-v4-pro",
             ReasoningEffort::XHigh
         ));
         assert!(!AnyProvider::supports_reasoning_effort(
@@ -632,5 +684,53 @@ mod tests {
         .err()
         .expect("openrouter should reject deepseek models");
         assert!(err.to_string().contains("first-party provider"));
+
+        let err = AnyProvider::from_name(
+            test_client(),
+            "openrouter",
+            Some("nvidia/deepseek-ai/deepseek-v4-pro"),
+        )
+        .err()
+        .expect("openrouter should reject nvidia models");
+        assert!(err.to_string().contains("first-party provider"));
+
+        let err = AnyProvider::from_name(
+            test_client(),
+            "openrouter",
+            Some("deepseek-ai/deepseek-v4-pro"),
+        )
+        .err()
+        .expect("openrouter should reject deepseek-ai models");
+        assert!(err.to_string().contains("first-party provider"));
+    }
+
+    #[test]
+    fn test_from_name_constructs_nvidia_provider() {
+        let _guard = crate::config::ENV_TEST_LOCK.lock().unwrap();
+
+        // SAFETY: this test holds ENV_TEST_LOCK while mutating process env.
+        unsafe {
+            std::env::set_var("NVIDIA_API_KEY", "test-key");
+        }
+
+        let provider = AnyProvider::from_name(test_client(), "nvidia", None)
+            .expect("nvidia provider should construct");
+        assert_eq!(provider.model_id(), "nvidia/deepseek-ai/deepseek-v4-pro");
+        assert_eq!(provider.reasoning_effort(), ReasoningEffort::High);
+
+        let provider =
+            AnyProvider::from_name(test_client(), "nvidia", Some("deepseek-ai/deepseek-v4-pro"))
+                .expect("explicit deepseek model should construct");
+        assert_eq!(provider.model_id(), "nvidia/deepseek-ai/deepseek-v4-pro");
+
+        let err = AnyProvider::from_name(test_client(), "nvidia", Some("deepseek-v4-pro"))
+            .err()
+            .expect("nvidia should reject unknown models");
+        assert!(err.to_string().contains("not allowed for nvidia"));
+
+        // SAFETY: this test holds ENV_TEST_LOCK while mutating process env.
+        unsafe {
+            std::env::remove_var("NVIDIA_API_KEY");
+        }
     }
 }

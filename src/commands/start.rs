@@ -663,8 +663,8 @@ async fn process_queued_record(
             let help = format!(
                 "budget exhausted: {msg}\n\n\
                  automatic fallback failed. use `/switch <provider>` to \
-                 switch manually (e.g. `/switch gemini`, `/switch openai`, \
-                 or `/switch anthropic`)."
+                 switch manually (e.g. `/switch gemini`, `/switch nvidia`, \
+                 `/switch openai`, or `/switch anthropic`)."
             );
             send_error(sink, &help).await;
         }

@@ -36,6 +36,7 @@ pub fn references_sensitive_env(command: &str) -> bool {
         "ANTHROPIC_API_KEY",
         "DEEPSEEK_API_KEY",
         "GEMINI_API_KEY",
+        "NVIDIA_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "TELEGRAM_BOT_TOKEN",
@@ -255,6 +256,7 @@ mod tests {
         assert!(references_sensitive_env("echo $ANTHROPIC_API_KEY"));
         assert!(references_sensitive_env("echo $DEEPSEEK_API_KEY"));
         assert!(references_sensitive_env("echo $GEMINI_API_KEY"));
+        assert!(references_sensitive_env("echo $NVIDIA_API_KEY"));
         assert!(references_sensitive_env("echo $OPENAI_API_KEY"));
         assert!(references_sensitive_env("echo $OPENROUTER_API_KEY"));
         assert!(references_sensitive_env("echo $TELEGRAM_BOT_TOKEN"));

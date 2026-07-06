@@ -423,6 +423,7 @@ impl Agent {
                     let fallback_name = match current_name {
                         "anthropic" => "openai",
                         "deepseek" => "anthropic",
+                        "nvidia" => "anthropic",
                         "openai" => "anthropic",
                         "openrouter" => "anthropic",
                         _ => return Err(Error::BudgetExhausted(msg.clone())),
