@@ -294,6 +294,15 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN cache_creation_tokens INTEGER;
     ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER;
     "#,
+    // v23: move removed openai model selections to the new luna default
+    r#"
+    UPDATE sessions
+    SET model = 'openai/gpt-5.6-luna'
+    WHERE model IN ('openai/gpt-5.5', 'openai/gpt-5.4', 'openai/gpt-5-mini');
+
+    DELETE FROM model_reasoning_preferences
+    WHERE model IN ('openai/gpt-5.5', 'openai/gpt-5.4', 'openai/gpt-5-mini');
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> Result<(), Error> {

@@ -10,8 +10,8 @@ use crate::provider::{Provider, ProviderResponse, ReasoningEffort, StopReason, T
 use crate::tool::{APPLY_PATCH_TOOL_NAME, BuiltInKind, ToolDefinition};
 
 const API_URL: &str = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL: &str = "gpt-5.5";
-pub const ALLOWED_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5-mini"];
+const DEFAULT_MODEL: &str = "gpt-5.6-luna";
+pub const ALLOWED_MODELS: &[&str] = &["gpt-5.6-luna", "gpt-5.6-sol"];
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct OpenAiProvider {
@@ -57,7 +57,7 @@ impl OpenAiProvider {
 
     pub fn context_window(&self) -> u32 {
         match self.model.as_str() {
-            "gpt-5.5" | "gpt-5.4" => 1_050_000,
+            "gpt-5.6-luna" | "gpt-5.6-sol" => 1_050_000,
             _ => 400_000,
         }
     }
@@ -558,7 +558,7 @@ impl Provider for OpenAiProvider {
 
     fn cache_ttl(&self) -> Duration {
         // `prompt_cache_retention: "24h"` — hint to openai to keep the cache
-        // warm for up to 24 hours. no write premium, so leaving it at max.
+        // warm for up to 24 hours.
         Duration::from_secs(24 * 3600)
     }
 }
@@ -566,6 +566,30 @@ impl Provider for OpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_client() -> Client {
+        Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test HTTP client")
+    }
+
+    #[test]
+    fn test_allowed_models_use_luna_default_and_include_sol() {
+        let provider = OpenAiProvider::new(test_client(), "test-key".into());
+
+        assert_eq!(provider.model_name(), "gpt-5.6-luna");
+        assert_eq!(ALLOWED_MODELS, &["gpt-5.6-luna", "gpt-5.6-sol"]);
+    }
+
+    #[test]
+    fn test_gpt_5_6_context_windows() {
+        let mut provider = OpenAiProvider::new(test_client(), "test-key".into());
+        assert_eq!(provider.context_window(), 1_050_000);
+
+        provider.set_model("gpt-5.6-sol".into());
+        assert_eq!(provider.context_window(), 1_050_000);
+    }
 
     #[test]
     fn test_convert_user_message() {
@@ -685,7 +709,7 @@ mod tests {
     #[test]
     fn test_request_serializes_reasoning_effort() {
         let request = ApiRequest {
-            model: "gpt-5.4",
+            model: "gpt-5.6-luna",
             max_output_tokens: 1024,
             instructions: "be helpful",
             input: vec![],

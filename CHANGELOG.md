@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- openai models replaced with GPT-5.6 Luna and Sol, with Luna as the default
+
 ## [0.5.0]
 
 ### Added

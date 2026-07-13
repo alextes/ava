@@ -69,7 +69,7 @@ mod tests {
     fn test_migrations_run_cleanly() {
         let db = Database::open_in_memory().unwrap();
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         db.set_app_state("migration_test", "ok").unwrap();
         assert_eq!(
             db.app_state("migration_test").unwrap().as_deref(),
@@ -85,7 +85,7 @@ mod tests {
             migrations::migrate(&conn).unwrap();
         }
         let version = db.schema_version().unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -111,6 +111,18 @@ mod tests {
                 output_tokens INTEGER,
                 reasoning_tokens INTEGER
             );
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                model TEXT,
+                reasoning_effort TEXT
+            );
+            CREATE TABLE model_reasoning_preferences (
+                session_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                reasoning_effort TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (session_id, model)
+            );
             INSERT INTO messages (session_id, role, content)
             VALUES (1, 'user', '[{"type":"text","text":"hello"}]');
             "#,
@@ -125,7 +137,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(kind, "message");
-        assert_eq!(migrations::schema_version(&conn).unwrap(), 22);
+        assert_eq!(migrations::schema_version(&conn).unwrap(), 23);
     }
 
     #[test]
@@ -152,6 +164,18 @@ mod tests {
                 output_tokens INTEGER,
                 reasoning_tokens INTEGER
             );
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                model TEXT,
+                reasoning_effort TEXT
+            );
+            CREATE TABLE model_reasoning_preferences (
+                session_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                reasoning_effort TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (session_id, model)
+            );
             "#,
         )
         .unwrap();
@@ -168,7 +192,90 @@ mod tests {
         assert!(cols.contains(&"model_id".to_string()));
         assert!(cols.contains(&"cache_creation_tokens".to_string()));
         assert!(cols.contains(&"cache_read_tokens".to_string()));
-        assert_eq!(migrations::schema_version(&conn).unwrap(), 22);
+        assert_eq!(migrations::schema_version(&conn).unwrap(), 23);
+    }
+
+    #[test]
+    fn test_v23_migration_moves_removed_openai_models_to_luna() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO schema_version (version) VALUES (22)", [])
+            .unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                model TEXT,
+                reasoning_effort TEXT
+            );
+            CREATE TABLE model_reasoning_preferences (
+                session_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                reasoning_effort TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (session_id, model)
+            );
+
+            INSERT INTO sessions (id, model, reasoning_effort) VALUES
+                (1, 'openai/gpt-5.5', 'medium'),
+                (2, 'openai/gpt-5.4', 'high'),
+                (3, 'openai/gpt-5-mini', 'low'),
+                (4, 'openai/gpt-5.6-sol', 'xhigh'),
+                (5, 'anthropic/claude-sonnet-4-6', NULL);
+
+            INSERT INTO model_reasoning_preferences (session_id, model, reasoning_effort) VALUES
+                (1, 'openai/gpt-5.5', 'medium'),
+                (2, 'openai/gpt-5.4', 'high'),
+                (3, 'openai/gpt-5-mini', 'low'),
+                (4, 'openai/gpt-5.6-sol', 'xhigh'),
+                (5, 'anthropic/claude-sonnet-4-6', 'high');
+            "#,
+        )
+        .unwrap();
+
+        migrations::migrate(&conn).unwrap();
+
+        let sessions: Vec<(i64, Option<String>, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, model, reasoning_effort FROM sessions ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            sessions,
+            vec![
+                (1, Some("openai/gpt-5.6-luna".into()), Some("medium".into())),
+                (2, Some("openai/gpt-5.6-luna".into()), Some("high".into())),
+                (3, Some("openai/gpt-5.6-luna".into()), Some("low".into())),
+                (4, Some("openai/gpt-5.6-sol".into()), Some("xhigh".into())),
+                (5, Some("anthropic/claude-sonnet-4-6".into()), None),
+            ]
+        );
+
+        let preferences: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT model FROM model_reasoning_preferences ORDER BY model")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            preferences,
+            vec![
+                "anthropic/claude-sonnet-4-6".to_string(),
+                "openai/gpt-5.6-sol".to_string(),
+            ]
+        );
+        assert_eq!(migrations::schema_version(&conn).unwrap(), 23);
     }
 
     #[test]
@@ -270,7 +377,7 @@ mod tests {
 
         // verify schema version is latest
         let version = migrations::schema_version(&conn).unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
 
         // verify facts table is gone
         let table_exists: bool = conn

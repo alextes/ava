@@ -201,7 +201,7 @@ pub(crate) fn handle_switch_command(args: &str, client: reqwest::Client, db: &Da
             "{current_line}usage: /switch <provider> [model] [reasoning_effort]\n\
              providers: anthropic, deepseek, gemini, nvidia, openai, openrouter\n\
              reasoning_effort: none, low, medium, high, xhigh\n\
-             examples:\n  /switch deepseek deepseek-v4-pro\n  /switch gemini\n  /switch anthropic claude-sonnet-4-6"
+             examples:\n  /switch openai gpt-5.6-sol xhigh\n  /switch deepseek deepseek-v4-pro\n  /switch gemini\n  /switch anthropic claude-sonnet-4-6"
         );
     }
 
@@ -371,13 +371,13 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_reasoning_ignores_unsupported_xhigh() {
+    fn test_effective_reasoning_accepts_openai_xhigh() {
         let db = Database::open_in_memory().unwrap();
         let sid = db.active_session().unwrap();
 
         assert_eq!(
-            effective_reasoning_effort(&db, sid, "openai/gpt-5.4", Some("xhigh")),
-            ReasoningEffort::Medium
+            effective_reasoning_effort(&db, sid, "openai/gpt-5.6-luna", Some("xhigh")),
+            ReasoningEffort::XHigh
         );
     }
 
@@ -387,7 +387,7 @@ mod tests {
         let sid = db.active_session().unwrap();
 
         assert_eq!(
-            effective_reasoning_effort(&db, sid, "openai/gpt-5.4", None),
+            effective_reasoning_effort(&db, sid, "openai/gpt-5.6-luna", None),
             ReasoningEffort::Medium
         );
         assert_eq!(

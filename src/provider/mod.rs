@@ -244,7 +244,7 @@ impl AnyProvider {
             "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash" => ReasoningEffort::High,
             "nvidia/deepseek-ai/deepseek-v4-pro" => ReasoningEffort::High,
             "gemini/gemini-3.5-flash" | "gemini/gemini-3.1-pro-preview" => ReasoningEffort::Medium,
-            "openai/gpt-5.5" | "openai/gpt-5.4" | "openai/gpt-5-mini" => ReasoningEffort::Medium,
+            "openai/gpt-5.6-luna" | "openai/gpt-5.6-sol" => ReasoningEffort::Medium,
             _ => ReasoningEffort::None,
         }
     }
@@ -264,6 +264,8 @@ impl AnyProvider {
                     | "nvidia/deepseek-ai/deepseek-v4-pro"
                     | "gemini/gemini-3.1-pro-preview"
                     | "anthropic/claude-opus-4-7"
+                    | "openai/gpt-5.6-luna"
+                    | "openai/gpt-5.6-sol"
             ),
         }
     }
@@ -531,7 +533,29 @@ mod tests {
     fn test_model_id_format_openai() {
         let p = OpenAiProvider::new(test_client(), "test-key".into());
         let any = AnyProvider::OpenAi(p);
-        assert_eq!(any.model_id(), "openai/gpt-5.5");
+        assert_eq!(any.model_id(), "openai/gpt-5.6-luna");
+    }
+
+    #[test]
+    fn test_openai_rejects_removed_models() {
+        let _guard = crate::config::ENV_TEST_LOCK.lock().unwrap();
+
+        // SAFETY: this test holds ENV_TEST_LOCK while mutating process env.
+        unsafe {
+            std::env::set_var("OPENAI_API_KEY", "test-key");
+        }
+
+        for model in ["gpt-5.5", "gpt-5.4", "gpt-5-mini"] {
+            let err = AnyProvider::from_name(test_client(), "openai", Some(model))
+                .err()
+                .expect("removed openai model should be rejected");
+            assert!(err.to_string().contains("not allowed for openai"));
+        }
+
+        // SAFETY: this test holds ENV_TEST_LOCK while mutating process env.
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
     }
 
     #[test]
@@ -603,7 +627,11 @@ mod tests {
             ReasoningEffort::None
         );
         assert_eq!(
-            AnyProvider::default_reasoning_effort("openai/gpt-5.4"),
+            AnyProvider::default_reasoning_effort("openai/gpt-5.6-luna"),
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
+            AnyProvider::default_reasoning_effort("openai/gpt-5.6-sol"),
             ReasoningEffort::Medium
         );
         assert_eq!(
@@ -630,8 +658,12 @@ mod tests {
             "nvidia/deepseek-ai/deepseek-v4-pro",
             ReasoningEffort::XHigh
         ));
-        assert!(!AnyProvider::supports_reasoning_effort(
-            "openai/gpt-5.4",
+        assert!(AnyProvider::supports_reasoning_effort(
+            "openai/gpt-5.6-luna",
+            ReasoningEffort::XHigh
+        ));
+        assert!(AnyProvider::supports_reasoning_effort(
+            "openai/gpt-5.6-sol",
             ReasoningEffort::XHigh
         ));
         assert!(AnyProvider::supports_reasoning_effort(
@@ -659,7 +691,7 @@ mod tests {
         .expect("openrouter should reject anthropic models");
         assert!(err.to_string().contains("first-party provider"));
 
-        let err = AnyProvider::from_name(test_client(), "openrouter", Some("openai/gpt-5.5"))
+        let err = AnyProvider::from_name(test_client(), "openrouter", Some("openai/gpt-5.6-luna"))
             .err()
             .expect("openrouter should reject openai models");
         assert!(err.to_string().contains("first-party provider"));

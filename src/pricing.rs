@@ -3,7 +3,7 @@
 //! used to estimate the cost of replaying a conversation uncached when the
 //! prompt cache goes cold, and to estimate per-response spend from provider
 //! usage metadata. values verified against the providers' pricing pages as of
-//! 2026-05:
+//! 2026-07:
 //! - anthropic: <https://platform.claude.com/docs/en/about-claude/pricing>
 //! - openai:   <https://openai.com/api/pricing/>
 //! - gemini:   <https://ai.google.dev/gemini-api/docs/pricing>
@@ -87,8 +87,11 @@ pub fn model_pricing(model_id: &str) -> Option<ModelPricing> {
             Some(ModelPricing::new(2.00, 12.0).with_cache(None, 0.20))
         }
 
-        // openai — values from openai's pricing page (may 2026).
-        // gpt-5.5 doubled the per-token price relative to gpt-5.4.
+        // openai — current selectable models.
+        "openai/gpt-5.6-luna" => Some(ModelPricing::new(1.0, 6.0).with_cache(Some(1.25), 0.10)),
+        "openai/gpt-5.6-sol" => Some(ModelPricing::new(5.0, 30.0).with_cache(Some(6.25), 0.50)),
+
+        // historical openai models retained for usage records.
         "openai/gpt-5.5" => Some(ModelPricing::new(5.0, 30.0).with_cache(None, 0.50)),
         "openai/gpt-5.4" => Some(ModelPricing::new(2.5, 15.0).with_cache(None, 0.25)),
         "openai/gpt-5-mini" => Some(ModelPricing::new(0.25, 2.0).with_cache(None, 0.025)),
@@ -229,6 +232,18 @@ mod tests {
     }
 
     #[test]
+    fn gpt_5_6_pricing_includes_cache_rates() {
+        assert_eq!(
+            model_pricing("openai/gpt-5.6-luna"),
+            Some(ModelPricing::new(1.0, 6.0).with_cache(Some(1.25), 0.10))
+        );
+        assert_eq!(
+            model_pricing("openai/gpt-5.6-sol"),
+            Some(ModelPricing::new(5.0, 30.0).with_cache(Some(6.25), 0.50))
+        );
+    }
+
+    #[test]
     fn unknown_model_returns_none() {
         assert!(base_input_usd_per_mtok("anthropic/claude-future-99").is_none());
         assert!(base_input_usd_per_mtok("openrouter/google/gemini-3").is_none());
@@ -281,9 +296,9 @@ mod tests {
             cache_read_tokens: Some(80_000),
             ..Default::default()
         };
-        let cost = estimate_usage_cost_usd("openai/gpt-5.4", &usage).unwrap();
-        // uncached input 20k × $2.50 + cached input 80k × $0.25 + output 10k × $15
-        assert!((cost - 0.22).abs() < 0.0001);
+        let cost = estimate_usage_cost_usd("openai/gpt-5.6-luna", &usage).unwrap();
+        // uncached input 20k × $1 + cached input 80k × $0.10 + output 10k × $6
+        assert!((cost - 0.088).abs() < 0.0001);
     }
 
     #[test]
