@@ -1,4 +1,5 @@
 mod apply_patch;
+mod broker;
 mod browser;
 mod channel_history;
 mod compact;
@@ -34,6 +35,7 @@ use crate::runtime::RuntimeState;
 
 pub use apply_patch::APPLY_PATCH_TOOL_NAME;
 pub(crate) use apply_patch::text_editor_function_schema;
+pub(crate) use broker::{LocalExecutionContext, LocalToolBroker};
 pub use browser::BROWSER_TOOL_NAME;
 pub use channel_history::CHANNEL_HISTORY_TOOL_NAME;
 pub use compact::COMPACT_CONTEXT_TOOL_NAME;
@@ -383,7 +385,7 @@ struct ManageRulesInput {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn handle_tool_call(
+async fn handle_tool_call(
     client: &reqwest::Client,
     db: &Database,
     mcp: Option<&McpManager>,
