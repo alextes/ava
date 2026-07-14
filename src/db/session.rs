@@ -1089,7 +1089,6 @@ mod tests {
                 reasoning_tokens: Some(10),
                 cache_creation_tokens: Some(30),
                 cache_read_tokens: Some(40),
-                ..Default::default()
             },
             "anthropic/claude-sonnet-4-6",
         )
