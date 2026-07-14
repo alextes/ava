@@ -80,6 +80,16 @@ ava doctor     # diagnose and repair session issues
 ava upgrade    # rebuild from source and hot-swap
 ```
 
+telegram turn controls:
+
+```text
+/steer <instruction>  # adjust the active turn at the next agent boundary
+/stop                 # immediately stop the active turn and tool work
+```
+
+`/stop` does not stop the daemon or clear later queued messages. use `ava stop`
+from the shell to stop the daemon.
+
 ## what i can do
 
 - **exec** — run shell commands on your machine (with your approval for anything risky)

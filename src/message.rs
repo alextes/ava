@@ -18,6 +18,7 @@ pub enum Role {
 pub enum MessageKind {
     Message,
     Steer,
+    Stop,
 }
 
 impl MessageKind {
@@ -25,6 +26,7 @@ impl MessageKind {
         match self {
             MessageKind::Message => "message",
             MessageKind::Steer => "steer",
+            MessageKind::Stop => "stop",
         }
     }
 
@@ -32,6 +34,7 @@ impl MessageKind {
         match value {
             "message" => MessageKind::Message,
             "steer" => MessageKind::Steer,
+            "stop" => MessageKind::Stop,
             other => {
                 tracing::warn!(kind = other, "unknown message kind, treating as message");
                 MessageKind::Message

@@ -64,6 +64,59 @@ impl PendingApprovals {
     }
 }
 
+struct PendingApprovalGuard {
+    nonce: Option<String>,
+    pending: Arc<PendingApprovals>,
+    bot: Arc<TelegramBot>,
+    chat_id: i64,
+}
+
+impl PendingApprovalGuard {
+    fn new(
+        nonce: String,
+        pending: Arc<PendingApprovals>,
+        bot: Arc<TelegramBot>,
+        chat_id: i64,
+    ) -> Self {
+        Self {
+            nonce: Some(nonce),
+            pending,
+            bot,
+            chat_id,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.nonce = None;
+    }
+}
+
+impl Drop for PendingApprovalGuard {
+    fn drop(&mut self) {
+        let Some(nonce) = self.nonce.take() else {
+            return;
+        };
+        let pending = Arc::clone(&self.pending);
+        let bot = Arc::clone(&self.bot);
+        let chat_id = self.chat_id;
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let entry = pending.map.lock().await.remove(&nonce);
+            if let Some(stopped) = entry {
+                let text = format!("{}\n-> stopped", stopped.original_text);
+                if let Err(e) = bot
+                    .edit_message_text(chat_id, stopped.message_id, &text)
+                    .await
+                {
+                    tracing::warn!(%e, "failed to expire stopped approval prompt");
+                }
+            }
+        });
+    }
+}
+
 pub struct TelegramApprover {
     bot: Arc<TelegramBot>,
     chat_id: i64,
@@ -503,30 +556,41 @@ impl Approver for TelegramApprover {
             );
         }
 
+        let mut cancellation_guard = PendingApprovalGuard::new(
+            nonce.clone(),
+            Arc::clone(&self.pending),
+            Arc::clone(&self.bot),
+            self.chat_id,
+        );
+
         // await response with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await
-        {
-            Ok(Ok(decision)) => Ok(decision),
-            Ok(Err(_)) => {
-                // sender dropped (e.g. bot restart)
-                Err(Error::ApprovalTimeout)
-            }
-            Err(_) => {
-                // timeout — edit message to show expired and remove buttons
-                let mut map = self.pending.map.lock().await;
-                if let Some(expired) = map.remove(&nonce) {
-                    let text = format!("{}\n-> expired", expired.original_text);
-                    if let Err(e) = self
-                        .bot
-                        .edit_message_text(self.chat_id, expired.message_id, &text)
-                        .await
-                    {
-                        tracing::warn!("failed to edit expired approval message: {e}");
-                    }
+        let result =
+            match tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx)
+                .await
+            {
+                Ok(Ok(decision)) => Ok(decision),
+                Ok(Err(_)) => {
+                    // sender dropped (e.g. bot restart)
+                    Err(Error::ApprovalTimeout)
                 }
-                Err(Error::ApprovalTimeout)
-            }
-        }
+                Err(_) => {
+                    // timeout — edit message to show expired and remove buttons
+                    let mut map = self.pending.map.lock().await;
+                    if let Some(expired) = map.remove(&nonce) {
+                        let text = format!("{}\n-> expired", expired.original_text);
+                        if let Err(e) = self
+                            .bot
+                            .edit_message_text(self.chat_id, expired.message_id, &text)
+                            .await
+                        {
+                            tracing::warn!("failed to edit expired approval message: {e}");
+                        }
+                    }
+                    Err(Error::ApprovalTimeout)
+                }
+            };
+        cancellation_guard.disarm();
+        result
     }
 }
 
@@ -916,5 +980,38 @@ mod tests {
         );
         let result = approver.request_approval(&call).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_dropped_approval_wait_removes_pending_entry() {
+        let pending = Arc::new(PendingApprovals::new());
+        let (sender, _receiver) = oneshot::channel();
+        pending.map.lock().await.insert(
+            "stop-me".into(),
+            PendingApproval {
+                sender,
+                message_id: 1,
+                original_text: "approve?".into(),
+                patterns: Vec::new(),
+            },
+        );
+        let guard = PendingApprovalGuard::new(
+            "stop-me".into(),
+            Arc::clone(&pending),
+            Arc::new(TelegramBot::new_for_tests("fake-token".into())),
+            1,
+        );
+
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if pending.map.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled approval should be removed");
     }
 }

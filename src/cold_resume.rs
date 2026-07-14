@@ -53,6 +53,59 @@ impl PendingColdResumes {
     }
 }
 
+struct PendingPromptGuard {
+    nonce: Option<String>,
+    pending: Arc<PendingColdResumes>,
+    bot: Arc<TelegramBot>,
+    chat_id: i64,
+}
+
+impl PendingPromptGuard {
+    fn new(
+        nonce: String,
+        pending: Arc<PendingColdResumes>,
+        bot: Arc<TelegramBot>,
+        chat_id: i64,
+    ) -> Self {
+        Self {
+            nonce: Some(nonce),
+            pending,
+            bot,
+            chat_id,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.nonce = None;
+    }
+}
+
+impl Drop for PendingPromptGuard {
+    fn drop(&mut self) {
+        let Some(nonce) = self.nonce.take() else {
+            return;
+        };
+        let pending = Arc::clone(&self.pending);
+        let bot = Arc::clone(&self.bot);
+        let chat_id = self.chat_id;
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let entry = pending.map.lock().await.remove(&nonce);
+            if let Some(stopped) = entry {
+                let text = format!("{}\n-> stopped", stopped.original_text);
+                if let Err(e) = bot
+                    .edit_message_text(chat_id, stopped.message_id, &text)
+                    .await
+                {
+                    tracing::warn!(%e, "failed to expire stopped cold-resume prompt");
+                }
+            }
+        });
+    }
+}
+
 /// holds the telegram context needed to ask the user about a cold resume.
 pub struct ColdResumePrompter {
     bot: Arc<TelegramBot>,
@@ -129,7 +182,15 @@ impl ColdResumePrompter {
             );
         }
 
-        match tokio::time::timeout(Duration::from_secs(PROMPT_TIMEOUT_SECS), rx).await {
+        let mut cancellation_guard = PendingPromptGuard::new(
+            nonce.clone(),
+            Arc::clone(&self.pending),
+            Arc::clone(&self.bot),
+            self.chat_id,
+        );
+
+        let result = match tokio::time::timeout(Duration::from_secs(PROMPT_TIMEOUT_SECS), rx).await
+        {
             Ok(Ok(decision)) => Ok(decision),
             Ok(Err(_)) => {
                 // sender was dropped without a value — treat as keep so the user
@@ -152,7 +213,9 @@ impl ColdResumePrompter {
                 }
                 Ok(ColdResumeDecision::Keep)
             }
-        }
+        };
+        cancellation_guard.disarm();
+        result
     }
 }
 
@@ -329,5 +392,37 @@ mod tests {
         let _ = prompt.sender.send(ColdResumeDecision::Keep);
         drop(map);
         assert_eq!(rx.await.unwrap(), ColdResumeDecision::Keep);
+    }
+
+    #[tokio::test]
+    async fn dropped_prompt_wait_removes_pending_entry() {
+        let pending = Arc::new(PendingColdResumes::new());
+        let (sender, _receiver) = oneshot::channel();
+        pending.map.lock().await.insert(
+            "stop-me".into(),
+            PendingPrompt {
+                sender,
+                message_id: 1,
+                original_text: "keep context?".into(),
+            },
+        );
+        let guard = PendingPromptGuard::new(
+            "stop-me".into(),
+            Arc::clone(&pending),
+            Arc::new(TelegramBot::new_for_tests("fake-token".into())),
+            1,
+        );
+
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if pending.map.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled cold-resume prompt should be removed");
     }
 }

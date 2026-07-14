@@ -137,6 +137,21 @@ pub(crate) fn parse_steer_command<'a>(
     }
 }
 
+pub(crate) fn parse_stop_command(input: &str, bot_username: Option<&str>) -> bool {
+    let Some((cmd, _)) = parse_slash_command(input) else {
+        return false;
+    };
+    if cmd.eq_ignore_ascii_case("stop") {
+        return true;
+    }
+
+    let Some((base, mention)) = cmd.split_once('@') else {
+        return false;
+    };
+    base.eq_ignore_ascii_case("stop")
+        && bot_username.is_some_and(|username| mention.eq_ignore_ascii_case(username))
+}
+
 pub(crate) fn effective_reasoning_effort(
     db: &Database,
     session_id: i64,
@@ -182,6 +197,33 @@ mod steer_tests {
     #[test]
     fn test_parse_steer_command_empty_args() {
         assert_eq!(parse_steer_command("/steer", None), Some(""));
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_stop_command_plain_and_case_insensitive() {
+        assert!(parse_stop_command("/stop", None));
+        assert!(parse_stop_command(" /STOP ", None));
+        assert!(parse_stop_command("/stop ignored", None));
+    }
+
+    #[test]
+    fn test_parse_stop_command_with_bot_mention() {
+        assert!(parse_stop_command("/stop@ren_bot", Some("ren_bot")));
+        assert!(parse_stop_command("/STOP@REN_BOT", Some("ren_bot")));
+        assert!(!parse_stop_command("/stop@other_bot", Some("ren_bot")));
+        assert!(!parse_stop_command("/stop@ren_bot", None));
+    }
+
+    #[test]
+    fn test_parse_stop_command_rejects_other_input() {
+        assert!(!parse_stop_command("stop", None));
+        assert!(!parse_stop_command("/stopping", None));
+        assert!(!parse_stop_command("/steer stop", None));
     }
 }
 

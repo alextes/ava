@@ -109,10 +109,9 @@ async fn execute_grep(input: &GrepInput) -> String {
         args.push(path.clone());
     }
 
-    let result = tokio::process::Command::new("rg")
-        .args(&args)
-        .output()
-        .await;
+    let mut command = tokio::process::Command::new("rg");
+    command.args(&args).kill_on_drop(true);
+    let result = command.output().await;
 
     match result {
         Ok(output) => {

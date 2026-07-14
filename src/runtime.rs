@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 
+use futures::future::{AbortHandle, AbortRegistration};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SteerOrigin {
     pub chat_id: i64,
@@ -12,15 +14,38 @@ pub struct PendingSteer {
     pub origin: SteerOrigin,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopOutcome {
+    Accepted,
+    AlreadyStopping,
+    Inactive,
+}
+
+#[derive(Debug)]
+pub struct TurnClose {
+    pub stopped: bool,
+    pub pending_steers: Vec<PendingSteer>,
+}
+
 #[derive(Clone, Default)]
 pub struct RuntimeState {
     telegram_display_name: Arc<RwLock<String>>,
-    steering: Arc<Mutex<SteeringState>>,
+    turn: Arc<Mutex<ActiveTurnState>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TurnPhase {
+    #[default]
+    Idle,
+    Running,
+    Stopping,
+    Completing,
 }
 
 #[derive(Default)]
-struct SteeringState {
-    active: bool,
+struct ActiveTurnState {
+    phase: TurnPhase,
+    abort_handle: Option<AbortHandle>,
     pending: Vec<PendingSteer>,
 }
 
@@ -28,7 +53,7 @@ impl RuntimeState {
     pub fn new(telegram_display_name: String) -> Self {
         Self {
             telegram_display_name: Arc::new(RwLock::new(telegram_display_name)),
-            steering: Arc::new(Mutex::new(SteeringState::default())),
+            turn: Arc::new(Mutex::new(ActiveTurnState::default())),
         }
     }
 
@@ -45,10 +70,31 @@ impl RuntimeState {
         }
     }
 
-    pub fn begin_turn(&self) {
-        if let Ok(mut guard) = self.steering.lock() {
-            guard.active = true;
+    pub fn begin_turn(&self) -> AbortRegistration {
+        let (abort_handle, registration) = AbortHandle::new_pair();
+        if let Ok(mut guard) = self.turn.lock() {
+            guard.phase = TurnPhase::Running;
+            guard.abort_handle = Some(abort_handle);
             guard.pending.clear();
+        }
+        registration
+    }
+
+    pub fn try_stop(&self) -> StopOutcome {
+        let Ok(mut guard) = self.turn.lock() else {
+            return StopOutcome::Inactive;
+        };
+
+        match guard.phase {
+            TurnPhase::Running => {
+                guard.phase = TurnPhase::Stopping;
+                if let Some(handle) = &guard.abort_handle {
+                    handle.abort();
+                }
+                StopOutcome::Accepted
+            }
+            TurnPhase::Stopping => StopOutcome::AlreadyStopping,
+            TurnPhase::Idle | TurnPhase::Completing => StopOutcome::Inactive,
         }
     }
 
@@ -58,10 +104,10 @@ impl RuntimeState {
             return false;
         }
 
-        let Ok(mut guard) = self.steering.lock() else {
+        let Ok(mut guard) = self.turn.lock() else {
             return false;
         };
-        if !guard.active {
+        if guard.phase != TurnPhase::Running {
             return false;
         }
 
@@ -70,18 +116,26 @@ impl RuntimeState {
     }
 
     pub fn drain_steers(&self) -> Vec<String> {
-        self.steering
+        self.turn
             .lock()
-            .map(|mut guard| guard.pending.drain(..).map(|steer| steer.text).collect())
+            .map(|mut guard| {
+                if guard.phase != TurnPhase::Running {
+                    return Vec::new();
+                }
+                guard.pending.drain(..).map(|steer| steer.text).collect()
+            })
             .unwrap_or_default()
     }
 
     pub fn finish_turn_or_drain_steers(&self) -> Vec<String> {
-        self.steering
+        self.turn
             .lock()
             .map(|mut guard| {
+                if guard.phase != TurnPhase::Running {
+                    return Vec::new();
+                }
                 if guard.pending.is_empty() {
-                    guard.active = false;
+                    guard.phase = TurnPhase::Completing;
                     Vec::new()
                 } else {
                     guard.pending.drain(..).map(|steer| steer.text).collect()
@@ -90,14 +144,22 @@ impl RuntimeState {
             .unwrap_or_default()
     }
 
-    pub fn close_turn(&self) -> Vec<PendingSteer> {
-        self.steering
+    pub fn close_turn(&self) -> TurnClose {
+        self.turn
             .lock()
             .map(|mut guard| {
-                guard.active = false;
-                guard.pending.drain(..).collect()
+                let stopped = guard.phase == TurnPhase::Stopping;
+                guard.phase = TurnPhase::Idle;
+                guard.abort_handle = None;
+                TurnClose {
+                    stopped,
+                    pending_steers: guard.pending.drain(..).collect(),
+                }
             })
-            .unwrap_or_default()
+            .unwrap_or(TurnClose {
+                stopped: false,
+                pending_steers: Vec::new(),
+            })
     }
 }
 
@@ -150,10 +212,40 @@ mod tests {
         runtime.begin_turn();
         assert!(runtime.try_push_steer("first", origin()));
 
-        let rejected = runtime.close_turn();
-        assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].text, "first");
-        assert_eq!(rejected[0].origin, origin());
+        let close = runtime.close_turn();
+        assert!(!close.stopped);
+        assert_eq!(close.pending_steers.len(), 1);
+        assert_eq!(close.pending_steers[0].text, "first");
+        assert_eq!(close.pending_steers[0].origin, origin());
         assert!(!runtime.try_push_steer("second", origin()));
+    }
+
+    #[test]
+    fn test_stop_aborts_active_turn_once() {
+        let runtime = RuntimeState::new(String::new());
+        let registration = runtime.begin_turn();
+
+        assert_eq!(runtime.try_stop(), StopOutcome::Accepted);
+        let aborted = futures::executor::block_on(futures::future::Abortable::new(
+            futures::future::pending::<()>(),
+            registration,
+        ));
+        assert!(aborted.is_err());
+        assert_eq!(runtime.try_stop(), StopOutcome::AlreadyStopping);
+        assert!(!runtime.try_push_steer("too late", origin()));
+
+        let close = runtime.close_turn();
+        assert!(close.stopped);
+        assert_eq!(runtime.try_stop(), StopOutcome::Inactive);
+    }
+
+    #[test]
+    fn test_completing_turn_rejects_late_stop() {
+        let runtime = RuntimeState::new(String::new());
+        runtime.begin_turn();
+
+        assert!(runtime.finish_turn_or_drain_steers().is_empty());
+        assert_eq!(runtime.try_stop(), StopOutcome::Inactive);
+        assert!(!runtime.close_turn().stopped);
     }
 }

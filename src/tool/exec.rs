@@ -19,6 +19,32 @@ const BLOCKED_PATTERNS: &[&str] = &[
     ".fork",         // another fork bomb pattern
 ];
 
+pub(super) struct ProcessGroupGuard {
+    pgid: Option<u32>,
+}
+
+impl ProcessGroupGuard {
+    pub(super) fn new(pgid: Option<u32>) -> Self {
+        Self { pgid }
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.pgid = None;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.pgid {
+            // the shell starts in its own process group, so a negative pid
+            // terminates the shell and every descendant it spawned.
+            unsafe {
+                libc::kill(-(pgid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// returns Some(reason) if the command is blocked by the safety filter
 fn check_safety_filter(command: &str) -> Option<&'static str> {
     let trimmed = command.trim();
@@ -96,7 +122,7 @@ async fn execute_command(command: &str, timeout_secs: Option<u64>, cwd: Option<&
     };
 
     // save the process group id before wait_with_output consumes the child
-    let pgid = child.id();
+    let mut process_group = ProcessGroupGuard::new(child.id());
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(timeout),
@@ -106,6 +132,7 @@ async fn execute_command(command: &str, timeout_secs: Option<u64>, cwd: Option<&
 
     match result {
         Ok(Ok(output)) => {
+            process_group.disarm();
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             let code = output.status.code().unwrap_or(-1);
@@ -129,15 +156,7 @@ async fn execute_command(command: &str, timeout_secs: Option<u64>, cwd: Option<&
             truncate_output(&result)
         }
         Ok(Err(e)) => format!("failed to execute command: {e}"),
-        Err(_) => {
-            // kill the entire process group to clean up child processes silently
-            if let Some(pid) = pgid {
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                }
-            }
-            format!("command timed out after {timeout}s")
-        }
+        Err(_) => format!("command timed out after {timeout}s"),
     }
 }
 
@@ -288,6 +307,43 @@ mod tests {
     async fn test_execute_command_timeout() {
         let result = execute_command("sleep 10", Some(1), None).await;
         assert!(result.contains("timed out"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cancelled_command_kills_process_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_path = temp.path().join("child.pid");
+        let command = format!("sleep 30 & echo $! > {}; wait", pid_path.display());
+        let (abort_handle, registration) = futures::future::AbortHandle::new_pair();
+        let task = tokio::spawn(async move {
+            futures::future::Abortable::new(execute_command(&command, Some(30), None), registration)
+                .await
+        });
+
+        for _ in 0..100 {
+            if pid_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_path)
+            .expect("child pid file should be created")
+            .trim()
+            .parse()
+            .unwrap();
+
+        abort_handle.abort();
+        assert!(task.await.unwrap().is_err());
+
+        for _ in 0..100 {
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("child process {pid} survived cancellation");
     }
 
     #[tokio::test]

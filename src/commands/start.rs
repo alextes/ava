@@ -5,17 +5,20 @@ use crate::approver::{AnyApprover, PendingApprovals, TelegramApprover};
 use crate::chat_buffer::{BufferedMessage, ChatBuffer};
 use crate::cli::{
     handle_rules_command, handle_switch_command, parse_slash_command, parse_steer_command,
-    provider_for_session,
+    parse_stop_command, provider_for_session,
 };
 use crate::cold_resume::{ColdResumePrompter, PendingColdResumes};
 use crate::db::{Database, QueuedRecord, RuntimeEvent};
 use crate::error;
 use crate::message::{ChannelKind, ImageSource, InboundMessage};
 use crate::queue::{ResponseSink, WakeReceiver, message_queue, send_error, send_response};
-use crate::runtime::{PendingSteer, RuntimeState, SteerOrigin};
+use crate::runtime::{PendingSteer, RuntimeState, SteerOrigin, StopOutcome};
 use crate::telegram::TelegramBot;
 
 const STEER_REJECTION: &str = "no active turn to steer. send a normal message instead.";
+const STOPPING_RESPONSE: &str = "stopping.";
+const ALREADY_STOPPING_RESPONSE: &str = "already stopping.";
+const STOP_INACTIVE_RESPONSE: &str = "nothing to stop.";
 
 struct BotIdentity {
     id: i64,
@@ -639,16 +642,25 @@ async fn process_queued_record(
         ResponseSink::Telegram { bot, .. } => Arc::clone(bot),
     };
 
-    runtime.begin_turn();
-    let result = agent.process(&inbound).await;
-    let rejected_steers = runtime.close_turn();
+    let abort_registration = runtime.begin_turn();
+    let result = futures::future::Abortable::new(agent.process(&inbound), abort_registration).await;
+    let close = runtime.close_turn();
 
     // stop typing indicator
     if let Some(handle) = typing_handle {
         handle.abort();
     }
 
-    match result {
+    if close.stopped || result.is_err() {
+        if let Err(e) = agent.record_stopped_turn() {
+            tracing::error!(%e, "failed to record stopped turn");
+        }
+        send_steer_rejections(&rejection_bot, close.pending_steers).await;
+        mark_queue_failed_many(&db, &queue_ids, "stopped by user");
+        return;
+    }
+
+    match result.expect("non-stopped abortable turn must contain an agent result") {
         Ok(Some(outbound)) => {
             buffer_bot_reply(&outbound.content);
             send_response(sink, outbound).await;
@@ -674,7 +686,7 @@ async fn process_queued_record(
         }
     }
 
-    send_steer_rejections(&rejection_bot, rejected_steers).await;
+    send_steer_rejections(&rejection_bot, close.pending_steers).await;
     mark_queue_done_many(&db, &queue_ids);
 }
 
@@ -702,6 +714,14 @@ fn mark_queue_done_many(db: &Database, queue_ids: &[i64]) {
     for queue_id in queue_ids {
         if let Err(e) = db.mark_message_done(*queue_id) {
             tracing::warn!(%e, queue_id, "failed to mark queue row done");
+        }
+    }
+}
+
+fn mark_queue_failed_many(db: &Database, queue_ids: &[i64], error: &str) {
+    for queue_id in queue_ids {
+        if let Err(e) = db.mark_message_failed(*queue_id, error) {
+            tracing::warn!(%e, queue_id, "failed to mark queue row failed");
         }
     }
 }
@@ -916,6 +936,26 @@ async fn telegram_producer(
 
             // track channel activity
             let _ = db.upsert_channel(chat_id, chat_type, msg.chat.title.as_deref());
+
+            if parse_stop_command(&text, Some(&bot_identity.username)) {
+                let response = match runtime.try_stop() {
+                    StopOutcome::Accepted => STOPPING_RESPONSE,
+                    StopOutcome::AlreadyStopping => ALREADY_STOPPING_RESPONSE,
+                    StopOutcome::Inactive => STOP_INACTIVE_RESPONSE,
+                };
+                if let Err(e) = bot
+                    .send_message(chat_id, response, msg.message_thread_id)
+                    .await
+                {
+                    tracing::warn!(
+                        %e,
+                        chat_id,
+                        thread_id = ?msg.message_thread_id,
+                        "failed to send stop response"
+                    );
+                }
+                continue;
+            }
 
             if let Some(steer) = parse_steer_command(&text, Some(&bot_identity.username)) {
                 let steer = steer.trim();
@@ -1264,5 +1304,27 @@ mod tests {
 
         assert!(note.contains("ava started"));
         assert!(!note.contains("no external restart notice was sent"));
+    }
+
+    #[test]
+    fn test_stopped_batch_is_not_retried_and_later_work_remains() {
+        let db = Database::open_in_memory().unwrap();
+        let first = db
+            .enqueue_message(ChannelKind::Telegram, 1, None, "first", &[])
+            .unwrap();
+        let second = db
+            .enqueue_message(ChannelKind::Telegram, 1, None, "second", &[])
+            .unwrap();
+        let later = db
+            .enqueue_message(ChannelKind::Telegram, 2, None, "later", &[])
+            .unwrap();
+        db.mark_messages_processing(&[first, second]).unwrap();
+
+        mark_queue_failed_many(&db, &[first, second], "stopped by user");
+        assert_eq!(db.reset_processing_messages().unwrap(), 0);
+
+        let next = db.next_pending_message().unwrap().unwrap();
+        assert_eq!(next.id, later);
+        assert_eq!(next.content, "later");
     }
 }

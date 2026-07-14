@@ -103,6 +103,8 @@ fn print_message(msg: &HistoryMessage, mode: &HistoryMode) {
 
     let (role, role_color) = if msg.kind == crate::message::MessageKind::Steer {
         ("steer", YELLOW)
+    } else if msg.kind == crate::message::MessageKind::Stop {
+        ("stop", MAGENTA)
     } else if is_tool_results {
         ("tool result", MAGENTA)
     } else {

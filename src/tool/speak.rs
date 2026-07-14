@@ -133,7 +133,8 @@ fn find_piper() -> Option<String> {
 }
 
 async fn synthesize(piper_path: &str, model_path: &PathBuf, text: &str) -> Result<Vec<u8>, String> {
-    let mut child = tokio::process::Command::new(piper_path)
+    let mut command = tokio::process::Command::new(piper_path);
+    command
         .arg("--model")
         .arg(model_path)
         .arg("--output_file")
@@ -141,6 +142,8 @@ async fn synthesize(piper_path: &str, model_path: &PathBuf, text: &str) -> Resul
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to spawn piper: {e}"))?;
 
@@ -170,13 +173,16 @@ async fn synthesize(piper_path: &str, model_path: &PathBuf, text: &str) -> Resul
 }
 
 async fn wav_to_ogg_opus(wav_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let mut child = tokio::process::Command::new("ffmpeg")
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command
         .args([
             "-i", "pipe:0", "-c:a", "libopus", "-b:a", "48k", "-f", "ogg", "pipe:1",
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
 
@@ -213,8 +219,9 @@ async fn play_local(wav_bytes: &[u8]) -> Result<(), String> {
         .await
         .map_err(|e| format!("failed to write temp wav: {e}"))?;
 
-    let status = tokio::process::Command::new(player)
-        .arg(&temp_path)
+    let mut command = tokio::process::Command::new(player);
+    command.arg(&temp_path).kill_on_drop(true);
+    let status = command
         .status()
         .await
         .map_err(|e| format!("failed to play audio: {e}"))?;

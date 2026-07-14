@@ -17,8 +17,8 @@ pub fn upgrade_definition() -> ToolDefinition {
     }
 }
 
-pub fn handle_upgrade(call_id: &str) -> ToolCallResult {
-    let result = run_upgrade();
+pub async fn handle_upgrade(call_id: &str) -> ToolCallResult {
+    let result = run_upgrade().await;
     tracing::info!(result, "upgrade complete");
     ToolCallResult {
         content: MessageContent::tool_result(call_id, result),
@@ -30,7 +30,7 @@ pub fn handle_upgrade(call_id: &str) -> ToolCallResult {
     }
 }
 
-fn run_upgrade() -> String {
+async fn run_upgrade() -> String {
     let source_dir = env!("CARGO_MANIFEST_DIR");
     let cargo_toml = std::path::Path::new(source_dir).join("Cargo.toml");
 
@@ -42,13 +42,24 @@ fn run_upgrade() -> String {
 
     tracing::info!(source_dir, "building from source");
 
-    let build_output = match std::process::Command::new("cargo")
+    let mut command = tokio::process::Command::new("cargo");
+    command
         .args(["build", "--release"])
         .current_dir(source_dir)
-        .output()
-    {
-        Ok(output) => output,
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0);
+    let child = match command.spawn() {
+        Ok(child) => child,
         Err(e) => return format!("failed to run cargo build: {e}"),
+    };
+    let mut process_group = super::exec::ProcessGroupGuard::new(child.id());
+    let build_output = match child.wait_with_output().await {
+        Ok(output) => {
+            process_group.disarm();
+            output
+        }
+        Err(e) => return format!("failed to wait for cargo build: {e}"),
     };
 
     if !build_output.status.success() {
@@ -113,11 +124,11 @@ mod tests {
         assert_eq!(def.name(), UPGRADE_TOOL_NAME);
     }
 
-    #[test]
-    fn test_handle_upgrade_builds_from_source() {
+    #[tokio::test]
+    async fn test_handle_upgrade_builds_from_source() {
         // this actually runs cargo build, so we just verify it doesn't panic
         // and returns a string (may succeed or fail depending on environment)
-        let result = handle_upgrade("test_id");
+        let result = handle_upgrade("test_id").await;
         let text = match &result.content {
             MessageContent::ToolResult { content, .. } => content.as_display_str(),
             _ => panic!("expected ToolResult"),

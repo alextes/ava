@@ -13,10 +13,60 @@ use super::types::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
 /// low-level JSON-RPC 2.0 transport over a child process's stdin/stdout.
 pub struct StdioTransport {
-    stdin: Mutex<tokio::process::ChildStdin>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>,
+    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     next_id: AtomicU64,
     child: Mutex<Child>,
+}
+
+struct PendingRequestGuard {
+    id: Option<u64>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+}
+
+impl PendingRequestGuard {
+    fn disarm(&mut self) {
+        self.id = None;
+    }
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        let Some(id) = self.id.take() else {
+            return;
+        };
+        let pending = Arc::clone(&self.pending);
+        let stdin = Arc::clone(&self.stdin);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            if pending.lock().await.remove(&id).is_none() {
+                return;
+            }
+
+            let notification = JsonRpcNotification::new(
+                "notifications/cancelled",
+                Some(serde_json::json!({
+                    "requestId": id,
+                    "reason": "active turn stopped"
+                })),
+            );
+            let Ok(mut line) = serde_json::to_string(&notification) else {
+                return;
+            };
+            line.push('\n');
+            let mut stdin = stdin.lock().await;
+            if let Err(e) = stdin.write_all(line.as_bytes()).await {
+                tracing::debug!(%e, request_id = id, "failed to notify MCP server of cancellation");
+                return;
+            }
+            if let Err(e) = stdin.flush().await {
+                tracing::debug!(%e, request_id = id, "failed to flush MCP cancellation");
+            }
+        });
+    }
 }
 
 impl StdioTransport {
@@ -39,8 +89,8 @@ impl StdioTransport {
         let stdout = child.stdout.take().expect("stdout was piped");
 
         let transport = Arc::new(Self {
-            stdin: Mutex::new(stdin),
-            pending: Mutex::new(HashMap::new()),
+            stdin: Arc::new(Mutex::new(stdin)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             child: Mutex::new(child),
         });
@@ -106,6 +156,11 @@ impl StdioTransport {
             let mut pending = self.pending.lock().await;
             pending.insert(id, tx);
         }
+        let mut cancellation_guard = PendingRequestGuard {
+            id: Some(id),
+            pending: Arc::clone(&self.pending),
+            stdin: Arc::clone(&self.stdin),
+        };
 
         let mut line = serde_json::to_string(&req).map_err(|e| Error::Mcp(e.to_string()))?;
         line.push('\n');
@@ -121,6 +176,7 @@ impl StdioTransport {
             .map_err(|_| Error::Mcp(format!("request timed out: {method}")))?
             .map_err(|_| Error::Mcp("server closed connection".into()))?;
 
+        cancellation_guard.disarm();
         Ok(resp)
     }
 
@@ -145,5 +201,54 @@ impl StdioTransport {
     pub async fn shutdown(&self) {
         let mut child = self.child.lock().await;
         let _ = child.kill().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_request_removes_pending_entry() {
+        let transport = StdioTransport::start(
+            "sh",
+            &["-c".into(), "while read line; do sleep 30; done".into()],
+            &HashMap::new(),
+        )
+        .unwrap();
+        let request_transport = Arc::clone(&transport);
+        let (abort_handle, registration) = futures::future::AbortHandle::new_pair();
+        let task = tokio::spawn(async move {
+            futures::future::Abortable::new(
+                request_transport.request("tools/call", None),
+                registration,
+            )
+            .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !transport.pending.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("request should become pending");
+
+        abort_handle.abort();
+        assert!(task.await.unwrap().is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if transport.pending.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled MCP request should be removed");
+        transport.shutdown().await;
     }
 }

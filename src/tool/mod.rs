@@ -516,7 +516,7 @@ pub async fn handle_tool_call(
             continuation_target,
         )),
         COMPACT_CONTEXT_TOOL_NAME => Ok(compact::handle_compact_context(&call.id)),
-        UPGRADE_TOOL_NAME => Ok(upgrade::handle_upgrade(&call.id)),
+        UPGRADE_TOOL_NAME => Ok(upgrade::handle_upgrade(&call.id).await),
         COMPLETE_SETUP_TOOL_NAME => {
             setup::handle_complete_setup(db, runtime, &call.id, &call.input)
         }

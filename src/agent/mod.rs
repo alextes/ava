@@ -1017,6 +1017,19 @@ impl Agent {
         session_id: i64,
         messages: &mut Vec<Message>,
     ) -> Result<(), Error> {
+        self.repair_orphaned_tool_calls_with_result(
+            session_id,
+            messages,
+            "the session was interrupted and it is unknown whether this tool call completed.",
+        )
+    }
+
+    fn repair_orphaned_tool_calls_with_result(
+        &self,
+        session_id: i64,
+        messages: &mut Vec<Message>,
+        tool_result: &str,
+    ) -> Result<(), Error> {
         let last = match messages.last() {
             Some(msg) if msg.role == Role::Assistant => msg,
             _ => return Ok(()),
@@ -1042,18 +1055,33 @@ impl Agent {
 
         let synthetic: Vec<MessageContent> = tool_use_ids
             .iter()
-            .map(|id| {
-                MessageContent::tool_result(
-                    id,
-                    "the session was interrupted and it is unknown whether this tool call completed.",
-                )
-            })
+            .map(|id| MessageContent::tool_result(id, tool_result))
             .collect();
 
         self.db
             .append_message(session_id, "user", &synthetic, None)?;
         messages.push(Message::user_with_content(synthetic));
 
+        Ok(())
+    }
+
+    pub(crate) fn record_stopped_turn(&self) -> Result<(), Error> {
+        let session_id = self.db.active_session()?;
+        let mut messages = self.db.load_messages(session_id)?;
+        self.repair_orphaned_tool_calls_with_result(
+            session_id,
+            &mut messages,
+            "the turn was stopped and it is unknown whether this tool call completed.",
+        )?;
+
+        let note = "[system: the user stopped the previous turn. do not continue that work unless they ask.]";
+        self.db.append_message_with_kind(
+            session_id,
+            "system",
+            MessageKind::Stop,
+            &[MessageContent::text(note)],
+            None,
+        )?;
         Ok(())
     }
 
@@ -1666,7 +1694,7 @@ mod tests {
 
         runtime.begin_turn();
         let outbound = agent.process(&inbound).await.unwrap().unwrap();
-        assert!(runtime.close_turn().is_empty());
+        assert!(runtime.close_turn().pending_steers.is_empty());
         assert_eq!(outbound.content, "done");
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
         assert!(*seen_steer.lock().unwrap());
@@ -1751,7 +1779,7 @@ mod tests {
         assert_eq!(outbound.content, "corrected answer");
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
         assert!(*seen_context.lock().unwrap());
-        assert!(runtime.close_turn().is_empty());
+        assert!(runtime.close_turn().pending_steers.is_empty());
         assert!(!runtime.try_push_steer("too late", steer_origin()));
 
         let sid = db.active_session().unwrap();
@@ -1812,7 +1840,7 @@ mod tests {
         runtime.begin_turn();
         let result = agent.process(&inbound).await.unwrap();
         assert!(result.is_none());
-        let rejected = runtime.close_turn();
+        let rejected = runtime.close_turn().pending_steers;
 
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].text, "too late for complete");
@@ -1852,7 +1880,7 @@ mod tests {
         runtime.begin_turn();
         let result = agent.process(&inbound).await;
         assert!(result.is_err());
-        let rejected = runtime.close_turn();
+        let rejected = runtime.close_turn().pending_steers;
 
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].text, "too late for error");
@@ -2339,6 +2367,44 @@ mod tests {
                 tool_use_id,
                 content,
             } if tool_use_id == "orphan_1" && content.as_display_str().contains("interrupted")
+        ));
+    }
+
+    #[test]
+    fn test_record_stopped_turn_repairs_orphan_before_stop_note() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let sid = db.active_session().unwrap();
+        db.append_message(
+            sid,
+            "assistant",
+            &[MessageContent::tool_use(
+                "orphan_stop",
+                "exec",
+                serde_json::json!({"command": "sleep 30"}),
+            )],
+            None,
+        )
+        .unwrap();
+
+        let agent = Agent::new(
+            make_test_provider("unused"),
+            AnyApprover::Cli(CliApprover),
+            Arc::clone(&db),
+            test_client(),
+        );
+        agent.record_stopped_turn().unwrap();
+
+        let history = db.load_recent_messages(sid, 10).unwrap();
+        assert_eq!(history.len(), 3);
+        assert!(matches!(
+            &history[1].content[0],
+            MessageContent::ToolResult { content, .. }
+                if content.as_display_str().contains("turn was stopped")
+        ));
+        assert_eq!(history[2].kind, MessageKind::Stop);
+        assert!(matches!(
+            &history[2].content[0],
+            MessageContent::Text { text } if text.contains("do not continue")
         ));
     }
 
