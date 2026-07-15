@@ -42,6 +42,7 @@ pub struct Agent {
     runtime: Option<Arc<RuntimeState>>,
     cold_resume: Option<ColdResumePrompter>,
     continuation_target: Option<tool::ContinuationTarget>,
+    tool_broker: tool::LocalToolBroker,
 }
 
 impl Agent {
@@ -63,6 +64,7 @@ impl Agent {
             runtime: None,
             cold_resume: None,
             continuation_target: None,
+            tool_broker: tool::LocalToolBroker,
         }
     }
 
@@ -945,24 +947,17 @@ impl Agent {
             }
         }
 
-        // refresh vault secrets when a skill is activated (user may have added secrets)
-        if call.name == tool::ACTIVATE_SKILL_TOOL_NAME
-            && let Ok(mut secrets) = self.vault_secrets.write()
-        {
-            *secrets = tool::load_vault_secrets();
-        }
-
-        let mut result = tool::handle_tool_call(
+        let context = tool::LocalExecutionContext::new(
             &self.client,
             &self.db,
             self.mcp.as_deref(),
             &self.skills,
-            call,
             self.chat_buffer.as_deref(),
             self.runtime.as_deref(),
             self.continuation_target,
-        )
-        .await?;
+            &self.vault_secrets,
+        );
+        let mut result = self.tool_broker.execute(context, call).await?;
 
         // scrub vault secrets from all tool output
         if let Ok(secrets) = self.vault_secrets.read()
